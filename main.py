@@ -699,32 +699,42 @@ class KommunikasjonstavleApp(App):
 
     def _request_android_permissions(self):
         """
-        Ber om READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE
-        og READ_MEDIA_IMAGES (Android 13+) via standard bildedialog.
-        Viser Androids vanlige "Gi tilgang til bilder"-dialog –
-        ikke den skremmende "Tilgang til alle filer"-varianten.
+        Velger riktige tillatelser basert paa Android API-nivaa:
+
+          Android 13+ (API 33+):
+            READ_MEDIA_IMAGES  – utloser "Gi tilgang til bilder"-dialog.
+            READ_EXTERNAL_STORAGE er utdatert og viser INGEN dialog paa
+            Android 13+, noe som forklarte at ingenting skjedde ved oppstart.
+
+          Android 12 og eldre:
+            READ_EXTERNAL_STORAGE + WRITE_EXTERNAL_STORAGE.
+
+        Tillatelsesstrengene er hardkodet (ikke Permission.KONSTANT) fordi
+        READ_MEDIA_IMAGES mangler som konstant i eldre p4a-versjoner og
+        ville utloese AttributeError som svelget hele foresporselen.
         """
         try:
-            from android.permissions import (
-                request_permissions, check_permission, Permission,
-            )
-            perms = [
-                Permission.READ_EXTERNAL_STORAGE,
-                Permission.WRITE_EXTERNAL_STORAGE,
-            ]
-            # READ_MEDIA_IMAGES ble innført i API 33 (Android 13)
-            try:
-                perms.append(Permission.READ_MEDIA_IMAGES)
-            except AttributeError:
-                logging.info('READ_MEDIA_IMAGES ikke tilgjengelig (eldre API).')
+            from android.permissions import request_permissions, check_permission
+            from jnius import autoclass
 
-            # Sjekk om tillatelsene allerede er innvilget
+            api = autoclass('android.os.Build$VERSION').SDK_INT
+            logging.info('Android API-nivaa: %d', api)
+
+            if api >= 33:
+                # Android 13+ – kun READ_MEDIA_IMAGES gir bilder-dialog
+                perms = ['android.permission.READ_MEDIA_IMAGES']
+            else:
+                perms = [
+                    'android.permission.READ_EXTERNAL_STORAGE',
+                    'android.permission.WRITE_EXTERNAL_STORAGE',
+                ]
+
             missing = [p for p in perms if not check_permission(p)]
             if missing:
-                request_permissions(missing, self._on_permissions_result)
                 logging.info('Forespor tillatelser: %s', missing)
+                request_permissions(missing, self._on_permissions_result)
             else:
-                logging.info('Alle lagringstillatelser allerede innvilget.')
+                logging.info('Alle noedvendige tillatelser er allerede innvilget.')
 
         except Exception:
             logging.exception('_request_android_permissions: feil')
