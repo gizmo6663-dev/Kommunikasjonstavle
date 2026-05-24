@@ -45,6 +45,8 @@ from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.properties import ListProperty, NumericProperty
 from kivy.utils import platform
+import random
+from kivy.uix.progressbar import ProgressBar
 
 
 try:
@@ -253,6 +255,11 @@ DEFAULT_STRUCT = {
         {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": []},
     ],
     "sequences": [],
+    "dagsrytme": [],
+    "settings": {
+        "tts_enabled": False,
+        "font_scale": 1.0
+    }
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -313,6 +320,21 @@ def hex_p(h):
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
+def fsp(base_size):
+    """
+    Skalerbar sp()-wrapper. Leser font_scale fra appens innstillinger
+    slik at tekststørrelse kan justeres globalt fra Innstillinger-skjermen.
+    Returnerer sp(base_size) som fallback hvis appen ikke er startet ennå.
+    """
+    try:
+        app = App.get_running_app()
+        if app and hasattr(app, 'data'):
+            scale = app.data.get('settings', {}).get('font_scale', 1.0)
+            return sp(base_size * scale)
+    except Exception:
+        pass
+    return sp(base_size)
+
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
     Lager en RBtn (avrundet knapp med skygge og dobbel kant).
@@ -340,6 +362,10 @@ def load_struct():
             # Migrer eldre filer som mangler sequences-nøkkel
             if 'sequences' not in d:
                 d['sequences'] = []
+            if 'dagsrytme' not in d:
+                d['dagsrytme'] = []
+            if 'settings' not in d:
+                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0}
             return d
         except Exception as e:
             logging.error('Feil ved lasting av structure.json: %s', e)
@@ -657,14 +683,13 @@ class KommunikasjonstavleApp(App):
     #  ANDROID-TILLATELSER
     #
     #  Android 6+ (API 23+) krever at "farlige" tillatelser
-    #  (lagring, kamera, …) bes om eksplisitt under kjøring,
+    #  (lagring, bilder) bes om eksplisitt under kjøring,
     #  selv om de er deklarert i AndroidManifest.xml.
-    #  Uten dette vil FileChooser vise mapper men ingen filer.
+    #  Uten dette vil FileChooser vise mapper men ingen bilder.
     #
-    #  For Android 11+ (API 30+) trengs i tillegg
-    #  MANAGE_EXTERNAL_STORAGE for å lese/skrive til /sdcard
-    #  utenfor appens private mappe. Dette åpner en Settings-side
-    #  der brukeren aktiverer tilgang manuelt.
+    #  Vi bruker READ_MEDIA_IMAGES (Android 13+) som ber om
+    #  tilgang til bilder spesifikt – en langt mer passende
+    #  dialog enn den inngripende MANAGE_EXTERNAL_STORAGE.
     # ══════════════════════════════════════════════════
 
     def on_start(self):
@@ -674,10 +699,10 @@ class KommunikasjonstavleApp(App):
 
     def _request_android_permissions(self):
         """
-        Trinn 1: Be om READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE
-                 og READ_MEDIA_IMAGES (Android 13+) via standard dialog.
-        Trinn 2: Be om MANAGE_EXTERNAL_STORAGE via Settings-intent
-                 (Android 11+) – nødvendig for full /sdcard-tilgang.
+        Ber om READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE
+        og READ_MEDIA_IMAGES (Android 13+) via standard bildedialog.
+        Viser Androids vanlige "Gi tilgang til bilder"-dialog –
+        ikke den skremmende "Tilgang til alle filer"-varianten.
         """
         try:
             from android.permissions import (
@@ -704,47 +729,7 @@ class KommunikasjonstavleApp(App):
         except Exception:
             logging.exception('_request_android_permissions: feil')
 
-        # Separat forespørsel om MANAGE_EXTERNAL_STORAGE (Android 11+)
-        Clock.schedule_once(lambda *_: self._request_manage_storage(), 1.5)
 
-    def _request_manage_storage(self):
-        """
-        MANAGE_EXTERNAL_STORAGE kan ikke bes om via vanlig dialog.
-        I stedet åpnes Android Settings-siden for appen, der brukeren
-        selv skrur på "Tillat tilgang til alle filer".
-        Kalles bare på Android 11+ (API 30+) hvis tillatelsen mangler.
-        """
-        try:
-            from jnius import autoclass
-            from android import mActivity
-
-            VersionClass = autoclass('android.os.Build$VERSION')
-            if VersionClass.SDK_INT < 30:
-                logging.info('MANAGE_EXTERNAL_STORAGE: ikke nødvendig (API < 30).')
-                return
-
-            Environment = autoclass('android.os.Environment')
-            if Environment.isExternalStorageManager():
-                logging.info('MANAGE_EXTERNAL_STORAGE: allerede innvilget.')
-                return
-
-            # Åpne Settings-siden for denne appen
-            Intent   = autoclass('android.content.Intent')
-            Uri      = autoclass('android.net.Uri')
-            Settings = autoclass('android.provider.Settings')
-
-            intent = Intent(
-                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
-            )
-            pkg_uri = Uri.parse(
-                'package:' + mActivity.getPackageName()
-            )
-            intent.setData(pkg_uri)
-            mActivity.startActivity(intent)
-            logging.info('MANAGE_EXTERNAL_STORAGE: Settings-intent startet.')
-
-        except Exception:
-            logging.exception('_request_manage_storage: feil')
 
     def _on_permissions_result(self, permissions, grants):
         """Kalles av Android etter at brukeren har svart på tillatelsesdialogen."""
@@ -867,6 +852,15 @@ class KommunikasjonstavleApp(App):
         self.nav_stack.append((scr, kw))
 
     def _set_content(self, widget):
+        # Avbryt dagsrytme-klokke når vi forlater dagsrytme-skjermen
+        if self._cur_scr != 'dagsrytme':
+            ev = getattr(self, '_dr_event', None)
+            if ev:
+                ev.cancel()
+                self._dr_event = None
+        # Pause tidsur-teller ved skjermbytte
+        if self._cur_scr != 'tidsur' and getattr(self, '_timer_running', False):
+            self._tidsur_stop()
         self._content.clear_widgets()
         self._content.add_widget(widget)
 
@@ -884,13 +878,21 @@ class KommunikasjonstavleApp(App):
             spacing=dp(10), padding=dp(12),
         )
 
-        # Handlingsrekker-knapp alltid synlig øverst
-        outer.add_widget(mk_btn(
-            'Handlingsrekker',
-            hex_k('#4ECDC4'),
-            h=dp(56), fs=16,
-            cb=lambda *_: self._nav_sequences(),
-        ))
+        # Øvre knapperutenett – alltid synlig
+        r1 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        r1.add_widget(mk_btn('Handlingsrekker', hex_k('#4ECDC4'), h=dp(52), fs=14,
+            cb=lambda *_: self._nav_sequences()))
+        r1.add_widget(mk_btn('Dagsrytme', hex_k('#FF9F43'), h=dp(52), fs=14,
+            cb=lambda *_: self._nav_dagsrytme()))
+        outer.add_widget(r1)
+        r2 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        r2.add_widget(mk_btn('Tidsur', hex_k('#4D96FF'), h=dp(52), fs=14,
+            cb=lambda *_: self._nav_tidsur()))
+        r2.add_widget(mk_btn('Bildepar-spill', hex_k('#C77DFF'), h=dp(52), fs=14,
+            cb=lambda *_: self._nav_bildepar()))
+        outer.add_widget(r2)
+        outer.add_widget(mk_btn('Innstillinger', hex_k('#78909C'), h=dp(46), fs=14,
+            cb=lambda *_: self._nav_settings()))
 
         if self.edit_mode:
             outer.add_widget(mk_btn(
@@ -1090,11 +1092,21 @@ class KommunikasjonstavleApp(App):
         name_lbl.bind(size=name_lbl.setter('text_size'))
         layout.add_widget(name_lbl)
 
-        layout.add_widget(mk_btn(
-            'Last ned til enheten',
-            hex_k('#6BCB77'), h=dp(54),
+        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        btn_row.add_widget(mk_btn(
+            'Les opp', hex_k('#FF9F43'), h=dp(52), fs=14,
+            cb=lambda *_: self._speak(name),
+        ))
+        btn_row.add_widget(mk_btn(
+            'QR-kode', hex_k('#4D96FF'), h=dp(52), fs=14,
+            cb=lambda *_: self._show_qr_popup(name, f'QR: {name}'),
+        ))
+        btn_row.add_widget(mk_btn(
+            'Last ned', hex_k('#6BCB77'), h=dp(52), fs=14,
             cb=lambda *_: self._download_image(path),
         ))
+        layout.add_widget(btn_row)
+        self._speak(name)
         self._set_content(layout)
 
     # ══════════════════════════════════════════════════
@@ -1413,13 +1425,22 @@ class KommunikasjonstavleApp(App):
         tile.add_widget(main_btn)
 
         if edit:
+            h = dp(106) + dp(42)
+            tile.height = h
             row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
             row.add_widget(mk_btn(
-                'Eksporter', hex_k('#FF9F43'), h=dp(38), fs=13,
+                'Eksporter', hex_k('#FF9F43'), h=dp(38), fs=12,
                 cb=lambda *_, s=seq: self._export_sequence(s),
             ))
             row.add_widget(mk_btn(
-                'Slett', hex_k('#FF6B6B'), h=dp(38), fs=13,
+                'QR', hex_k('#4D96FF'), h=dp(38), fs=12,
+                cb=lambda *_, s=seq: self._show_qr_popup(
+                    'Handlingsrekke: ' + s['name'] + '\n' +
+                    '\n'.join(f'{i+1}. {it["name"]}' for i, it in enumerate(s.get('items',[]))),
+                    f'QR: {s["name"]}'),
+            ))
+            row.add_widget(mk_btn(
+                'Slett', hex_k('#FF6B6B'), h=dp(38), fs=12,
                 cb=lambda *_, s=seq: self._del_sequence(s),
             ))
             tile.add_widget(row)
@@ -1791,6 +1812,667 @@ class KommunikasjonstavleApp(App):
         )
         pop_ref[0] = pop
         pop.open()
+
+
+    # ══════════════════════════════════════════════════
+    #  TEKST-TIL-TALE (TTS)
+    # ══════════════════════════════════════════════════
+
+    def _init_tts(self):
+        """Initialiserer Android TextToSpeech (kalles kun én gang)."""
+        if hasattr(self, '_tts_initialized'):
+            return
+        self._tts_initialized = True
+        self._tts_engine = None
+        self._tts_ready  = False
+        if platform != 'android':
+            return
+        try:
+            from jnius import PythonJavaClass, java_method, autoclass
+            from android import mActivity
+            TTS    = autoclass('android.speech.tts.TextToSpeech')
+            Locale = autoclass('java.util.Locale')
+            app_ref = self
+
+            class OnInit(PythonJavaClass):
+                __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
+                __javacontext__ = 'app'
+                @java_method('(I)V')
+                def onInit(self_j, status):
+                    if status == TTS.SUCCESS:
+                        try:
+                            app_ref._tts_engine.setLanguage(Locale('nb', 'NO'))
+                            app_ref._tts_ready = True
+                            logging.info('TTS klar (nb-NO)')
+                        except Exception:
+                            logging.exception('TTS setLanguage feil')
+                    else:
+                        logging.warning('TTS init feilet, status=%d', status)
+
+            self._tts_listener = OnInit()
+            self._tts_engine   = TTS(mActivity, self._tts_listener)
+        except Exception:
+            logging.exception('_init_tts: feil')
+
+    def _speak(self, text):
+        """Les opp teksten via Android TTS – kun hvis aktivert i innstillinger."""
+        if not self.data.get('settings', {}).get('tts_enabled', False):
+            return
+        try:
+            self._init_tts()
+            if getattr(self, '_tts_ready', False) and self._tts_engine:
+                from jnius import autoclass
+                TTS = autoclass('android.speech.tts.TextToSpeech')
+                self._tts_engine.speak(str(text), TTS.QUEUE_FLUSH, None, 'kt')
+        except Exception:
+            logging.exception('_speak: feil')
+
+    # ══════════════════════════════════════════════════
+    #  INNSTILLINGER
+    # ══════════════════════════════════════════════════
+
+    def _nav_settings(self):
+        self._push('home')
+        self._show_settings()
+
+    def _show_settings(self, **_):
+        self._cur_scr = 'settings'
+        self._set_title('Innstillinger')
+        st = self.data.setdefault('settings', {'tts_enabled': False, 'font_scale': 1.0})
+        outer = BoxLayout(orientation='vertical', spacing=dp(16), padding=dp(16))
+
+        outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        tts_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        is_on   = st.get('tts_enabled', False)
+        tts_on  = mk_btn('Pa',  hex_k('#2E7D32' if is_on else '#6BCB77'), h=dp(52), fs=16)
+        tts_off = mk_btn('Av',  hex_k('#B71C1C' if not is_on else '#FF6B6B'), h=dp(52), fs=16)
+        def set_tts(val):
+            st['tts_enabled'] = val
+            save_struct(self.data)
+            if val:
+                self._init_tts()
+            tts_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+            tts_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+        tts_on.bind( on_release=lambda *_: set_tts(True))
+        tts_off.bind(on_release=lambda *_: set_tts(False))
+        tts_row.add_widget(tts_on); tts_row.add_widget(tts_off)
+        outer.add_widget(tts_row)
+        outer.add_widget(Label(
+            text='Trykk pa et ASK-bilde for aa hore etiketten.',
+            size_hint_y=None, height=dp(26),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+
+        outer.add_widget(Label(text='Tekststorrelse:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        scale_opts = [('Liten', 0.82), ('Normal', 1.0), ('Stor', 1.20), ('Storst', 1.42)]
+        cur_sc     = st.get('font_scale', 1.0)
+        sg = GridLayout(cols=4, spacing=dp(8), size_hint_y=None, height=dp(58))
+        sb_list = []
+        for lbl, val in scale_opts:
+            active = abs(val - cur_sc) < 0.05
+            b = mk_btn(lbl, hex_k('#0D47A1' if active else '#4D96FF'), h=dp(54), fs=14)
+            def pick(_, v=val, sbl=sb_list, so=scale_opts):
+                st['font_scale'] = v
+                save_struct(self.data)
+                for sb2, (_, sv2) in zip(sbl, so):
+                    sb2.btn_color = list(hex_k('#0D47A1' if abs(sv2-v)<0.05 else '#4D96FF'))
+            b.bind(on_release=pick)
+            sg.add_widget(b); sb_list.append(b)
+        outer.add_widget(sg)
+        outer.add_widget(Label(
+            text='Ny storrelse gjelder fra neste skjerminnlasting.',
+            size_hint_y=None, height=dp(26),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+
+        outer.add_widget(BoxLayout())
+        self._set_content(outer)
+
+    # ══════════════════════════════════════════════════
+    #  QR-KODE
+    # ══════════════════════════════════════════════════
+
+    def _show_qr_popup(self, text, title='QR-kode'):
+        """Genererer og viser QR-kode for gitt tekst."""
+        try:
+            import qrcode as _qr
+            qr = _qr.QRCode(version=None,
+                error_correction=_qr.constants.ERROR_CORRECT_M,
+                box_size=9, border=3)
+            qr.add_data(text)
+            qr.make(fit=True)
+            pil_img = qr.make_image(fill_color='black', back_color='white').convert('RGBA')
+            pil_img = pil_img.resize((380, 380), PILImage.LANCZOS)
+
+            raw = pil_img.tobytes()
+            tex = Texture.create(size=(380, 380), colorfmt='rgba')
+            tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
+            tex.flip_vertical()
+
+            pop_ref = [None]
+            layout  = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
+            qr_img  = Image(); qr_img.texture = tex
+            layout.add_widget(qr_img)
+            br = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
+            br.add_widget(mk_btn('Lagre QR', hex_k('#6BCB77'), h=dp(50), fs=14,
+                cb=lambda *_: self._save_qr(pil_img, title)))
+            br.add_widget(mk_btn('Lukk', hex_k('#9CA3AF'), h=dp(50), fs=14,
+                cb=lambda *_: pop_ref[0].dismiss()))
+            layout.add_widget(br)
+            pop = Popup(title=title, content=layout, size_hint=(0.88, 0.82))
+            pop_ref[0] = pop; pop.open()
+        except ImportError:
+            self._toast('qrcode-pakken mangler. Legg til "qrcode" i buildozer.spec.')
+        except Exception:
+            logging.exception('_show_qr_popup: feil')
+            self._toast('Feil ved QR-generering.')
+
+    def _save_qr(self, pil_img, name):
+        try:
+            safe = name.replace(' ', '_').replace('/', '_')[:40]
+            path = os.path.join(DOWNLOAD_DIR, f'qr_{safe}.png')
+            pil_img.save(path)
+            self._toast(f'QR lagret: qr_{safe}.png')
+        except Exception:
+            logging.exception('_save_qr: feil')
+            self._toast('Feil ved lagring.')
+
+    # ══════════════════════════════════════════════════
+    #  DAGSRYTME
+    # ══════════════════════════════════════════════════
+
+    def _nav_dagsrytme(self):
+        self._push('home')
+        self._show_dagsrytme()
+
+    def _show_dagsrytme(self, **_):
+        self._cur_scr = 'dagsrytme'
+        self._set_title('Dagsrytme')
+        self._build_dagsrytme_ui()
+        if hasattr(self, '_dr_event') and self._dr_event:
+            self._dr_event.cancel()
+        self._dr_event = Clock.schedule_interval(
+            lambda *_: self._build_dagsrytme_ui(), 30)
+
+    def _dr_parse(self, s):
+        """'HH:MM' → minutter siden midnatt."""
+        try:
+            h, m = s.split(':'); return int(h) * 60 + int(m)
+        except Exception:
+            return 0
+
+    def _dr_fmt(self, minutes):
+        """Formater minutter til lesbar tekst."""
+        if minutes <= 0:
+            return '0 min'
+        h, m = minutes // 60, minutes % 60
+        if h > 0 and m > 0:
+            return f'{h} t {m} min'
+        if h > 0:
+            return f'{h} time{"r" if h > 1 else ""}'
+        return f'{m} min'
+
+    def _build_dagsrytme_ui(self):
+        """Bygger dagsrytme-skjermen. Kalles også av bakgrunnsklokken."""
+        if self._cur_scr != 'dagsrytme':
+            return
+        entries = sorted(self.data.get('dagsrytme', []),
+                         key=lambda e: e.get('start', '00:00'))
+        now   = datetime.now()
+        now_m = now.hour * 60 + now.minute
+
+        current = upcoming = None
+        for e in entries:
+            s = self._dr_parse(e.get('start', '00:00'))
+            t = self._dr_parse(e.get('end',   '23:59'))
+            if s <= now_m < t:
+                current = (e, s, t)
+            elif s > now_m and upcoming is None:
+                upcoming = (e, s)
+
+        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10),
+                          size_hint_y=None)
+        outer.bind(minimum_height=outer.setter('height'))
+
+        if self.edit_mode:
+            outer.add_widget(mk_btn('+  Legg til aktivitet', hex_k('#6BCB77'), h=dp(50),
+                cb=lambda *_: self._dr_entry_popup(None)))
+
+        if current:
+            e, s_m, t_m = current
+            remaining = t_m - now_m
+            elapsed   = now_m - s_m
+            duration  = max(t_m - s_m, 1)
+            if e.get('image') and os.path.exists(e['image']):
+                outer.add_widget(Image(source=e['image'], size_hint_y=None, height=dp(260),
+                    allow_stretch=True, keep_ratio=True))
+            outer.add_widget(Label(text=e['name'], size_hint_y=None, height=dp(52),
+                font_size=fsp(26), bold=True, color=(0.04, 0.10, 0.36, 1), halign='center'))
+            outer.add_widget(Label(
+                text=f'{e.get("start","")}  -  {e.get("end","")}',
+                size_hint_y=None, height=dp(28), font_size=fsp(14),
+                color=(0.4, 0.44, 0.55, 1), halign='center'))
+            outer.add_widget(Label(
+                text=f'Slutter om {self._dr_fmt(remaining)}',
+                size_hint_y=None, height=dp(34), font_size=fsp(16),
+                color=(0.25, 0.35, 0.55, 1), halign='center'))
+            pb = ProgressBar(max=duration, value=elapsed,
+                             size_hint_y=None, height=dp(20))
+            outer.add_widget(pb)
+
+        elif upcoming:
+            e, s_m = upcoming
+            wait = s_m - now_m
+            outer.add_widget(Label(text='Ingen aktiv aktivitet na',
+                size_hint_y=None, height=dp(36), font_size=fsp(17),
+                color=(0.5, 0.5, 0.5, 1), halign='center'))
+            if e.get('image') and os.path.exists(e['image']):
+                outer.add_widget(Image(source=e['image'], size_hint_y=None, height=dp(160),
+                    allow_stretch=True, keep_ratio=True, opacity=0.65))
+            outer.add_widget(Label(text=f'Neste: {e["name"]}',
+                size_hint_y=None, height=dp(44), font_size=fsp(22), bold=True,
+                color=(0.04, 0.10, 0.36, 1), halign='center'))
+            outer.add_widget(Label(
+                text=f'Starter om {self._dr_fmt(wait)}  (kl. {e.get("start","")})',
+                size_hint_y=None, height=dp(32), font_size=fsp(16),
+                color=(0.3, 0.4, 0.5, 1), halign='center'))
+        elif entries:
+            outer.add_widget(Label(text='Alle aktiviteter for i dag er ferdige.',
+                font_size=fsp(17), color=(0.4, 0.4, 0.5, 1),
+                halign='center', valign='middle'))
+        else:
+            outer.add_widget(Label(
+                text='Ingen aktiviteter lagt til.\nTrykk "Red." og "+" for aa starte.',
+                font_size=fsp(16), color=(0.45, 0.45, 0.5, 1),
+                halign='center', valign='middle'))
+
+        if entries:
+            outer.add_widget(Label(text='Plan for dagen:', size_hint_y=None, height=dp(26),
+                font_size=fsp(14), bold=True, color=(0.3, 0.3, 0.4, 1), halign='left'))
+            list_sv  = ScrollView(size_hint_y=None, height=dp(176))
+            list_box = BoxLayout(orientation='vertical', spacing=dp(4), size_hint_y=None)
+            list_box.bind(minimum_height=list_box.setter('height'))
+            for e in entries:
+                is_cur = bool(current and current[0]['id'] == e['id'])
+                row = RBox(orientation='horizontal', size_hint_y=None, height=dp(52),
+                    spacing=dp(6), padding=(dp(8), dp(4)),
+                    box_color=(0.84, 0.96, 0.84, 1.0) if is_cur else (0.97, 0.97, 1.0, 1.0),
+                    radius=dp(10))
+                row.add_widget(Label(
+                    text=f'  {e.get("start","?")} - {e.get("end","?")}  {e["name"]}',
+                    font_size=fsp(14), bold=is_cur,
+                    color=(0.04, 0.30, 0.04, 1) if is_cur else (0.08, 0.10, 0.35, 1),
+                    halign='left'))
+                if self.edit_mode:
+                    row.add_widget(mk_btn('Red.', hex_k('#C77DFF'), h=dp(44), fs=12,
+                        size_hint_x=None, width=dp(52),
+                        cb=lambda *_, en=e: self._dr_entry_popup(en)))
+                    row.add_widget(mk_btn('Slett', hex_k('#FF6B6B'), h=dp(44), fs=12,
+                        size_hint_x=None, width=dp(58),
+                        cb=lambda *_, en=e: self._dr_delete(en)))
+                list_box.add_widget(row)
+            list_sv.add_widget(list_box)
+            outer.add_widget(list_sv)
+
+        sv = ScrollView()
+        sv.add_widget(outer)
+        self._content.clear_widgets()
+        self._content.add_widget(sv)
+
+    def _dr_delete(self, entry):
+        self.data['dagsrytme'] = [
+            e for e in self.data.get('dagsrytme', []) if e['id'] != entry['id']]
+        save_struct(self.data)
+        self._build_dagsrytme_ui()
+
+    def _dr_entry_popup(self, entry):
+        """Popup for aa opprette eller redigere en dagsrytme-aktivitet."""
+        new = entry is None
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+
+        layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
+            font_size=fsp(15), color=(0, 0, 0, 1), halign='left'))
+        name_inp = TextInput(text='' if new else entry['name'],
+            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16))
+        layout.add_widget(name_inp)
+
+        time_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+        time_row.add_widget(Label(text='Fra:', size_hint_x=None, width=dp(40),
+            font_size=fsp(15), color=(0, 0, 0, 1)))
+        start_inp = TextInput(text='08:00' if new else entry.get('start', '08:00'),
+            multiline=False, size_hint_x=None, width=dp(80), font_size=sp(18),
+            size_hint_y=None, height=dp(50))
+        time_row.add_widget(start_inp)
+        time_row.add_widget(Label(text='Til:', size_hint_x=None, width=dp(36),
+            font_size=fsp(15), color=(0, 0, 0, 1)))
+        end_inp = TextInput(text='08:30' if new else entry.get('end', '08:30'),
+            multiline=False, size_hint_x=None, width=dp(80), font_size=sp(18),
+            size_hint_y=None, height=dp(50))
+        time_row.add_widget(end_inp)
+        time_row.add_widget(Label(text='(HH:MM)', size_hint_x=None, width=dp(76),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1)))
+        layout.add_widget(time_row)
+
+        chosen_img = [entry.get('image') if entry else None]
+        img_lbl = Label(
+            text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
+            size_hint_y=None, height=dp(26), font_size=fsp(13), color=(0.3, 0.3, 0.3, 1))
+        layout.add_widget(img_lbl)
+        layout.add_widget(mk_btn('Velg bilde', hex_k('#4D96FF'), h=dp(48),
+            cb=lambda *_: self._pick_image(chosen_img, img_lbl, pop_ref[0])))
+
+        btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+        def on_save(*_):
+            nm = name_inp.text.strip()
+            st = start_inp.text.strip()
+            en = end_inp.text.strip()
+            if not nm or not st or not en:
+                self._toast('Fyll inn navn og tidspunkt.')
+                return
+            if new:
+                self.data.setdefault('dagsrytme', []).append({
+                    'id': str(uuid.uuid4()), 'name': nm,
+                    'start': st, 'end': en, 'image': chosen_img[0]})
+            else:
+                entry.update({'name': nm, 'start': st, 'end': en, 'image': chosen_img[0]})
+            save_struct(self.data)
+            pop_ref[0].dismiss()
+            self._build_dagsrytme_ui()
+        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
+            cb=lambda *_: pop_ref[0].dismiss()))
+        layout.add_widget(btn_row)
+
+        pop = Popup(title='Ny aktivitet' if new else 'Rediger aktivitet',
+                    content=layout, size_hint=(0.95, 0.90))
+        pop_ref[0] = pop; pop.open()
+
+    # ══════════════════════════════════════════════════
+    #  TIDSUR
+    # ══════════════════════════════════════════════════
+
+    def _nav_tidsur(self):
+        self._push('home')
+        self._show_tidsur()
+
+    def _show_tidsur(self, **_):
+        self._cur_scr = 'tidsur'
+        self._set_title('Tidsur')
+        if not hasattr(self, '_timer_sek'):
+            self._timer_sek       = 300
+            self._timer_total_sek = 300
+            self._timer_running   = False
+            self._timer_event     = None
+
+        root = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
+
+        self._timer_display = Label(text='05:00', size_hint_y=None, height=dp(130),
+            font_size=fsp(66), bold=True, color=(0.04, 0.10, 0.40, 1), halign='center')
+        root.add_widget(self._timer_display)
+
+        self._timer_pb = ProgressBar(max=100, value=100, size_hint_y=None, height=dp(22))
+        root.add_widget(self._timer_pb)
+
+        root.add_widget(Label(text='Velg tid:', size_hint_y=None, height=dp(26),
+            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1), halign='center'))
+
+        presets = [('1 min', 60), ('2 min', 120), ('3 min', 180),
+                   ('5 min', 300), ('10 min', 600), ('15 min', 900)]
+        pg = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(120))
+        for lbl, sek in presets:
+            pg.add_widget(mk_btn(lbl, hex_k('#4D96FF'), h=dp(56), fs=14,
+                cb=lambda *_, s=sek: self._tidsur_set(s)))
+        root.add_widget(pg)
+
+        cust = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        cust.add_widget(Label(text='Min:', size_hint_x=None, width=dp(44),
+            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1)))
+        self._timer_cust_sl  = Slider(min=1, max=60, value=5, step=1)
+        self._timer_cust_lbl = Label(text='5', size_hint_x=None, width=dp(34),
+            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1))
+        self._timer_cust_sl.bind(value=lambda sl, v:
+            setattr(self._timer_cust_lbl, 'text', str(int(v))))
+        cust.add_widget(self._timer_cust_sl); cust.add_widget(self._timer_cust_lbl)
+        cust.add_widget(mk_btn('Sett', hex_k('#FF9F43'), h=dp(52), fs=14,
+            size_hint_x=None, width=dp(76),
+            cb=lambda *_: self._tidsur_set(int(self._timer_cust_sl.value) * 60)))
+        root.add_widget(cust)
+
+        ctrl = BoxLayout(size_hint_y=None, height=dp(64), spacing=dp(10))
+        self._timer_start_btn = mk_btn(
+            'Pause' if self._timer_running else 'Start',
+            hex_k('#FF9F43' if self._timer_running else '#6BCB77'),
+            h=dp(60), fs=20, cb=self._tidsur_toggle)
+        ctrl.add_widget(self._timer_start_btn)
+        ctrl.add_widget(mk_btn('Nullstill', hex_k('#FF6B6B'), h=dp(60), fs=17,
+            cb=self._tidsur_reset))
+        root.add_widget(ctrl)
+
+        self._tidsur_refresh_display()
+        self._set_content(root)
+
+    def _tidsur_set(self, seconds):
+        self._tidsur_stop()
+        self._timer_sek = self._timer_total_sek = seconds
+        self._tidsur_refresh_display()
+
+    def _tidsur_toggle(self, *_):
+        if self._timer_running:
+            self._tidsur_stop()
+        else:
+            self._tidsur_start()
+
+    def _tidsur_start(self):
+        if getattr(self, '_timer_sek', 0) <= 0:
+            return
+        self._timer_running = True
+        if hasattr(self, '_timer_start_btn'):
+            self._timer_start_btn.text      = 'Pause'
+            self._timer_start_btn.btn_color = list(hex_k('#FF9F43'))
+        self._timer_event = Clock.schedule_interval(self._tidsur_tick, 1)
+
+    def _tidsur_stop(self):
+        self._timer_running = False
+        ev = getattr(self, '_timer_event', None)
+        if ev:
+            ev.cancel()
+            self._timer_event = None
+        if hasattr(self, '_timer_start_btn') and self._timer_start_btn:
+            self._timer_start_btn.text      = 'Start'
+            self._timer_start_btn.btn_color = list(hex_k('#6BCB77'))
+
+    def _tidsur_reset(self, *_):
+        self._tidsur_stop()
+        self._timer_sek = getattr(self, '_timer_total_sek', 300)
+        self._tidsur_refresh_display()
+
+    def _tidsur_tick(self, dt):
+        self._timer_sek = max(0, getattr(self, '_timer_sek', 0) - 1)
+        if self._timer_sek <= 0:
+            self._tidsur_stop()
+            self._toast('Tiden er ute!', duration=4.0)
+        self._tidsur_refresh_display()
+
+    def _tidsur_refresh_display(self):
+        if not hasattr(self, '_timer_display') or not self._timer_display:
+            return
+        sek  = getattr(self, '_timer_sek', 0)
+        mins = sek // 60; secs = sek % 60
+        self._timer_display.text = f'{mins:02d}:{secs:02d}'
+        if hasattr(self, '_timer_pb') and self._timer_pb:
+            total = max(getattr(self, '_timer_total_sek', 1), 1)
+            self._timer_pb.value = int((sek / total) * 100)
+
+    # ══════════════════════════════════════════════════
+    #  BILDEPAR-SPILL
+    # ══════════════════════════════════════════════════
+
+    def _nav_bildepar(self):
+        all_images = [
+            {'path': it['image'], 'name': it['name']}
+            for fo in self.data.get('folders', [])
+            for it in fo.get('items', [])
+            if it.get('image') and os.path.exists(it['image'])
+        ]
+        if len(all_images) < 2:
+            self._toast('Trenger minst 2 bilder i mappene for aa spille.')
+            return
+        self._push('home')
+        self._bildepar_setup_popup(all_images)
+
+    def _bildepar_setup_popup(self, all_images):
+        max_pairs = min(6, len(all_images))
+        chosen    = [min(4, max_pairs)]
+        pop_ref   = [None]
+
+        layout = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(16))
+        layout.add_widget(Label(text='Velg antall par:', size_hint_y=None, height=dp(36),
+            font_size=fsp(18), bold=True, color=(0.08, 0.10, 0.35, 1), halign='center'))
+
+        pg = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(130))
+        pb_list = []
+        for n in range(2, max_pairs + 1):
+            b = mk_btn(f'{n} par', hex_k('#4D96FF' if n != chosen[0] else '#0D47A1'),
+                       h=dp(56), fs=15)
+            def sel(_, v=n, blist=pb_list, rng=range(2, max_pairs+1)):
+                chosen[0] = v
+                for bi, ni in zip(blist, rng):
+                    bi.btn_color = list(hex_k('#0D47A1' if ni == v else '#4D96FF'))
+            b.bind(on_release=sel); pg.add_widget(b); pb_list.append(b)
+        layout.add_widget(pg)
+
+        def on_start(*_):
+            n = chosen[0]
+            sel_imgs = random.sample(all_images, n)
+            cards = []
+            for pid, img in enumerate(sel_imgs):
+                cards.append({'pair_id': pid, 'path': img['path'], 'name': img['name']})
+                cards.append({'pair_id': pid, 'path': img['path'], 'name': img['name']})
+            random.shuffle(cards)
+            pop_ref[0].dismiss()
+            self._start_bildepar_game(cards)
+
+        layout.add_widget(mk_btn('Start spill', hex_k('#6BCB77'), h=dp(58), fs=18, cb=on_start))
+        layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
+            cb=lambda *_: (pop_ref[0].dismiss(), self.nav_stack.pop() if self.nav_stack else None)))
+        pop = Popup(title='Bildepar-spill', content=layout, size_hint=(0.88, 0.64))
+        pop_ref[0] = pop; pop.open()
+
+    def _start_bildepar_game(self, cards):
+        self._cur_scr = 'bildepar'
+        self._set_title('Bildepar-spill')
+        self._bp_cards    = cards
+        self._bp_state    = ['hidden'] * len(cards)
+        self._bp_revealed = []
+        self._bp_moves    = 0
+        self._bp_matches  = 0
+
+        root = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+        self._bp_status_lbl = Label(
+            text=f'Trekk: 0  |  Par funnet: 0 / {len(cards)//2}',
+            size_hint_y=None, height=dp(34),
+            font_size=fsp(15), color=(0.2, 0.2, 0.35, 1), halign='center')
+        root.add_widget(self._bp_status_lbl)
+
+        ncols = 3 if len(cards) <= 12 else 4
+        self._bp_grid = GridLayout(cols=ncols, spacing=dp(6), size_hint_y=None)
+        self._bp_grid.bind(minimum_height=self._bp_grid.setter('height'))
+        sv = ScrollView(); sv.add_widget(self._bp_grid); root.add_widget(sv)
+
+        self._bildepar_rebuild_grid()
+        self._set_content(root)
+
+    def _bildepar_rebuild_grid(self):
+        if not hasattr(self, '_bp_grid') or not self._bp_grid:
+            return
+        self._bp_grid.clear_widgets()
+        for idx, card in enumerate(self._bp_cards):
+            state = self._bp_state[idx]
+            h     = dp(118)
+            if state == 'matched':
+                cell = RBox(orientation='vertical', size_hint_y=None, height=h,
+                    spacing=dp(2), padding=dp(3),
+                    box_color=(0.84, 0.96, 0.84, 1.0), radius=dp(12))
+                cell.add_widget(Image(source=card['path'], size_hint=(1, None), height=dp(82),
+                    allow_stretch=True, keep_ratio=True))
+                cell.add_widget(Label(text=card['name'], font_size=fsp(11),
+                    size_hint_y=None, height=dp(26),
+                    color=(0.1, 0.45, 0.1, 1), halign='center'))
+            elif state == 'revealed':
+                cell = RBox(orientation='vertical', size_hint_y=None, height=h,
+                    spacing=dp(2), padding=dp(3),
+                    box_color=(1.0, 0.95, 0.80, 1.0), radius=dp(12))
+                cell.add_widget(Image(source=card['path'], size_hint=(1, None), height=dp(82),
+                    allow_stretch=True, keep_ratio=True))
+                cell.add_widget(Label(text=card['name'], font_size=fsp(11),
+                    size_hint_y=None, height=dp(26),
+                    color=(0.50, 0.35, 0.00, 1), halign='center'))
+            else:
+                cell = RBox(size_hint_y=None, height=h,
+                    box_color=list(hex_k('#4D96FF')), radius=dp(12))
+                btn  = RBtn(text='?', btn_color=list(hex_k('#4D96FF')),
+                    color=(1, 1, 1, 1), bold=True, font_size=fsp(32), radius=dp(12))
+                btn.bind(on_release=lambda b, i=idx: self._bildepar_tap(i))
+                cell.add_widget(btn)
+            self._bp_grid.add_widget(cell)
+
+    def _bildepar_tap(self, idx):
+        if self._bp_state[idx] != 'hidden' or len(self._bp_revealed) >= 2:
+            return
+        self._bp_state[idx] = 'revealed'
+        self._bp_revealed.append(idx)
+        self._bildepar_rebuild_grid()
+        if len(self._bp_revealed) == 2:
+            self._bp_moves += 1
+            i1, i2 = self._bp_revealed
+            if self._bp_cards[i1]['pair_id'] == self._bp_cards[i2]['pair_id']:
+                self._bp_state[i1] = self._bp_state[i2] = 'matched'
+                self._bp_revealed  = []
+                self._bp_matches  += 1
+                self._bildepar_rebuild_grid()
+                self._bildepar_update_status()
+                if self._bp_matches == len(self._bp_cards) // 2:
+                    Clock.schedule_once(lambda *_: self._bildepar_win(), 0.5)
+            else:
+                self._bildepar_update_status()
+                Clock.schedule_once(lambda *_: self._bildepar_flip_back(), 1.1)
+
+    def _bildepar_flip_back(self):
+        for i in self._bp_revealed:
+            if self._bp_state[i] == 'revealed':
+                self._bp_state[i] = 'hidden'
+        self._bp_revealed = []
+        self._bildepar_rebuild_grid()
+
+    def _bildepar_update_status(self):
+        if hasattr(self, '_bp_status_lbl') and self._bp_status_lbl:
+            self._bp_status_lbl.text = (
+                f'Trekk: {self._bp_moves}  |  '
+                f'Par funnet: {self._bp_matches} / {len(self._bp_cards) // 2}')
+
+    def _bildepar_win(self):
+        lbl = Label(
+            text=f'Gratulerer!\nAlle {self._bp_matches} par funnet\ni lopet av {self._bp_moves} trekk!',
+            font_size=fsp(19), color=(0.1, 0.5, 0.1, 1),
+            halign='center', valign='middle')
+        lbl.bind(size=lbl.setter('text_size'))
+        pop_ref = [None]
+        br = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        layout = BoxLayout(orientation='vertical', spacing=dp(16), padding=dp(20))
+        layout.add_widget(lbl); layout.add_widget(br)
+        all_imgs = [
+            {'path': it['image'], 'name': it['name']}
+            for fo in self.data.get('folders', [])
+            for it in fo.get('items', [])
+            if it.get('image') and os.path.exists(it['image'])
+        ]
+        br.add_widget(mk_btn('Spill igjen', hex_k('#6BCB77'), h=dp(52), fs=16,
+            cb=lambda *_: (pop_ref[0].dismiss(), self._bildepar_setup_popup(all_imgs))))
+        br.add_widget(mk_btn('Hjem', hex_k('#4D96FF'), h=dp(52), fs=16,
+            cb=lambda *_: (pop_ref[0].dismiss(), self.go_home())))
+        pop = Popup(title='Spill fullfort!', content=layout, size_hint=(0.82, 0.52))
+        pop_ref[0] = pop; pop.open()
 
     # ══════════════════════════════════════════════════
     #  POPUP – REDIGER MAPPE

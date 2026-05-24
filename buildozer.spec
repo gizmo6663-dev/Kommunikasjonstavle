@@ -11,7 +11,7 @@ source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf
 version = 1.2
 
 # ─── Avhengigheter ────────────────────────────────────────────────
-requirements = python3,kivy==2.3.0,pillow,android
+requirements = python3,kivy==2.3.0,pillow,android,qrcode
 
 # ─── Android-mål ──────────────────────────────────────────────────
 android.api = 34
@@ -25,18 +25,16 @@ p4a.branch = v2024.01.21
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
 # READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE: Android <= 12
-# READ_MEDIA_IMAGES:      Android 13+ (API 33+) – tilgang til bilder
-# MANAGE_EXTERNAL_STORAGE: Android 11+ (API 30+) – full /sdcard-tilgang.
-#   Nødvendig for å lese brukerens bilder og skrive til
-#   /sdcard/Documents/ uten scoped-storage-begrensninger.
-#   (Tilsvarer Eldritch Portals tillatelsessett.)
-#   Merk: krever at brukeren godtar manuelt i Settings ved første kjøring.
+# READ_MEDIA_IMAGES:  Android 13+ (API 33+) – vise bilder i filvelger.
+#                     Utløser en vanlig "Gi tilgang til bilder"-dialog.
+# WRITE_EXTERNAL_STORAGE: Android <= 12 – skrive til /sdcard/.
+# MANAGE_EXTERNAL_STORAGE er IKKE inkludert: den gir unødvendig bred
+# tilgang og utløser en skremmende "Tilgang til alle filer"-advarsel.
 #
 android.permissions = \
     android.permission.READ_EXTERNAL_STORAGE, \
     android.permission.WRITE_EXTERNAL_STORAGE, \
-    android.permission.READ_MEDIA_IMAGES, \
-    android.permission.MANAGE_EXTERNAL_STORAGE
+    android.permission.READ_MEDIA_IMAGES
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
