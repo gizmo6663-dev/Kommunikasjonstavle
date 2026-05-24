@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Kommunikasjonstavle v1.1
+Kommunikasjonstavle v1.2
 ASK-kommunikasjonsapp for barnehage og skole
 Python 3 / Kivy 2.3.0  –  Buildozer / Android
 
@@ -42,12 +42,154 @@ from kivy.graphics.texture import Texture
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.clock import Clock
+from kivy.lang import Builder
+from kivy.properties import ListProperty, NumericProperty
+
 
 try:
     from PIL import Image as PILImage, ImageDraw
     PIL_OK = True
 except ImportError:
     PIL_OK = False
+
+# ══════════════════════════════════════════════════════════════════
+#  KV-REGLER – RBtn, RBox, NavBar, BottomBar
+#
+#  Alle stilede widgets bruker utelukkende canvas.before (aldri
+#  canvas / canvas.after) for å unngå RenderContext-stack-krasj.
+#  4 lag per widget: skygge → fargefyll → mørk ytre kant → lys indre kant.
+#  Ingen glød- eller pulseffekter – de er utelatt med vilje.
+# ══════════════════════════════════════════════════════════════════
+
+_KV = """
+<RBtn>:
+    background_normal: ''
+    background_down: ''
+    background_color: 0, 0, 0, 0
+    bold: True
+    canvas.before:
+        # 1. Mjuk skygge forskjøvet ned-høyre
+        Color:
+            rgba: 0.04, 0.06, 0.18, 0.26
+        RoundedRectangle:
+            pos: self.x + dp(3), self.y - dp(5)
+            size: self.width - dp(4), self.height * 0.80
+            radius: [self.radius + dp(3)]
+        # 2. Hoved-farge (beholdes fra btn_color – ingen fargeendring)
+        Color:
+            rgba: self.btn_color
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [self.radius]
+        # 3. Mørk ytre kantlinje – gir dybde mot lys bakgrunn
+        Color:
+            rgba: 0, 0, 0, 0.20
+        Line:
+            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), self.radius)
+            width: 1.2
+        # 4. Lys indre kantlinje – imiterer lett skinnende overflate
+        Color:
+            rgba: 1, 1, 1, 0.35
+        Line:
+            rounded_rectangle: (self.x + dp(2.5), self.y + dp(2.5), self.width - dp(5), self.height - dp(5), max(1, self.radius - dp(1)))
+            width: 1.5
+
+<RBox>:
+    canvas.before:
+        # 1. Skygge
+        Color:
+            rgba: 0.04, 0.06, 0.18, 0.20
+        RoundedRectangle:
+            pos: self.x + dp(4), self.y - dp(6)
+            size: self.width - dp(6), self.height * 0.82
+            radius: [self.radius + dp(3)]
+        # 2. Bakgrunnsfarge
+        Color:
+            rgba: self.box_color
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [self.radius]
+        # 3. Mørk ytre kant
+        Color:
+            rgba: 0, 0, 0, 0.15
+        Line:
+            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), self.radius)
+            width: 1.1
+        # 4. Lys indre kant
+        Color:
+            rgba: 1, 1, 1, 0.28
+        Line:
+            rounded_rectangle: (self.x + dp(2.5), self.y + dp(2.5), self.width - dp(5), self.height - dp(5), max(1, self.radius - dp(1)))
+            width: 1.4
+
+<NavBar>:
+    canvas.before:
+        # Lys hvit bakgrunn for tydelig adskillelse fra innhold
+        Color:
+            rgba: 0.99, 0.99, 1.0, 1.0
+        Rectangle:
+            pos: self.pos
+            size: self.size
+        # Tynn separator-linje i bunn av navbaren
+        Color:
+            rgba: 0.72, 0.78, 0.92, 1.0
+        Line:
+            points: self.x, self.y, self.right, self.y
+            width: 1.4
+
+<BottomBar>:
+    canvas.before:
+        Color:
+            rgba: 0.99, 0.99, 1.0, 1.0
+        Rectangle:
+            pos: self.pos
+            size: self.size
+        # Tynn separator-linje i topp av bunnbaren
+        Color:
+            rgba: 0.72, 0.78, 0.92, 1.0
+        Line:
+            points: self.x, self.top, self.right, self.top
+            width: 1.4
+"""
+
+Builder.load_string(_KV)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  STILEDE WIDGET-KLASSER
+# ══════════════════════════════════════════════════════════════════
+
+class RBtn(Button):
+    """
+    Avrundet knapp med skygge og dobbel kantlinje.
+    Bruker btn_color (ListProperty) i stedet for background_color
+    slik at KV-regelen kan lese fargen uten å kollidere med Kivys
+    innebygde background_color (som settes til gjennomsiktig).
+    """
+    btn_color = ListProperty([0.30, 0.50, 1.0, 1.0])
+    radius    = NumericProperty(dp(12))
+
+
+class RBox(BoxLayout):
+    """
+    Avrundet kort/panel-container med skygge og dobbel kantlinje.
+    Brukes for mappe-fliser og ASK-bilde-kort.
+    """
+    box_color = ListProperty([1.0, 1.0, 1.0, 1.0])
+    radius    = NumericProperty(dp(16))
+
+
+class NavBar(BoxLayout):
+    """Navigasjonsbar med hvit bakgrunn og separator-linje i bunn."""
+    pass
+
+
+class BottomBar(BoxLayout):
+    """Bunnbar med hvit bakgrunn og separator-linje i topp."""
+    pass
+
 
 # ══════════════════════════════════════════════════════════════════
 #  KONSTANTER
@@ -146,7 +288,7 @@ def setup_logging():
         sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _excepthook
-    logging.info('Kommunikasjonstavle v1.1 starter. PIL_OK=%s', PIL_OK)
+    logging.info('Kommunikasjonstavle v1.2 starter. PIL_OK=%s', PIL_OK)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -165,16 +307,18 @@ def hex_p(h):
 
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
-    Lager en farget Kivy-knapp uten bakgrunnsbilde.
-    size_hint_y og height legges inn via setdefault slik at verdier
-    sendt via **kw (f.eks. fra btn_kw-dict) aldri kolliderer.
+    Lager en RBtn (avrundet knapp med skygge og dobbel kant).
+    bg sendes som btn_color – IKKE background_color – fordi KV-regelen
+    bruker btn_color og setter background_color til gjennomsiktig.
+    size_hint_y / height løses via setdefault for å unngå duplikat-kw.
     """
     kw.setdefault('size_hint_y', None)
     kw.setdefault('height', h)
-    b = Button(
+    b = RBtn(
         text=text,
-        font_size=sp(fs), background_normal='',
-        background_color=bg, color=fg, bold=True, **kw,
+        btn_color=list(bg),
+        font_size=sp(fs),
+        color=fg, bold=True, **kw,
     )
     if cb:
         b.bind(on_release=cb)
@@ -487,11 +631,11 @@ class KommunikasjonstavleApp(App):
         Navigasjonsbar med tekstknapper (ingen emojier – Android
         mangler emoji-fonter i Kivy-kontekst).
         """
-        bar = BoxLayout(
+        bar = NavBar(
             orientation='horizontal',
-            size_hint_y=None, height=dp(62),
-            padding=(dp(4), dp(4)),
-            spacing=dp(4),
+            size_hint_y=None, height=dp(66),
+            padding=(dp(6), dp(6)),
+            spacing=dp(6),
         )
 
         # Ingen tittel-label her lenger – tittel er i bunnbaren.
@@ -527,7 +671,7 @@ class KommunikasjonstavleApp(App):
         Flyttes hit fra navbaren slik at tittelen ikke
         konkurrerer med navigasjonsknappene oppe.
         """
-        bar = BoxLayout(
+        bar = BottomBar(
             size_hint_y=None, height=dp(40),
             padding=(dp(8), dp(4)),
         )
@@ -544,7 +688,7 @@ class KommunikasjonstavleApp(App):
         self._lbl_title.text = t
 
     def _set_edit_highlight(self, on):
-        self._btn_edit.background_color = hex_k('#7B2FBE' if on else '#C77DFF')
+        self._btn_edit.btn_color = list(hex_k('#7B2FBE' if on else '#C77DFF'))
 
     # ── Navigasjon ─────────────────────────────────────────────────
 
@@ -605,7 +749,7 @@ class KommunikasjonstavleApp(App):
                 cb=lambda *_: self._folder_popup(None),
             ))
 
-        grid = GridLayout(cols=2, spacing=dp(12), size_hint_y=None)
+        grid = GridLayout(cols=2, spacing=dp(14), padding=(dp(6), dp(8)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for fo in self.data['folders']:
             grid.add_widget(self._make_folder_tile(fo))
@@ -629,10 +773,13 @@ class KommunikasjonstavleApp(App):
         else:
             tap = lambda f=fo: self._open_folder(f)
 
-        cell = BoxLayout(
+        cell = RBox(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
             spacing=dp(4),
+            padding=(dp(4), dp(4)),
+            box_color=(1.0, 1.0, 1.0, 1.0),
+            radius=dp(18),
         )
 
         if has_img:
@@ -643,13 +790,13 @@ class KommunikasjonstavleApp(App):
             ))
 
         lbl_h = LBL_H if has_img else (dp(155) if not edit else dp(115))
-        btn = Button(
+        btn = RBtn(
             text=fo['name'],
             size_hint=(1, None), height=lbl_h,
-            background_normal='',
-            background_color=hex_k(fo['color']),
+            btn_color=list(hex_k(fo['color'])),
             color=(0.05, 0.05, 0.2, 1),
             bold=True, font_size=sp(18),
+            radius=dp(14),
         )
         btn.bind(on_release=lambda b, t=tap: t())
         cell.add_widget(btn)
@@ -697,7 +844,7 @@ class KommunikasjonstavleApp(App):
             ))
             outer.add_widget(btn_bar)
 
-        grid = GridLayout(cols=3, spacing=dp(10), size_hint_y=None)
+        grid = GridLayout(cols=3, spacing=dp(12), padding=(dp(6), dp(8)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
             grid.add_widget(self._make_item_tile(fo, it))
@@ -722,10 +869,13 @@ class KommunikasjonstavleApp(App):
         else:
             tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
 
-        cell = BoxLayout(
+        cell = RBox(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
             spacing=dp(4),
+            padding=(dp(4), dp(4)),
+            box_color=(1.0, 1.0, 1.0, 1.0),
+            radius=dp(18),
         )
 
         if has_img:
@@ -736,12 +886,12 @@ class KommunikasjonstavleApp(App):
             ))
 
         lbl_h = LBL_H if has_img else (dp(158) if not edit else dp(118))
-        btn = Button(
+        btn = RBtn(
             text=it['name'],
             size_hint=(1, None), height=lbl_h,
-            background_normal='',
-            background_color=hex_k('#4D96FF'),
+            btn_color=list(hex_k('#4D96FF')),
             color=(1, 1, 1, 1), bold=True, font_size=sp(14),
+            radius=dp(14),
         )
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
@@ -835,14 +985,14 @@ class KommunikasjonstavleApp(App):
         ]
         self._tool_btns = {}
         for key, lbl in tools:
-            b = Button(
+            b = RBtn(
                 text=lbl,
                 size_hint=(1, 1),
                 font_size=sp(14),
-                background_normal='',
-                background_color=hex_k(TOOL_COLORS[key]),
+                btn_color=list(hex_k(TOOL_COLORS[key])),
                 color=(1, 1, 1, 1),
                 bold=True,
+                radius=dp(10),
             )
             b.bind(on_release=lambda btn, k=key: self._set_draw_tool(k))
             tool_grid.add_widget(b)
@@ -902,11 +1052,11 @@ class KommunikasjonstavleApp(App):
 
         self._col_btns = {}
         for col_hex in PALETTE:
-            cb = Button(
+            cb = RBtn(
                 size_hint=(None, None),
                 size=(dp(46), dp(46)),
-                background_normal='',
-                background_color=hex_k(col_hex),
+                btn_color=list(hex_k(col_hex)),
+                radius=dp(23),
             )
             cb.bind(on_release=lambda b, c=col_hex: self._set_draw_color(c))
             pal_inner.add_widget(cb)
@@ -928,9 +1078,9 @@ class KommunikasjonstavleApp(App):
         if self.draw_canvas:
             self.draw_canvas.tool = key
         for k, btn in self._tool_btns.items():
-            btn.background_color = hex_k(
+            btn.btn_color = list(hex_k(
                 TOOL_ACTIVE[k] if k == key else TOOL_COLORS[k]
-            )
+            ))
         logging.debug('Tegne-verktoy: %s', key)
 
     def _set_draw_color(self, col):
@@ -943,15 +1093,10 @@ class KommunikasjonstavleApp(App):
             self.draw_canvas.draw_color = col
         for h, btn in self._col_btns.items():
             if h == col:
-                # Lyser opp valgt farge litt
                 r, g, b, _ = hex_k(h)
-                btn.background_color = (
-                    min(r + 0.28, 1),
-                    min(g + 0.28, 1),
-                    min(b + 0.28, 1), 1,
-                )
+                btn.btn_color = [min(r + 0.28, 1), min(g + 0.28, 1), min(b + 0.28, 1), 1]
             else:
-                btn.background_color = hex_k(h)
+                btn.btn_color = list(hex_k(h))
 
     def _on_size_change(self, slider, val):
         if self.draw_canvas:
@@ -997,10 +1142,11 @@ class KommunikasjonstavleApp(App):
         col_row      = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(8))
         col_btns     = []
         for c in FOLDER_COLORS:
-            cb = Button(
-                background_normal='', background_color=hex_k(c),
+            cb = RBtn(
+                btn_color=list(hex_k(c)),
                 size_hint=(None, None), size=(dp(54), dp(54)),
                 opacity=1.0 if chosen_color[0] == c else 0.5,
+                radius=dp(27),
             )
             def pick(b, col=c, btns=col_btns, sel=chosen_color):
                 sel[0] = col
