@@ -230,10 +230,16 @@ TOOL_ACTIVE = {
 }
 
 # Fargepalett for tegning (12 farger)
+# 24 farger i 6 kolonner × 4 rader – brukes i fargevalgpopup.
 PALETTE = [
-    '#000000', '#FFFFFF', '#EF5350', '#FF7043',
-    '#FFD600', '#43A047', '#1E88E5', '#8E24AA',
-    '#EC407A', '#6D4C41', '#78909C', '#00ACC1',
+    # Nøytrale
+    '#000000', '#333333', '#777777', '#AAAAAA', '#DDDDDD', '#FFFFFF',
+    # Varme
+    '#EF5350', '#FF7043', '#FF9800', '#FFD600', '#FFEB3B', '#FF5722',
+    # Kalde
+    '#43A047', '#4CAF50', '#1E88E5', '#3949AB', '#8E24AA', '#00ACC1',
+    # Ekstra
+    '#EC407A', '#6D4C41', '#78909C', '#00BCD4', '#9C27B0', '#795548',
 ]
 
 DEFAULT_STRUCT = {
@@ -344,6 +350,20 @@ def save_struct(d):
 
 def get_folder(d, fid):
     return next((x for x in d['folders'] if x['id'] == fid), None)
+
+def img_filter(folder, filename):
+    """
+    FileChooser-filter for bildefiler.
+    Mapper sendes alltid gjennom (nødvendig for navigasjon).
+    Filendelser sjekkes case-insensitivt – løser problemet med
+    at Kivys innebygde glob-filter er case-sensitivt på Android.
+    """
+    full = os.path.join(folder, filename)
+    if os.path.isdir(full):
+        return True
+    return filename.lower().endswith(
+        ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif')
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -999,71 +1019,71 @@ class KommunikasjonstavleApp(App):
             self._tool_btns[key] = b
         root.add_widget(tool_grid)
 
-        # ── Rad 2: Angre / Gjenta / Penselstørrelse / Lagre / Tøm ───
-        ctrl = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
-
-        ctrl.add_widget(mk_btn(
-            'Angre', hex_k('#546E7A'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(78),
+        # ── Rad 2: Angre / Gjenta / Lagre / Tom ──────────────────
+        act = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
+        act.add_widget(mk_btn(
+            'Angre', hex_k('#546E7A'), h=dp(48), fs=14,
             cb=lambda *_: self.draw_canvas and self.draw_canvas.angre(),
         ))
-        ctrl.add_widget(mk_btn(
-            'Gjenta', hex_k('#546E7A'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(78),
+        act.add_widget(mk_btn(
+            'Gjenta', hex_k('#546E7A'), h=dp(48), fs=14,
             cb=lambda *_: self.draw_canvas and self.draw_canvas.gjenta(),
         ))
+        act.add_widget(mk_btn(
+            'Lagre', hex_k('#6BCB77'), h=dp(48), fs=14,
+            cb=self._save_drawing,
+        ))
+        act.add_widget(mk_btn(
+            'Tom', hex_k('#FF6B6B'), h=dp(48), fs=14,
+            cb=lambda *_: self.draw_canvas.clear_canvas(),
+        ))
+        root.add_widget(act)
 
-        ctrl.add_widget(Label(
-            text='Str.:', size_hint_x=None, width=dp(34),
-            font_size=sp(12), color=(0.08, 0.08, 0.08, 1),
+        # ── Rad 3: Penselstørrelse – egen rad, slider får full bredde ──
+        # Slider trenger god plass og kan ikke dele rad med mange knapper.
+        size_row = BoxLayout(
+            size_hint_y=None, height=dp(54),
+            spacing=dp(8), padding=(dp(6), dp(4)),
+        )
+        size_row.add_widget(Label(
+            text='Penselstorrelse:', size_hint_x=None, width=dp(148),
+            font_size=sp(14), bold=True,
+            color=(0.10, 0.10, 0.10, 1), halign='left',
         ))
         self._size_slider = Slider(min=2, max=60, value=6, step=1)
         self._size_lbl    = Label(
-            text='6', size_hint_x=None, width=dp(28),
-            font_size=sp(12), color=(0.08, 0.08, 0.08, 1),
+            text=' 6 px', size_hint_x=None, width=dp(52),
+            font_size=sp(14), color=(0.10, 0.10, 0.10, 1),
         )
         self._size_slider.bind(value=self._on_size_change)
-        ctrl.add_widget(self._size_slider)
-        ctrl.add_widget(self._size_lbl)
+        size_row.add_widget(self._size_slider)
+        size_row.add_widget(self._size_lbl)
+        root.add_widget(size_row)
 
-        ctrl.add_widget(mk_btn(
-            'Lagre', hex_k('#6BCB77'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(78),
-            cb=self._save_drawing,
-        ))
-        ctrl.add_widget(mk_btn(
-            'Tom', hex_k('#FF6B6B'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(66),
-            cb=lambda *_: self.draw_canvas.clear_canvas(),
-        ))
-        root.add_widget(ctrl)
-
-        # ── Rad 3: Fargepalett (horisontal rullefelt) ─────────────
-        pal_sv = ScrollView(
-            size_hint_y=None, height=dp(58),
-            do_scroll_x=True, do_scroll_y=False,
+        # ── Rad 4: Fargevalg – en knapp åpner fargevalgpopup ──────
+        # Viser gjeldende farge som farget sirkel + knapp for å bytte.
+        color_row = BoxLayout(
+            size_hint_y=None, height=dp(56),
+            spacing=dp(8), padding=(dp(4), dp(4)),
         )
-        pal_inner = BoxLayout(
-            orientation='horizontal',
-            size_hint_x=None, height=dp(54),
-            spacing=dp(6), padding=(dp(4), dp(4)),
+        self._cur_color_btn = RBtn(
+            size_hint=(None, None), size=(dp(48), dp(48)),
+            btn_color=list(hex_k('#000000')),
+            radius=dp(24),
         )
-        pal_inner.bind(minimum_width=pal_inner.setter('width'))
+        self._cur_color_btn.bind(on_release=lambda *_: self._open_color_popup())
+        color_row.add_widget(self._cur_color_btn)
 
+        open_pal_btn = mk_btn(
+            'Velg farge  (24 farger)', hex_k('#4D96FF'),
+            h=dp(48), fs=14,
+        )
+        open_pal_btn.bind(on_release=lambda *_: self._open_color_popup())
+        color_row.add_widget(open_pal_btn)
+        root.add_widget(color_row)
+
+        # Initialiserer _col_btns som tom dict (brukes i _set_draw_color)
         self._col_btns = {}
-        for col_hex in PALETTE:
-            cb = RBtn(
-                size_hint=(None, None),
-                size=(dp(46), dp(46)),
-                btn_color=list(hex_k(col_hex)),
-                radius=dp(23),
-            )
-            cb.bind(on_release=lambda b, c=col_hex: self._set_draw_color(c))
-            pal_inner.add_widget(cb)
-            self._col_btns[col_hex] = cb
-
-        pal_sv.add_widget(pal_inner)
-        root.add_widget(pal_sv)
 
         # ── Tegneflate ─────────────────────────────────────────────
         self.draw_canvas = DrawCanvas()
@@ -1091,6 +1111,10 @@ class KommunikasjonstavleApp(App):
         """
         if self.draw_canvas:
             self.draw_canvas.draw_color = col
+        # Oppdater den lille fargesirkelen ved siden av "Velg farge"-knappen
+        if hasattr(self, '_cur_color_btn'):
+            self._cur_color_btn.btn_color = list(hex_k(col))
+        # Oppdater eventuelle popup-fargeknapper (hvis popupen er åpen)
         for h, btn in self._col_btns.items():
             if h == col:
                 r, g, b, _ = hex_k(h)
@@ -1101,7 +1125,7 @@ class KommunikasjonstavleApp(App):
     def _on_size_change(self, slider, val):
         if self.draw_canvas:
             self.draw_canvas.size_px = int(val)
-        self._size_lbl.text = str(int(val))
+        self._size_lbl.text = f'{int(val):2d} px' 
 
     def _save_drawing(self, *_):
         if not self.draw_canvas:
@@ -1115,6 +1139,70 @@ class KommunikasjonstavleApp(App):
         except Exception:
             logging.exception('_save_drawing: feil')
             self._toast('Feil ved lagring!')
+
+    def _open_color_popup(self):
+        """
+        Åpner et popup-vindu med alle 24 farger i et 6×4-rutenett.
+        Valg av farge setter tegnefargen og lukker popupen.
+        _col_btns oppdateres her slik at _set_draw_color kan markere
+        gjeldende valg med lys uthevning.
+        """
+        layout = BoxLayout(
+            orientation='vertical',
+            spacing=dp(10), padding=dp(14),
+        )
+
+        # Overskrift
+        layout.add_widget(Label(
+            text='Velg tegnefargen din:',
+            size_hint_y=None, height=dp(32),
+            font_size=sp(16), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            halign='center', valign='middle',
+        ))
+
+        # 6×4-rutenett med fargeknapper
+        grid = GridLayout(
+            cols=6, spacing=dp(8),
+            size_hint_y=None,
+        )
+        grid.bind(minimum_height=grid.setter('height'))
+
+        pop_ref = [None]
+        self._col_btns = {}
+
+        for col_hex in PALETTE:
+            cb = RBtn(
+                size_hint=(None, None),
+                size=(dp(52), dp(52)),
+                btn_color=list(hex_k(col_hex)),
+                radius=dp(26),
+            )
+            def pick(b, c=col_hex):
+                self._set_draw_color(c)
+                pop_ref[0].dismiss()
+            cb.bind(on_release=pick)
+            grid.add_widget(cb)
+            self._col_btns[col_hex] = cb
+
+        layout.add_widget(grid)
+
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=15,
+            cb=lambda *_: pop_ref[0].dismiss(),
+        ))
+
+        pop = Popup(
+            title='Farger', content=layout,
+            size_hint=(0.92, 0.82),
+        )
+        pop_ref[0] = pop
+
+        # Marker gjeldende farge i popupen med det samme
+        if self.draw_canvas:
+            self._set_draw_color(self.draw_canvas.draw_color)
+
+        pop.open()
 
     # ══════════════════════════════════════════════════
     #  POPUP – REDIGER MAPPE
@@ -1289,7 +1377,7 @@ class KommunikasjonstavleApp(App):
         fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
         fc = FileChooserListView(
             path='/sdcard',
-            filters=['*.png', '*.jpg', '*.jpeg', '*.webp', '*.bmp'],
+            filters=[img_filter],
         )
         fc_layout.add_widget(fc)
 
@@ -1325,7 +1413,7 @@ class KommunikasjonstavleApp(App):
         fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
         fc = FileChooserListView(
             path='/sdcard',
-            filters=['*.png', '*.jpg', '*.jpeg', '*.webp', '*.bmp'],
+            filters=[img_filter],
         )
         fc_layout.add_widget(fc)
 
