@@ -61,8 +61,8 @@ STRUCT_FILE  = os.path.join(DATA_DIR, 'structure.json')
 LOG_FILE     = os.path.join(DATA_DIR, 'crash.log')
 DOWNLOAD_DIR = '/sdcard/Download'
 
-CANVAS_W = 1280
-CANVAS_H = 960
+CANVAS_W = 960
+CANVAS_H = 1280   # Portrettformat passer mobilskjerm
 
 FOLDER_COLORS = [
     '#FFD93D', '#FF6B6B', '#6BCB77', '#4D96FF',
@@ -249,6 +249,9 @@ class DrawCanvas(Image):
         self.tool       = 'pen'
         self.draw_color = '#000000'  # Tegnefargen (IKKE Image.color!)
         self.size_px    = 6
+        self._history   = []   # Angre-bunke (PIL-kopier)
+        self._redo      = []   # Gjenta-bunke
+        self._MAX_HIST  = 20
         self._refresh()
 
     # ── Koordinater ───────────────────────────────────────────────
@@ -295,12 +298,15 @@ class DrawCanvas(Image):
             self._start = pt
             self._prev  = pt
             if self.tool == 'fill':
+                self._push_history()
                 self._do_fill(pt)
                 self._refresh()
             elif self.tool in ('pen', 'eraser'):
+                self._push_history()
                 self._draw_dot(pt)
                 self._refresh()
             elif self.tool in ('line', 'rect', 'ellipse'):
+                self._push_history()
                 self._base = self._pil.copy()
         except Exception:
             logging.exception('on_touch_down: PIL-feil')
@@ -390,6 +396,7 @@ class DrawCanvas(Image):
     # ── Offentlige metoder ─────────────────────────────────────────
 
     def clear_canvas(self, *_):
+        self._push_history()
         self._pil = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
         self._refresh()
 
@@ -403,6 +410,39 @@ class DrawCanvas(Image):
             self._refresh()
         except Exception:
             logging.exception('load_from: feil ved bildeopplasting')
+
+    # ── Angre / Gjenta ─────────────────────────────────────────────
+
+    def _push_history(self):
+        """
+        Lagrer en kopi av gjeldende PIL-bilde til angre-bunken.
+        Kalles FØR en destruktiv operasjon starter.
+        Tømmer gjenta-bunken (ny handling gjør gjenta ugyldig).
+        """
+        self._history.append(self._pil.copy())
+        if len(self._history) > self._MAX_HIST:
+            self._history.pop(0)
+        self._redo.clear()
+
+    def angre(self, *_):
+        """Angrer siste handling (Ctrl+Z-ekvivalent)."""
+        if not self._history:
+            logging.debug('angre: tom historikk')
+            return
+        self._redo.append(self._pil.copy())
+        self._pil = self._history.pop()
+        self._refresh()
+        logging.debug('angre: %d steg igjen i historikk', len(self._history))
+
+    def gjenta(self, *_):
+        """Gjentar sist angret handling."""
+        if not self._redo:
+            logging.debug('gjenta: tom gjenta-bunke')
+            return
+        self._history.append(self._pil.copy())
+        self._pil = self._redo.pop()
+        self._refresh()
+        logging.debug('gjenta: %d steg igjen i gjenta-bunke', len(self._redo))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -432,6 +472,8 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._navbar)
         self._content = BoxLayout(orientation='vertical')
         root.add_widget(self._content)
+        self._bottombar = self._build_bottombar()
+        root.add_widget(self._bottombar)
 
         self._show_home()
         return root
@@ -452,9 +494,9 @@ class KommunikasjonstavleApp(App):
             spacing=dp(4),
         )
 
-        # btn_kw innehar size_hint_y og height – send IKKE h= til mk_btn i tillegg.
+        # Ingen tittel-label her lenger – tittel er i bunnbaren.
+        # Knappene fordeles jevnt (size_hint_x=1, ikke fast bredde).
         btn_kw = dict(
-            size_hint_x=None, width=dp(72),
             size_hint_y=None, height=dp(54),
         )
 
@@ -466,10 +508,6 @@ class KommunikasjonstavleApp(App):
             'Hjem', hex_k('#6BCB77'), fs=13,
             cb=self.go_home, **btn_kw,
         )
-        self._lbl_title = Label(
-            text=APP_TITLE, bold=True, font_size=sp(17),
-            color=(0.08, 0.10, 0.35, 1),
-        )
         self._btn_draw = mk_btn(
             'Tegn', hex_k('#FF9F43'), fs=13,
             cb=self.go_draw, **btn_kw,
@@ -479,9 +517,27 @@ class KommunikasjonstavleApp(App):
             cb=self.toggle_edit, **btn_kw,
         )
 
-        for w in [self._btn_back, self._btn_home, self._lbl_title,
-                  self._btn_draw, self._btn_edit]:
+        for w in [self._btn_back, self._btn_home, self._btn_draw, self._btn_edit]:
             bar.add_widget(w)
+        return bar
+
+    def _build_bottombar(self):
+        """
+        Bunnbar med app-tittel / konteksttittel.
+        Flyttes hit fra navbaren slik at tittelen ikke
+        konkurrerer med navigasjonsknappene oppe.
+        """
+        bar = BoxLayout(
+            size_hint_y=None, height=dp(40),
+            padding=(dp(8), dp(4)),
+        )
+        self._lbl_title = Label(
+            text=APP_TITLE, bold=True, font_size=sp(16),
+            color=(0.08, 0.10, 0.35, 1),
+            halign='center', valign='middle',
+        )
+        self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
+        bar.add_widget(self._lbl_title)
         return bar
 
     def _set_title(self, t):
@@ -716,11 +772,25 @@ class KommunikasjonstavleApp(App):
         self._cur_scr = 'image'
         self._set_title(name)
 
-        layout = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(10))
+        layout = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(8))
+
+        # Bildet fyller tilgjengelig plass
         layout.add_widget(Image(
             source=path,
             allow_stretch=True, keep_ratio=True,
         ))
+
+        # Etikett (bildets navn) rett under bildet
+        name_lbl = Label(
+            text=name,
+            size_hint_y=None, height=dp(48),
+            font_size=sp(20), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            halign='center', valign='middle',
+        )
+        name_lbl.bind(size=name_lbl.setter('text_size'))
+        layout.add_widget(name_lbl)
+
         layout.add_widget(mk_btn(
             'Last ned til enheten',
             hex_k('#6BCB77'), h=dp(54),
@@ -779,28 +849,41 @@ class KommunikasjonstavleApp(App):
             self._tool_btns[key] = b
         root.add_widget(tool_grid)
 
-        # ── Rad 2: Penselstørrelse + Lagre/Tøm ────────────────────
-        ctrl = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+        # ── Rad 2: Angre / Gjenta / Penselstørrelse / Lagre / Tøm ───
+        ctrl = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(5))
+
+        ctrl.add_widget(mk_btn(
+            'Angre', hex_k('#546E7A'), h=dp(46), fs=13,
+            size_hint_x=None, width=dp(78),
+            cb=lambda *_: self.draw_canvas and self.draw_canvas.angre(),
+        ))
+        ctrl.add_widget(mk_btn(
+            'Gjenta', hex_k('#546E7A'), h=dp(46), fs=13,
+            size_hint_x=None, width=dp(78),
+            cb=lambda *_: self.draw_canvas and self.draw_canvas.gjenta(),
+        ))
+
         ctrl.add_widget(Label(
-            text='Str.:', size_hint_x=None, width=dp(38),
-            font_size=sp(13), color=(0.08, 0.08, 0.08, 1),
+            text='Str.:', size_hint_x=None, width=dp(34),
+            font_size=sp(12), color=(0.08, 0.08, 0.08, 1),
         ))
         self._size_slider = Slider(min=2, max=60, value=6, step=1)
         self._size_lbl    = Label(
-            text='6', size_hint_x=None, width=dp(34),
-            font_size=sp(13), color=(0.08, 0.08, 0.08, 1),
+            text='6', size_hint_x=None, width=dp(28),
+            font_size=sp(12), color=(0.08, 0.08, 0.08, 1),
         )
         self._size_slider.bind(value=self._on_size_change)
         ctrl.add_widget(self._size_slider)
         ctrl.add_widget(self._size_lbl)
+
         ctrl.add_widget(mk_btn(
             'Lagre', hex_k('#6BCB77'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(84),
+            size_hint_x=None, width=dp(78),
             cb=self._save_drawing,
         ))
         ctrl.add_widget(mk_btn(
             'Tom', hex_k('#FF6B6B'), h=dp(46), fs=13,
-            size_hint_x=None, width=dp(72),
+            size_hint_x=None, width=dp(66),
             cb=lambda *_: self.draw_canvas.clear_canvas(),
         ))
         root.add_widget(ctrl)
