@@ -14,15 +14,22 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Bygg APK med Buildozer (Docker)
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: android debug
-          buildozer_version: stable
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/home/user/hostcwd \
+            ghcr.io/kivy/buildozer:latest \
+            android debug
+
+      - name: Finn APK-fil
+        id: find_apk
+        run: |
+          APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "Fant APK: $APK"
 
       - name: Last opp APK som artefakt
         uses: actions/upload-artifact@v4
         with:
           name: kommunikasjonstavle-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
