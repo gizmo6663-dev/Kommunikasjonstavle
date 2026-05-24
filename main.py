@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Kommunikasjonstavle
+Kommunikasjonstavle v1.1
 ASK-kommunikasjonsapp for barnehage og skole
 Python 3 / Kivy 2.3.0  –  Buildozer / Android
 
-Arkitektur:
-  - Ingen ScreenManager; innholdsflaten bygges om ved navigasjon (på forespørsel)
-  - Ingen egne canvas-operasjoner i UI-widget (jf. Eldritch Portal-arkitektur)
-  - Tegning via PIL/Pillow, vist som Kivy Image-tekstur
-  - Data lagret i /sdcard/Documents/Kommunikasjonstavle/structure.json
-  - Bilder i /sdcard/Documents/Kommunikasjonstavle/images/
-  - Tegninger i /sdcard/Documents/Kommunikasjonstavle/drawings/
+Endringslogg v1.1:
+  - KRITISK FIKS: DrawCanvas.color omdøpt til draw_color.
+    Image-widgeten har en innebygd 'color'-egenskap (bilde-tint),
+    som forårsaket bakgrunnsfargeendring og krasj ved touch.
+  - Alle emojisymboler erstattet med vanlig tekst (Android mangler emoji-font).
+  - try/except rundt alle PIL-operasjoner med logging til fil.
+  - Koordinatsjekk (divisjon med null) i _kv2pil.
+  - Verktøyrad delt i to rader; fargepalett i horisontal ScrollView.
+  - Bedre dimensjoner og padding gjennom hele appen.
+  - Fil-basert krasjlogg: /sdcard/Documents/Kommunikasjonstavle/crash.log
+  - sys.excepthook fanger ubehandlede unntak til loggfil + ADB logcat.
 """
 
 import os
+import sys
 import json
 import uuid
 import shutil
+import logging
+import traceback as _tb
 from datetime import datetime
 
 from kivy.app import App
@@ -51,61 +58,103 @@ DATA_DIR     = '/sdcard/Documents/Kommunikasjonstavle'
 IMG_DIR      = os.path.join(DATA_DIR, 'images')
 DRAW_DIR     = os.path.join(DATA_DIR, 'drawings')
 STRUCT_FILE  = os.path.join(DATA_DIR, 'structure.json')
+LOG_FILE     = os.path.join(DATA_DIR, 'crash.log')
 DOWNLOAD_DIR = '/sdcard/Download'
 
-# Tegne-canvas oppløsning
 CANVAS_W = 1280
 CANVAS_H = 960
 
-# Fargepalett for mapper
 FOLDER_COLORS = [
     '#FFD93D', '#FF6B6B', '#6BCB77', '#4D96FF',
     '#C77DFF', '#FF9F43', '#4ECDC4', '#FF6BB5',
 ]
 
-# Tegne-verktøy: farge → Kivy hex
+# Bakgrunnsfarger for verktøyknapper (normal / aktiv)
 TOOL_COLORS = {
     'pen':     '#4D96FF',
-    'eraser':  '#9CA3AF',
-    'line':    '#228B22',
-    'rect':    '#FF9F43',
-    'ellipse': '#FF69B4',
-    'fill':    '#7B2FBE',
+    'eraser':  '#78909C',
+    'line':    '#2E7D32',
+    'rect':    '#E65100',
+    'ellipse': '#AD1457',
+    'fill':    '#6A1B9A',
 }
 TOOL_ACTIVE = {
-    'pen':     '#1a5ccc',
-    'eraser':  '#444444',
-    'line':    '#145214',
-    'rect':    '#b36800',
-    'ellipse': '#b00066',
-    'fill':    '#4a0077',
+    'pen':     '#0D47A1',
+    'eraser':  '#263238',
+    'line':    '#1B5E20',
+    'rect':    '#BF360C',
+    'ellipse': '#880E4F',
+    'fill':    '#4A148C',
 }
 
-# Fargepalett for tegning
+# Fargepalett for tegning (12 farger)
 PALETTE = [
-    '#000000', '#FFFFFF', '#FF0000', '#FF8C00',
-    '#FFD700', '#228B22', '#1E90FF', '#8B008B',
-    '#FF69B4', '#8B4513', '#808080', '#00CED1',
+    '#000000', '#FFFFFF', '#EF5350', '#FF7043',
+    '#FFD600', '#43A047', '#1E88E5', '#8E24AA',
+    '#EC407A', '#6D4C41', '#78909C', '#00ACC1',
 ]
 
-# Standard mappestruktur ved første oppstart
 DEFAULT_STRUCT = {
     "folders": [
         {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": []},
         {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": []},
-        {"id": "f3", "name": "Følelser",      "color": "#4D96FF", "image": None, "items": []},
+        {"id": "f3", "name": "Foelelser",     "color": "#4D96FF", "image": None, "items": []},
         {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": []},
-        {"id": "f5", "name": "Klær",          "color": "#C77DFF", "image": None, "items": []},
+        {"id": "f5", "name": "Klaer",         "color": "#C77DFF", "image": None, "items": []},
         {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": []},
     ]
 }
+
+# ══════════════════════════════════════════════════════════════════
+#  KRASJLOGGING
+# ══════════════════════════════════════════════════════════════════
+
+def setup_logging():
+    """
+    Setter opp fil-basert logging til crash.log og ADB logcat (stdout).
+    sys.excepthook fanger opp alle ubehandlede Python-unntak.
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        logging.basicConfig(
+            filename=LOG_FILE,
+            level=logging.DEBUG,
+            format='%(asctime)s [%(levelname)s] %(funcName)s: %(message)s',
+            encoding='utf-8',
+        )
+    except Exception:
+        # Fallback: log til stderr hvis filen ikke kan opprettes
+        logging.basicConfig(
+            stream=sys.stderr,
+            level=logging.DEBUG,
+            format='%(asctime)s [%(levelname)s] %(funcName)s: %(message)s',
+        )
+
+    # Dupliser til stdout slik at ADB logcat fanger det
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.DEBUG)
+    console.setFormatter(logging.Formatter(
+        '[KT] %(levelname)s %(funcName)s: %(message)s'
+    ))
+    logging.getLogger().addHandler(console)
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.critical(
+            'Ubehandlet unntak:\n%s',
+            ''.join(_tb.format_exception(exc_type, exc_value, exc_tb)),
+        )
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+    logging.info('Kommunikasjonstavle v1.1 starter. PIL_OK=%s', PIL_OK)
+
 
 # ══════════════════════════════════════════════════════════════════
 #  HJELPERE
 # ══════════════════════════════════════════════════════════════════
 
 def hex_k(h):
-    """Hex-farge (#RRGGBB) → Kivy RGBA-tuple (0–1-skala)."""
+    """Hex-farge (#RRGGBB) → Kivy RGBA-tuple (0–1)."""
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) / 255 for i in (0, 2, 4)) + (1,)
 
@@ -114,8 +163,8 @@ def hex_p(h):
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=16, h=dp(56), cb=None, **kw):
-    """Lager en flat farget knapp med tekst."""
+def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
+    """Lager en farget Kivy-knapp uten bakgrunnsbilde."""
     b = Button(
         text=text, size_hint_y=None, height=h,
         font_size=sp(fs), background_normal='',
@@ -126,35 +175,33 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=16, h=dp(56), cb=None, **kw):
     return b
 
 def load_struct():
-    """Leser structure.json, faller tilbake til standard hvis mangler/ugyldig."""
     if os.path.exists(STRUCT_FILE):
         try:
             with open(STRUCT_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error('Feil ved lasting av structure.json: %s', e)
     import copy
     return copy.deepcopy(DEFAULT_STRUCT)
 
 def save_struct(d):
-    """Skriver structure.json til disk."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
+    try:
+        with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error('Feil ved lagring av structure.json: %s', e)
 
 def get_folder(d, fid):
-    """Returnerer mappeobjekt med gitt id, eller None."""
     return next((x for x in d['folders'] if x['id'] == fid), None)
+
 
 # ══════════════════════════════════════════════════════════════════
 #  WIDGET: TRYKKBART BILDE
 # ══════════════════════════════════════════════════════════════════
 
 class TappableImage(Image):
-    """
-    Image-widget som utfører en handling ved touch.
-    Brukes for ASK-bilder og mappebilder som skal kunne trykkes på.
-    """
+    """Image-widget med on_touch_down-binding til en callback."""
     def __init__(self, action, **kw):
         super().__init__(**kw)
         self._action = action
@@ -165,128 +212,153 @@ class TappableImage(Image):
             return True
         return super().on_touch_down(touch)
 
+
 # ══════════════════════════════════════════════════════════════════
-#  WIDGET: TEGNE-CANVAS (PIL-basert)
+#  WIDGET: TEGNE-CANVAS
 # ══════════════════════════════════════════════════════════════════
 
 class DrawCanvas(Image):
     """
-    Tegne-canvas implementert med PIL/Pillow.
-    Vises som Kivy Image-widget via Texture.
+    PIL/Pillow-basert tegneflate, vist via Kivy Texture.
+
+    VIKTIG: bruker 'draw_color' (ikke 'color') fordi Kivy Image
+    har en innebygd 'color'-egenskap som styrer bilde-tint (RGBA).
+    Hvis vi hadde brukt 'self.color' ville hele lerretsbildet fått
+    endret farge ved hvert fargevalg, og PIL-koden ville lest feil verdi.
 
     Koordinatsystem:
-      Kivy: (0,0) = nederst-venstre
-      PIL:  (0,0) = øverst-venstre
-    Konvertering håndteres i _kv2pil().
+      Kivy: origo nederst-venstre
+      PIL:  origo øverst-venstre
+    Konvertering i _kv2pil().
 
     Verktøy: pen, eraser, line, rect, ellipse, fill
     """
+
     def __init__(self, **kw):
         super().__init__(allow_stretch=True, keep_ratio=False, **kw)
-        self._pil    = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
-        self._base   = None   # Kopi av canvas før shape-tegning starter (rubber-band)
-        self._prev   = None   # Forrige touch-punkt (freehand-linje)
-        self._start  = None   # Startpunkt for shape-verktøy
-        self.tool    = 'pen'
-        self.color   = '#000000'
-        self.size_px = 6
+        self._pil       = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
+        self._base      = None   # Snapshot for rubber-band-tegning
+        self._prev      = None   # Forrige touch-punkt (freehand)
+        self._start     = None   # Startpunkt for shape-verktøy
+        self.tool       = 'pen'
+        self.draw_color = '#000000'  # Tegnefargen (IKKE Image.color!)
+        self.size_px    = 6
         self._refresh()
 
-    # ── Koordinat-konvertering ────────────────────────────────────
+    # ── Koordinater ───────────────────────────────────────────────
 
     def _kv2pil(self, kx, ky):
-        """Kivy touch-koordinater → PIL piksel-koordinater."""
+        """
+        Konverterer Kivy-touch-koordinater til PIL-pikselkoordinater.
+        Returnerer (0,0) og logger en advarsel hvis widgeten ennå
+        ikke har fått sin endelige størrelse (divisjon-med-null-vern).
+        """
+        if self.width == 0 or self.height == 0:
+            logging.warning('_kv2pil: width=%s height=%s – canvas ikke layoutet ennå', self.width, self.height)
+            return (0, 0)
         px = int((kx - self.x) / self.width  * CANVAS_W)
         py = int((1.0 - (ky - self.y) / self.height) * CANVAS_H)
-        return (max(0, min(CANVAS_W - 1, px)),
-                max(0, min(CANVAS_H - 1, py)))
+        return (
+            max(0, min(CANVAS_W - 1, px)),
+            max(0, min(CANVAS_H - 1, py)),
+        )
 
-    # ── Oppdater Kivy-tekstur ─────────────────────────────────────
+    # ── Teksturoppdatering ─────────────────────────────────────────
 
     def _refresh(self):
-        """Konverterer PIL-bilde til Kivy-tekstur og oppdaterer widget."""
+        """Konverterer PIL-bildet til en Kivy-tekstur og oppdaterer widgeten."""
         if not PIL_OK:
             return
-        raw = self._pil.convert('RGBA').tobytes()
-        tex = Texture.create(size=(CANVAS_W, CANVAS_H), colorfmt='rgba')
-        tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
-        tex.flip_vertical()
-        self.texture = tex
+        try:
+            raw = self._pil.convert('RGBA').tobytes()
+            tex = Texture.create(size=(CANVAS_W, CANVAS_H), colorfmt='rgba')
+            tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
+            tex.flip_vertical()
+            self.texture = tex
+        except Exception:
+            logging.exception('_refresh: feil ved teksturoppdatering')
 
-    # ── Touch-hendelser ───────────────────────────────────────────
+    # ── Touch-hendelser ────────────────────────────────────────────
 
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
             return False
         touch.grab(self)
-        pt = self._kv2pil(*touch.pos)
-        self._start = pt
-        self._prev  = pt
-
-        if self.tool == 'fill':
-            self._do_fill(pt)
-            self._refresh()
-        elif self.tool in ('pen', 'eraser'):
-            self._draw_dot(pt)
-            self._refresh()
-        elif self.tool in ('line', 'rect', 'ellipse'):
-            self._base = self._pil.copy()   # Snapshot for rubber-band
+        try:
+            pt = self._kv2pil(*touch.pos)
+            self._start = pt
+            self._prev  = pt
+            if self.tool == 'fill':
+                self._do_fill(pt)
+                self._refresh()
+            elif self.tool in ('pen', 'eraser'):
+                self._draw_dot(pt)
+                self._refresh()
+            elif self.tool in ('line', 'rect', 'ellipse'):
+                self._base = self._pil.copy()
+        except Exception:
+            logging.exception('on_touch_down: PIL-feil')
         return True
 
     def on_touch_move(self, touch):
         if touch.grab_current is not self:
             return False
-        pt = self._kv2pil(*touch.pos)
-
-        if self.tool in ('pen', 'eraser'):
-            if self._prev:
-                self._draw_seg(self._prev, pt)
-            self._prev = pt
-            self._refresh()
-        elif self.tool in ('line', 'rect', 'ellipse') and self._base:
-            # Gjenopprett snapshot og tegn oppdatert shape (rubber-band)
-            self._pil = self._base.copy()
-            self._draw_shape(self._start, pt)
-            self._refresh()
+        try:
+            pt = self._kv2pil(*touch.pos)
+            if self.tool in ('pen', 'eraser'):
+                if self._prev:
+                    self._draw_seg(self._prev, pt)
+                self._prev = pt
+                self._refresh()
+            elif self.tool in ('line', 'rect', 'ellipse') and self._base:
+                self._pil = self._base.copy()
+                self._draw_shape(self._start, pt)
+                self._refresh()
+        except Exception:
+            logging.exception('on_touch_move: PIL-feil')
         return True
 
     def on_touch_up(self, touch):
         if touch.grab_current is not self:
             return False
         touch.ungrab(self)
-        pt = self._kv2pil(*touch.pos)
-
-        if self.tool in ('line', 'rect', 'ellipse') and self._base:
-            self._pil = self._base.copy()
-            self._draw_shape(self._start, pt)
-            self._refresh()
-            self._base = None
-
+        try:
+            pt = self._kv2pil(*touch.pos)
+            if self.tool in ('line', 'rect', 'ellipse') and self._base:
+                self._pil = self._base.copy()
+                self._draw_shape(self._start, pt)
+                self._refresh()
+                self._base = None
+        except Exception:
+            logging.exception('on_touch_up: PIL-feil')
         self._start = None
         self._prev  = None
         return True
 
-    # ── PIL-tegne-primitiver ──────────────────────────────────────
+    # ── PIL-primitiver ─────────────────────────────────────────────
 
     def _col(self):
-        return (255, 255, 255) if self.tool == 'eraser' else hex_p(self.color)
+        """Returnerer gjeldende farge som PIL RGB-tuple."""
+        return (255, 255, 255) if self.tool == 'eraser' else hex_p(self.draw_color)
 
     def _draw_dot(self, pt):
         d = ImageDraw.Draw(self._pil)
-        r = self.size_px // 2
+        r = max(1, self.size_px // 2)
         x, y = pt
         d.ellipse([x - r, y - r, x + r, y + r], fill=self._col())
 
     def _draw_seg(self, p1, p2):
         d = ImageDraw.Draw(self._pil)
-        d.line([p1, p2], fill=self._col(), width=self.size_px)
+        d.line([p1, p2], fill=self._col(), width=max(1, self.size_px))
 
     def _draw_shape(self, p1, p2):
+        if not p1 or not p2:
+            return
         d = ImageDraw.Draw(self._pil)
         x0, y0 = min(p1[0], p2[0]), min(p1[1], p2[1])
         x1, y1 = max(p1[0], p2[0]), max(p1[1], p2[1])
-        c = hex_p(self.color)
-        w = self.size_px
+        c = hex_p(self.draw_color)
+        w = max(1, self.size_px)
         if self.tool == 'line':
             d.line([p1, p2], fill=c, width=w)
         elif self.tool == 'rect':
@@ -295,10 +367,21 @@ class DrawCanvas(Image):
             d.ellipse([x0, y0, x1, y1], outline=c, width=w)
 
     def _do_fill(self, pt):
-        """Floodfill fra touch-punkt."""
-        ImageDraw.floodfill(self._pil, pt, hex_p(self.color), thresh=40)
+        """
+        Floodfill (malingsspann): fyller sammenhengende fargeomraade
+        fra touch-punktet med gjeldende draw_color.
+        thresh=30 gir toleranse for anti-aliasede kanter.
+        """
+        try:
+            ImageDraw.floodfill(
+                self._pil, pt,
+                hex_p(self.draw_color),
+                thresh=30,
+            )
+        except Exception:
+            logging.exception('_do_fill: floodfill-feil')
 
-    # ── Offentlige metoder ────────────────────────────────────────
+    # ── Offentlige metoder ─────────────────────────────────────────
 
     def clear_canvas(self, *_):
         self._pil = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
@@ -308,9 +391,13 @@ class DrawCanvas(Image):
         self._pil.save(path)
 
     def load_from(self, path):
-        self._pil = PILImage.open(path).convert('RGB').resize(
-            (CANVAS_W, CANVAS_H), PILImage.LANCZOS)
-        self._refresh()
+        try:
+            self._pil = PILImage.open(path).convert('RGB').resize(
+                (CANVAS_W, CANVAS_H), PILImage.LANCZOS)
+            self._refresh()
+        except Exception:
+            logging.exception('load_from: feil ved bildeopplasting')
+
 
 # ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
@@ -321,21 +408,19 @@ class KommunikasjonstavleApp(App):
     # ── Oppstart ──────────────────────────────────────────────────
 
     def build(self):
+        setup_logging()
         Window.clearcolor = (0.95, 0.96, 0.98, 1)
 
-        # Sikre at alle datamapper finnes
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
 
-        # App-tilstand
         self.data        = load_struct()
-        self.nav_stack   = []       # [(screen_name, kwargs)]
-        self.cur_folder  = None     # ID på åpen mappe
+        self.nav_stack   = []
+        self.cur_folder  = None
         self.edit_mode   = False
-        self.draw_canvas = None     # Referanse til aktiv DrawCanvas
+        self.draw_canvas = None
         self._cur_scr    = 'home'
 
-        # Rot-layout: NavBar øverst, innholdsflate under
         root = BoxLayout(orientation='vertical')
         self._navbar = self._build_navbar()
         root.add_widget(self._navbar)
@@ -350,31 +435,38 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def _build_navbar(self):
+        """
+        Navigasjonsbar med tekstknapper (ingen emojier – Android
+        mangler emoji-fonter i Kivy-kontekst).
+        """
         bar = BoxLayout(
             orientation='horizontal',
-            size_hint_y=None, height=dp(68),
-            padding=dp(6), spacing=dp(6),
+            size_hint_y=None, height=dp(62),
+            padding=(dp(4), dp(4)),
+            spacing=dp(4),
         )
 
+        btn_kw = dict(size_hint_x=None, width=dp(72), size_hint_y=None, height=dp(54))
+
         self._btn_back = mk_btn(
-            '←', hex_k('#4D96FF'), h=dp(56), fs=24,
-            cb=self.go_back, size_hint_x=None, width=dp(64),
+            '<  Bak', hex_k('#4D96FF'), fs=13, h=dp(54),
+            cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
-            '🏠', hex_k('#6BCB77'), h=dp(56), fs=22,
-            cb=self.go_home, size_hint_x=None, width=dp(64),
+            'Hjem', hex_k('#6BCB77'), fs=13, h=dp(54),
+            cb=self.go_home, **btn_kw,
         )
         self._lbl_title = Label(
-            text=APP_TITLE, bold=True, font_size=sp(18),
+            text=APP_TITLE, bold=True, font_size=sp(17),
             color=(0.08, 0.10, 0.35, 1),
         )
         self._btn_draw = mk_btn(
-            '🎨', hex_k('#FF9F43'), h=dp(56), fs=22,
-            cb=self.go_draw, size_hint_x=None, width=dp(64),
+            'Tegn', hex_k('#FF9F43'), fs=13, h=dp(54),
+            cb=self.go_draw, **btn_kw,
         )
         self._btn_edit = mk_btn(
-            '✏️', hex_k('#C77DFF'), h=dp(56), fs=22,
-            cb=self.toggle_edit, size_hint_x=None, width=dp(64),
+            'Red.', hex_k('#C77DFF'), fs=13, h=dp(54),
+            cb=self.toggle_edit, **btn_kw,
         )
 
         for w in [self._btn_back, self._btn_home, self._lbl_title,
@@ -388,7 +480,7 @@ class KommunikasjonstavleApp(App):
     def _set_edit_highlight(self, on):
         self._btn_edit.background_color = hex_k('#7B2FBE' if on else '#C77DFF')
 
-    # ── Navigasjons-metoder ───────────────────────────────────────
+    # ── Navigasjon ─────────────────────────────────────────────────
 
     def go_back(self, *_):
         if self.nav_stack:
@@ -404,7 +496,6 @@ class KommunikasjonstavleApp(App):
         self._show_home()
 
     def go_draw(self, *_):
-        # Lagre nåværende skjerm i stakken for Tilbake-knappen
         if self._cur_scr == 'folder':
             self.nav_stack.append(('folder', {'fid': self.cur_folder}))
         elif self._cur_scr not in ('draw',):
@@ -412,7 +503,6 @@ class KommunikasjonstavleApp(App):
         self._show_draw()
 
     def toggle_edit(self, *_):
-        # Toggler redigeringsmodus og bygger om gjeldende skjerm
         if self._cur_scr in ('draw', 'image'):
             return
         self.edit_mode = not self.edit_mode
@@ -430,7 +520,7 @@ class KommunikasjonstavleApp(App):
         self._content.add_widget(widget)
 
     # ══════════════════════════════════════════════════
-    #  HJEMSKJERM – Mappeoversikt
+    #  HJEMSKJERM
     # ══════════════════════════════════════════════════
 
     def _show_home(self, **_):
@@ -438,11 +528,14 @@ class KommunikasjonstavleApp(App):
         self.cur_folder = None
         self._set_title(APP_TITLE)
 
-        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        outer = BoxLayout(
+            orientation='vertical',
+            spacing=dp(10), padding=dp(12),
+        )
 
         if self.edit_mode:
             outer.add_widget(mk_btn(
-                '＋  Legg til ny mappe', hex_k('#6BCB77'), h=dp(54),
+                '+  Legg til mappe', hex_k('#6BCB77'), h=dp(52),
                 cb=lambda *_: self._folder_popup(None),
             ))
 
@@ -457,35 +550,36 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_folder_tile(self, fo):
-        """Lager én mappe-flis for hjemskjermen."""
-        has_img  = bool(fo.get('image') and os.path.exists(fo['image']))
-        h_total  = dp(194) if self.edit_mode else dp(158)
-        img_h    = dp(98)  if self.edit_mode else dp(108)
-        label_h  = dp(50)
-        del_h    = dp(38)
+        has_img = bool(fo.get('image') and os.path.exists(fo['image']))
+        edit    = self.edit_mode
 
-        if self.edit_mode:
+        TILE_H  = dp(200) if edit else dp(168)
+        IMG_H   = dp(100)
+        LBL_H   = dp(56)
+        DEL_H   = dp(40)
+
+        if edit:
             tap = lambda f=fo: self._folder_popup(f)
         else:
             tap = lambda f=fo: self._open_folder(f)
 
         cell = BoxLayout(
             orientation='vertical',
-            size_hint_y=None, height=h_total,
+            size_hint_y=None, height=TILE_H,
             spacing=dp(4),
         )
 
         if has_img:
             cell.add_widget(TappableImage(
                 tap, source=fo['image'],
-                size_hint=(1, None), height=img_h,
+                size_hint=(1, None), height=IMG_H,
                 allow_stretch=True, keep_ratio=True,
             ))
 
+        lbl_h = LBL_H if has_img else (dp(155) if not edit else dp(115))
         btn = Button(
             text=fo['name'],
-            size_hint=(1, None),
-            height=label_h if has_img else (dp(150) if not self.edit_mode else dp(110)),
+            size_hint=(1, None), height=lbl_h,
             background_normal='',
             background_color=hex_k(fo['color']),
             color=(0.05, 0.05, 0.2, 1),
@@ -494,9 +588,9 @@ class KommunikasjonstavleApp(App):
         btn.bind(on_release=lambda b, t=tap: t())
         cell.add_widget(btn)
 
-        if self.edit_mode:
+        if edit:
             cell.add_widget(mk_btn(
-                '🗑  Slett mappe', hex_k('#FF6B6B'), h=del_h, fs=13,
+                'Slett mappe', hex_k('#FF6B6B'), h=DEL_H, fs=13,
                 cb=lambda *_, f=fo: self._del_folder(f),
             ))
 
@@ -520,19 +614,22 @@ class KommunikasjonstavleApp(App):
         self.cur_folder = fo['id']
         self._set_title(fo['name'])
 
-        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        outer = BoxLayout(
+            orientation='vertical',
+            spacing=dp(8), padding=dp(10),
+        )
 
         if self.edit_mode:
-            bar = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
-            bar.add_widget(mk_btn(
-                '＋  Nytt ASK-bilde', hex_k('#6BCB77'), h=dp(50),
+            btn_bar = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
+            btn_bar.add_widget(mk_btn(
+                '+  Nytt bilde', hex_k('#6BCB77'), h=dp(50),
                 cb=lambda *_: self._item_popup(fo, None),
             ))
-            bar.add_widget(mk_btn(
-                '⬆  Last opp fra enhet', hex_k('#4D96FF'), h=dp(50),
+            btn_bar.add_widget(mk_btn(
+                'Last opp', hex_k('#4D96FF'), h=dp(50),
                 cb=lambda *_: self._upload_to_folder(fo),
             ))
-            outer.add_widget(bar)
+            outer.add_widget(btn_bar)
 
         grid = GridLayout(cols=3, spacing=dp(10), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
@@ -545,51 +642,52 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_item_tile(self, fo, it):
-        """Lager én ASK-bilde-flis for mappeskjermen."""
         img_path = it.get('image') or ''
         has_img  = bool(img_path and os.path.exists(img_path))
-        h_total  = dp(206) if self.edit_mode else dp(164)
-        img_h    = dp(114) if self.edit_mode else dp(120)
-        label_h  = dp(42)
-        act_h    = dp(38)
+        edit     = self.edit_mode
 
-        if self.edit_mode:
+        TILE_H = dp(210) if edit else dp(166)
+        IMG_H  = dp(116) if edit else dp(120)
+        LBL_H  = dp(44)
+        ACT_H  = dp(42)
+
+        if edit:
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
             tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
 
         cell = BoxLayout(
             orientation='vertical',
-            size_hint_y=None, height=h_total,
+            size_hint_y=None, height=TILE_H,
             spacing=dp(4),
         )
 
         if has_img:
             cell.add_widget(TappableImage(
                 tap, source=img_path,
-                size_hint=(1, None), height=img_h,
+                size_hint=(1, None), height=IMG_H,
                 allow_stretch=True, keep_ratio=True,
             ))
 
+        lbl_h = LBL_H if has_img else (dp(158) if not edit else dp(118))
         btn = Button(
             text=it['name'],
-            size_hint=(1, None),
-            height=label_h if has_img else (dp(160) if not self.edit_mode else dp(120)),
+            size_hint=(1, None), height=lbl_h,
             background_normal='',
             background_color=hex_k('#4D96FF'),
-            color=(1, 1, 1, 1), bold=True, font_size=sp(13),
+            color=(1, 1, 1, 1), bold=True, font_size=sp(14),
         )
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
 
-        if self.edit_mode:
-            row = BoxLayout(size_hint_y=None, height=act_h, spacing=dp(4))
+        if edit:
+            row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(4))
             row.add_widget(mk_btn(
-                '⬇ Last ned', hex_k('#6BCB77'), h=act_h - dp(2), fs=13,
+                'Last ned', hex_k('#6BCB77'), h=ACT_H - dp(2), fs=13,
                 cb=lambda *_, p=img_path: self._download_image(p),
             ))
             row.add_widget(mk_btn(
-                '🗑 Slett', hex_k('#FF6B6B'), h=act_h - dp(2), fs=13,
+                'Slett', hex_k('#FF6B6B'), h=ACT_H - dp(2), fs=13,
                 cb=lambda *_, f=fo, i=it: self._del_item(f, i),
             ))
             cell.add_widget(row)
@@ -614,7 +712,7 @@ class KommunikasjonstavleApp(App):
             allow_stretch=True, keep_ratio=True,
         ))
         layout.add_widget(mk_btn(
-            f'⬇  Last ned «{name}» til enheten',
+            'Last ned til enheten',
             hex_k('#6BCB77'), h=dp(54),
             cb=lambda *_: self._download_image(path),
         ))
@@ -627,85 +725,109 @@ class KommunikasjonstavleApp(App):
     def _show_draw(self, **_):
         self._cur_scr = 'draw'
         self._set_title('Tegn')
+        logging.info('Aapner tegneskjerm. PIL_OK=%s', PIL_OK)
 
         if not PIL_OK:
             self._set_content(Label(
-                text='Feil: Pillow/PIL ikke installert (PIL_OK=False)',
-                font_size=sp(18), color=(1, 0.2, 0.2, 1),
+                text='Feil: Pillow/PIL er ikke installert.\nSjekk requirements i buildozer.spec.',
+                font_size=sp(16), color=(1, 0.2, 0.2, 1),
+                halign='center',
             ))
             return
 
-        root = BoxLayout(orientation='vertical', spacing=dp(4), padding=dp(6))
+        root = BoxLayout(
+            orientation='vertical',
+            spacing=dp(5),
+            padding=(dp(6), dp(5)),
+        )
 
-        # ── Verktøylinje ─────────────────────────────────────────
-        toolbar = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(5))
-
+        # ── Rad 1: Verktøyknapper ──────────────────────────────────
+        tool_grid = GridLayout(
+            cols=6, size_hint_y=None, height=dp(56), spacing=dp(4),
+        )
         tools = [
-            ('pen',     '🖊 Penn'),
-            ('eraser',  '🧹 Viskelær'),
-            ('line',    '╱ Linje'),
-            ('rect',    '▭ Rektangel'),
-            ('ellipse', '○ Ellipse'),
-            ('fill',    '🪣 Fyll'),
+            ('pen',     'Penn'),
+            ('eraser',  'Visk.'),
+            ('line',    'Linje'),
+            ('rect',    'Rekt.'),
+            ('ellipse', 'Oval'),
+            ('fill',    'Fyll'),
         ]
         self._tool_btns = {}
-        for key, label in tools:
-            b = mk_btn(label, hex_k(TOOL_COLORS[key]), h=dp(52), fs=12)
+        for key, lbl in tools:
+            b = Button(
+                text=lbl,
+                size_hint=(1, 1),
+                font_size=sp(14),
+                background_normal='',
+                background_color=hex_k(TOOL_COLORS[key]),
+                color=(1, 1, 1, 1),
+                bold=True,
+            )
             b.bind(on_release=lambda btn, k=key: self._set_draw_tool(k))
-            toolbar.add_widget(b)
+            tool_grid.add_widget(b)
             self._tool_btns[key] = b
+        root.add_widget(tool_grid)
 
-        toolbar.add_widget(mk_btn(
-            '💾 Lagre', hex_k('#6BCB77'), h=dp(52), fs=13,
-            cb=self._save_drawing,
+        # ── Rad 2: Penselstørrelse + Lagre/Tøm ────────────────────
+        ctrl = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+        ctrl.add_widget(Label(
+            text='Str.:', size_hint_x=None, width=dp(38),
+            font_size=sp(13), color=(0.08, 0.08, 0.08, 1),
         ))
-        toolbar.add_widget(mk_btn(
-            '🗑 Tøm', hex_k('#FF6B6B'), h=dp(52), fs=13,
-            cb=lambda *_: self.draw_canvas.clear_canvas(),
-        ))
-        root.add_widget(toolbar)
-
-        # ── Størrelsesstrek ───────────────────────────────────────
-        size_row = BoxLayout(
-            size_hint_y=None, height=dp(48), spacing=dp(8),
-            padding=(dp(6), dp(4)),
-        )
-        size_row.add_widget(Label(
-            text='Penselstørrelse:', size_hint_x=None, width=dp(145),
-            font_size=sp(14), color=(0.1, 0.1, 0.1, 1),
-        ))
-        self._size_slider = Slider(min=2, max=50, value=6, step=1)
+        self._size_slider = Slider(min=2, max=60, value=6, step=1)
         self._size_lbl    = Label(
-            text='6 px', size_hint_x=None, width=dp(55),
-            font_size=sp(14), color=(0.1, 0.1, 0.1, 1),
+            text='6', size_hint_x=None, width=dp(34),
+            font_size=sp(13), color=(0.08, 0.08, 0.08, 1),
         )
         self._size_slider.bind(value=self._on_size_change)
-        size_row.add_widget(self._size_slider)
-        size_row.add_widget(self._size_lbl)
-        root.add_widget(size_row)
+        ctrl.add_widget(self._size_slider)
+        ctrl.add_widget(self._size_lbl)
+        ctrl.add_widget(mk_btn(
+            'Lagre', hex_k('#6BCB77'), h=dp(46), fs=13,
+            size_hint_x=None, width=dp(84),
+            cb=self._save_drawing,
+        ))
+        ctrl.add_widget(mk_btn(
+            'Tom', hex_k('#FF6B6B'), h=dp(46), fs=13,
+            size_hint_x=None, width=dp(72),
+            cb=lambda *_: self.draw_canvas.clear_canvas(),
+        ))
+        root.add_widget(ctrl)
 
-        # ── Fargepalett ───────────────────────────────────────────
-        palette_row = BoxLayout(
-            size_hint_y=None, height=dp(58), spacing=dp(6),
-            padding=(dp(4), dp(4)),
+        # ── Rad 3: Fargepalett (horisontal rullefelt) ─────────────
+        pal_sv = ScrollView(
+            size_hint_y=None, height=dp(58),
+            do_scroll_x=True, do_scroll_y=False,
         )
-        self._col_btns = {}
-        for h in PALETTE:
-            cb = Button(
-                size_hint=(None, None), size=(dp(50), dp(50)),
-                background_normal='', background_color=hex_k(h),
-            )
-            cb.bind(on_release=lambda b, col=h: self._set_draw_color(col))
-            palette_row.add_widget(cb)
-            self._col_btns[h] = cb
-        root.add_widget(palette_row)
+        pal_inner = BoxLayout(
+            orientation='horizontal',
+            size_hint_x=None, height=dp(54),
+            spacing=dp(6), padding=(dp(4), dp(4)),
+        )
+        pal_inner.bind(minimum_width=pal_inner.setter('width'))
 
-        # ── Tegne-canvas (fyller resten av skjermen) ──────────────
+        self._col_btns = {}
+        for col_hex in PALETTE:
+            cb = Button(
+                size_hint=(None, None),
+                size=(dp(46), dp(46)),
+                background_normal='',
+                background_color=hex_k(col_hex),
+            )
+            cb.bind(on_release=lambda b, c=col_hex: self._set_draw_color(c))
+            pal_inner.add_widget(cb)
+            self._col_btns[col_hex] = cb
+
+        pal_sv.add_widget(pal_inner)
+        root.add_widget(pal_sv)
+
+        # ── Tegneflate ─────────────────────────────────────────────
         self.draw_canvas = DrawCanvas()
         root.add_widget(self.draw_canvas)
+        logging.info('DrawCanvas opprettet.')
 
         self._set_content(root)
-        # Sett standardvalg
         self._set_draw_tool('pen')
         self._set_draw_color('#000000')
 
@@ -716,18 +838,24 @@ class KommunikasjonstavleApp(App):
             btn.background_color = hex_k(
                 TOOL_ACTIVE[k] if k == key else TOOL_COLORS[k]
             )
+        logging.debug('Tegne-verktoy: %s', key)
 
     def _set_draw_color(self, col):
+        """
+        Oppdaterer draw_color paa DrawCanvas.
+        VIKTIG: setter draw_canvas.draw_color, IKKE draw_canvas.color.
+        draw_canvas.color er Kivy Image sin tint-RGBA og maa ikke roeres.
+        """
         if self.draw_canvas:
-            self.draw_canvas.color = col
+            self.draw_canvas.draw_color = col
         for h, btn in self._col_btns.items():
-            # Uthev valgt farge med lysere bakgrunn
             if h == col:
+                # Lyser opp valgt farge litt
                 r, g, b, _ = hex_k(h)
                 btn.background_color = (
-                    min(r + 0.25, 1),
-                    min(g + 0.25, 1),
-                    min(b + 0.25, 1), 1,
+                    min(r + 0.28, 1),
+                    min(g + 0.28, 1),
+                    min(b + 0.28, 1), 1,
                 )
             else:
                 btn.background_color = hex_k(h)
@@ -735,28 +863,31 @@ class KommunikasjonstavleApp(App):
     def _on_size_change(self, slider, val):
         if self.draw_canvas:
             self.draw_canvas.size_px = int(val)
-        self._size_lbl.text = f'{int(val)} px'
+        self._size_lbl.text = str(int(val))
 
     def _save_drawing(self, *_):
         if not self.draw_canvas:
             return
         fname = datetime.now().strftime('tegning_%Y%m%d_%H%M%S.png')
         path  = os.path.join(DRAW_DIR, fname)
-        self.draw_canvas.save_to(path)
-        self._toast(f'Tegning lagret:\n{fname}')
+        try:
+            self.draw_canvas.save_to(path)
+            self._toast(f'Lagret:\n{fname}')
+            logging.info('Tegning lagret: %s', path)
+        except Exception:
+            logging.exception('_save_drawing: feil')
+            self._toast('Feil ved lagring!')
 
     # ══════════════════════════════════════════════════
     #  POPUP – REDIGER MAPPE
     # ══════════════════════════════════════════════════
 
     def _folder_popup(self, fo):
-        """Åpner popup for å opprette (fo=None) eller redigere en mappe."""
-        new = fo is None
+        new    = fo is None
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
 
-        # Navn-felt
         layout.add_widget(Label(
-            text='Navn på mappen:', size_hint_y=None, height=dp(30),
+            text='Mappenavn:', size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
         name_inp = TextInput(
@@ -765,48 +896,43 @@ class KommunikasjonstavleApp(App):
         )
         layout.add_widget(name_inp)
 
-        # Fargevelger
         layout.add_widget(Label(
-            text='Velg farge:', size_hint_y=None, height=dp(28),
+            text='Velg farge:', size_hint_y=None, height=dp(26),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
         chosen_color = [fo['color'] if fo else FOLDER_COLORS[0]]
-        col_row = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(8))
-        col_btns_list = []
+        col_row      = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(8))
+        col_btns     = []
         for c in FOLDER_COLORS:
             cb = Button(
                 background_normal='', background_color=hex_k(c),
                 size_hint=(None, None), size=(dp(54), dp(54)),
+                opacity=1.0 if chosen_color[0] == c else 0.5,
             )
-            cb.opacity = 1.0 if chosen_color[0] == c else 0.55
-            def pick_col(b, col=c):
-                chosen_color[0] = col
-                for x in col_btns_list:
-                    x.opacity = 0.55
+            def pick(b, col=c, btns=col_btns, sel=chosen_color):
+                sel[0] = col
+                for x in btns:
+                    x.opacity = 0.5
                 b.opacity = 1.0
-            cb.bind(on_release=pick_col)
+            cb.bind(on_release=pick)
             col_row.add_widget(cb)
-            col_btns_list.append(cb)
+            col_btns.append(cb)
         layout.add_widget(col_row)
 
-        # Bilde-velger
         chosen_img = [fo.get('image') if fo else None]
         img_lbl = Label(
             text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
-            size_hint_y=None, height=dp(28),
-            font_size=sp(13), color=(0.25, 0.25, 0.25, 1),
+            size_hint_y=None, height=dp(26),
+            font_size=sp(13), color=(0.3, 0.3, 0.3, 1),
         )
         layout.add_widget(img_lbl)
 
-        pop_ref = [None]   # Referanse til popup (brukes i _pick_image)
-        pick_btn = mk_btn(
-            '📁  Velg mappe-bilde fra enhet', hex_k('#4D96FF'), h=dp(48),
-        )
+        pop_ref = [None]
+        pick_btn = mk_btn('Velg bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
         pick_btn.bind(on_release=lambda *_: self._pick_image(
             chosen_img, img_lbl, pop_ref[0]))
         layout.add_widget(pick_btn)
 
-        # OK / Avbryt
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
 
         def on_ok(*_):
@@ -827,7 +953,7 @@ class KommunikasjonstavleApp(App):
             pop_ref[0].dismiss()
             self._show_home()
 
-        btn_row.add_widget(mk_btn('✓  Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_ok))
+        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_ok))
         btn_row.add_widget(mk_btn(
             'Avbryt', hex_k('#9CA3AF'), h=dp(50),
             cb=lambda *_: pop_ref[0].dismiss(),
@@ -847,16 +973,16 @@ class KommunikasjonstavleApp(App):
         self._show_home()
 
     # ══════════════════════════════════════════════════
-    #  POPUP – REDIGER ELEMENT (ASK-bilde)
+    #  POPUP – REDIGER ELEMENT
     # ══════════════════════════════════════════════════
 
     def _item_popup(self, fo, it):
-        """Åpner popup for å opprette (it=None) eller redigere et ASK-element."""
-        new = it is None
+        new    = it is None
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
 
         layout.add_widget(Label(
-            text='Navn (etiketten under bildet):', size_hint_y=None, height=dp(30),
+            text='Navn (etikett under bildet):',
+            size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
         name_inp = TextInput(
@@ -869,12 +995,12 @@ class KommunikasjonstavleApp(App):
         img_lbl = Label(
             text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
             size_hint_y=None, height=dp(28),
-            font_size=sp(13), color=(0.25, 0.25, 0.25, 1),
+            font_size=sp(13), color=(0.3, 0.3, 0.3, 1),
         )
         layout.add_widget(img_lbl)
 
         pop_ref = [None]
-        pick_btn = mk_btn('📁  Velg ASK-bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
+        pick_btn = mk_btn('Velg ASK-bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
         pick_btn.bind(on_release=lambda *_: self._pick_image(
             chosen_img, img_lbl, pop_ref[0]))
         layout.add_widget(pick_btn)
@@ -897,7 +1023,7 @@ class KommunikasjonstavleApp(App):
             pop_ref[0].dismiss()
             self._show_folder(fid=fo['id'])
 
-        btn_row.add_widget(mk_btn('✓  Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_ok))
+        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_ok))
         btn_row.add_widget(mk_btn(
             'Avbryt', hex_k('#9CA3AF'), h=dp(50),
             cb=lambda *_: pop_ref[0].dismiss(),
@@ -921,11 +1047,6 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def _pick_image(self, chosen_img_ref, label_widget, parent_popup=None):
-        """
-        Åpner filebrowser for å velge et bilde.
-        Kopier valgt fil til IMG_DIR og oppdaterer chosen_img_ref.
-        Foreldre-popup forblir åpen under (Kivy støtter stablede popups).
-        """
         fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
         fc = FileChooserListView(
             path='/sdcard',
@@ -944,17 +1065,15 @@ class KommunikasjonstavleApp(App):
                     shutil.copy2(src, dst)
                     chosen_img_ref[0] = dst
                     label_widget.text = 'Bilde: ' + fname
-                except Exception as e:
-                    self._toast(f'Feil ved kopiering:\n{e}')
+                    logging.info('Bilde kopiert: %s', dst)
+                except Exception:
+                    logging.exception('_pick_image: kopieringsfeil')
+                    self._toast('Feil ved kopiering av bilde.')
             fc_pop.dismiss()
 
-        btn_row.add_widget(mk_btn(
-            '✓  Velg dette bildet', hex_k('#6BCB77'), h=dp(52), cb=on_select,
-        ))
-        btn_row.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(52),
-            cb=lambda *_: fc_pop.dismiss(),
-        ))
+        btn_row.add_widget(mk_btn('Velg dette bildet', hex_k('#6BCB77'), h=dp(52), cb=on_select))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                                   cb=lambda *_: fc_pop.dismiss()))
         fc_layout.add_widget(btn_row)
 
         fc_pop = Popup(
@@ -964,10 +1083,6 @@ class KommunikasjonstavleApp(App):
         fc_pop.open()
 
     def _upload_to_folder(self, fo):
-        """
-        Åpner filebrowser og legger valgt bilde direkte til mappen
-        som et nytt ASK-element (filnavn uten extension brukes som etikettforslag).
-        """
         fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
         fc = FileChooserListView(
             path='/sdcard',
@@ -992,43 +1107,42 @@ class KommunikasjonstavleApp(App):
                     })
                     save_struct(self.data)
                     pop.dismiss()
-                    self._toast(f'Lagt til: {fname}')
+                    self._toast(f'Lagt til:\n{fname}')
                     self._show_folder(fid=fo['id'])
-                except Exception as e:
-                    self._toast(f'Feil:\n{e}')
+                    logging.info('Bilde lastet opp til mappe: %s', fname)
+                except Exception:
+                    logging.exception('_upload_to_folder: feil')
+                    self._toast('Feil ved opplasting.')
             else:
                 pop.dismiss()
 
-        btn_row.add_widget(mk_btn(
-            '⬆  Last opp til mappe', hex_k('#4D96FF'), h=dp(52), cb=on_upload,
-        ))
-        btn_row.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(52),
-            cb=lambda *_: pop.dismiss(),
-        ))
+        btn_row.add_widget(mk_btn('Last opp til mappe', hex_k('#4D96FF'), h=dp(52), cb=on_upload))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                                   cb=lambda *_: pop.dismiss()))
         fc_layout.add_widget(btn_row)
 
         pop = Popup(
-            title=f'Last opp til «{fo["name"]}»', content=fc_layout,
-            size_hint=(0.97, 0.93),
+            title=f'Last opp til «{fo["name"]}»',
+            content=fc_layout, size_hint=(0.97, 0.93),
         )
         pop.open()
 
     def _download_image(self, src_path):
-        """Kopierer bildefil til /sdcard/Download."""
         if not src_path or not os.path.exists(src_path):
-            self._toast('Ingen bildefil å laste ned.')
+            self._toast('Ingen bildefil aa laste ned.')
             return
         try:
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
             dst = os.path.join(DOWNLOAD_DIR, os.path.basename(src_path))
             shutil.copy2(src_path, dst)
             self._toast(f'Lagret til Nedlastinger:\n{os.path.basename(dst)}')
-        except Exception as e:
-            self._toast(f'Nedlasting feilet:\n{e}')
+            logging.info('Bilde lastet ned: %s', dst)
+        except Exception:
+            logging.exception('_download_image: feil')
+            self._toast('Nedlasting feilet.')
 
     # ══════════════════════════════════════════════════
-    #  TOAST-MELDING (selvlukkende infovindu)
+    #  TOAST
     # ══════════════════════════════════════════════════
 
     def _toast(self, msg, duration=3.0):
@@ -1051,4 +1165,15 @@ class KommunikasjonstavleApp(App):
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    KommunikasjonstavleApp().run()
+    try:
+        KommunikasjonstavleApp().run()
+    except Exception:
+        # Siste utvei: skriv krasj til loggfil selv om appen aldri startet
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write('\n=== FATAL KRASJ ===\n')
+                _tb.print_exc(file=f)
+        except Exception:
+            pass
+        raise
