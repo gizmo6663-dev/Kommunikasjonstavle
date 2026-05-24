@@ -30,6 +30,9 @@ android.permissions = \
     android.permission.WRITE_EXTERNAL_STORAGE, \
     android.permission.READ_MEDIA_IMAGES
 
+# ─── SDK-lisens (må godtas for at build-tools skal installeres) ───
+android.accept_sdk_license = True
+
 # ─── AndroidX ─────────────────────────────────────────────────────
 android.enable_androidx = True
 
