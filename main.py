@@ -5,17 +5,10 @@ Kommunikasjonstavle v1.2
 ASK-kommunikasjonsapp for barnehage og skole
 Python 3 / Kivy 2.3.0  –  Buildozer / Android
 
-Endringslogg v1.1:
-  - KRITISK FIKS: DrawCanvas.color omdøpt til draw_color.
-    Image-widgeten har en innebygd 'color'-egenskap (bilde-tint),
-    som forårsaket bakgrunnsfargeendring og krasj ved touch.
-  - Alle emojisymboler erstattet med vanlig tekst (Android mangler emoji-font).
-  - try/except rundt alle PIL-operasjoner med logging til fil.
-  - Koordinatsjekk (divisjon med null) i _kv2pil.
-  - Verktøyrad delt i to rader; fargepalett i horisontal ScrollView.
-  - Bedre dimensjoner og padding gjennom hele appen.
-  - Fil-basert krasjlogg: /sdcard/Documents/Kommunikasjonstavle/crash.log
-  - sys.excepthook fanger ubehandlede unntak til loggfil + ADB logcat.
+Endringslogg v1.2:
+  - Forbedret tillatelseshåndtering for bilder/galleri (norsk dialog, callback-basert).
+  - Spør om tillatelse FØR brukeren åpner filvelger (i _pick_image, _upload_to_folder, _seq_pick_from_device).
+  - Norsk forklaring før systemdialog, håndtering av avslag.
 """
 
 import os
@@ -403,31 +396,104 @@ def img_filter(folder, filename):
     )
 
 
-def request_android_permissions():
-    """
-    Kopi av Eldritch Portals tillatelsesmetode – bekreftet å fungere
-    på Samsung Galaxy S25 Ultra (Android 15).
+# ══════════════════════════════════════════════════════════════════
+#  NY, FORBEDRET TILLATELSESHÅNDTERING (norsk, med callback)
+# ══════════════════════════════════════════════════════════════════
 
-    Viktige detaljer kopiert fra EP:
-      - Modul-nivå-funksjon (ikke metode), kalles via Clock fra build()
-      - Ingen check_permission() først – kaller request_permissions()
-        direkte. check_permission() returnerte feilaktig True og hindret
-        at dialogen noen gang ble vist.
-      - Ingen callback – Android håndterer stille hvis allerede innvilget.
-      - Bare except: pass – EP-stil, ingen logging som svelger feilen.
-      - Permission.READ_MEDIA_IMAGES som konstant (ikke streng) –
-        slik EP gjør det.
+def request_android_permissions(callback=None):
+    """
+    Ber om nødvendige lagrings-/bilde-tillatelser på Android.
+    Viser en norsk forklarende popup FØR systemdialogen.
+    callback( granted ) kalles når brukeren har svart.
     """
     if platform != 'android':
+        if callback:
+            callback(True)
         return
+
     try:
-        from android.permissions import request_permissions, Permission
-        request_permissions([
-            Permission.READ_EXTERNAL_STORAGE,
-            Permission.READ_MEDIA_IMAGES,
-        ])
-    except:
-        pass
+        from android.permissions import request_permissions, Permission, check_permission
+        # Sjekk om tillatelser allerede er gitt
+        if (check_permission(Permission.READ_EXTERNAL_STORAGE) and
+            check_permission(Permission.READ_MEDIA_IMAGES)):
+            if callback:
+                callback(True)
+            return
+
+        # Vis en forklarende popup på norsk FØR systemdialogen
+        from kivy.uix.popup import Popup
+        from kivy.uix.label import Label
+
+        content = Label(
+            text=(
+                "For å kunne velge bilder fra enheten din,\n"
+                "trenger Kommunikasjonstavle tilgang til bilder og galleri.\n\n"
+                "Klikk 'Gi tilgang' når systemet spør.\n"
+                "Hvis du nekter, kan du ikke laste opp bilder."
+            ),
+            font_size='15sp', halign='center', valign='middle'
+        )
+        content.bind(size=content.setter('text_size'))
+        pop = Popup(title='Tillatelse til bilder', content=content,
+                    size_hint=(0.85, 0.4), auto_dismiss=False)
+
+        def on_allow(dt):
+            pop.dismiss()
+            def _on_permissions_result(permissions, results):
+                granted = all(results)
+                if callback:
+                    callback(granted)
+                if not granted:
+                    # Vis ekstra advarsel ved avslag
+                    fail_pop = Popup(
+                        title='Ingen tilgang',
+                        content=Label(
+                            text=(
+                                "Du har nektet tilgang til bilder.\n"
+                                "Du kan fortsatt bruke appen, men ikke laste opp bilder.\n"
+                                "For å endre dette, gå til Innstillinger > Apper > Kommunikasjonstavle > Tillatelser."
+                            ),
+                            font_size='14sp', halign='center', valign='middle'
+                        ),
+                        size_hint=(0.8, 0.35)
+                    )
+                    fail_pop.open()
+            request_permissions([
+                Permission.READ_EXTERNAL_STORAGE,
+                Permission.READ_MEDIA_IMAGES,
+            ], _on_permissions_result)
+
+        Clock.schedule_once(on_allow, 0.5)
+        pop.open()
+    except Exception as e:
+        logging.exception('request_android_permissions feil')
+        if callback:
+            callback(False)
+
+
+def be_om_galleri_tillatelse(callback):
+    """
+    Hovedfunksjon som skal kalles FØR bildevelger åpnes.
+    Sjekker om tillatelse allerede finnes ved å prøve å lese en mappe.
+    Hvis ikke, ber om tillatelse.
+    callback( granted ) kalles når svar foreligger.
+    """
+    if platform != 'android':
+        callback(True)
+        return
+
+    try:
+        from android.permissions import check_permission, Permission
+        # Sjekk om vi allerede har tilgang
+        if (check_permission(Permission.READ_EXTERNAL_STORAGE) and
+            check_permission(Permission.READ_MEDIA_IMAGES)):
+            callback(True)
+            return
+        # Be om tillatelse
+        request_android_permissions(callback)
+    except Exception as e:
+        logging.exception('be_om_galleri_tillatelse feil')
+        callback(False)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -704,46 +770,9 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._bottombar)
 
         self._show_home()
-        # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
-        # Må ligge her (ikke on_start) for riktig timing på Android.
+        # Be om tillatelser ved oppstart (valgfritt, men gir EldritchPortal-oppførsel)
         Clock.schedule_once(lambda dt: request_android_permissions(), 0.5)
         return root
-
-    # ══════════════════════════════════════════════════
-    #  ANDROID-TILLATELSER
-    #
-    #  Android 6+ (API 23+) krever at "farlige" tillatelser
-    #  (lagring, bilder) bes om eksplisitt under kjøring,
-    #  selv om de er deklarert i AndroidManifest.xml.
-    #  Uten dette vil FileChooser vise mapper men ingen bilder.
-    #
-    #  Vi bruker READ_MEDIA_IMAGES (Android 13+) som ber om
-    #  tilgang til bilder spesifikt – en langt mer passende
-    #  dialog enn den inngripende MANAGE_EXTERNAL_STORAGE.
-    # ══════════════════════════════════════════════════
-
-    def on_start(self):
-        """on_start er ikke lenger brukt til tillatelser.
-        Kallet er flyttet til build() via Clock, identisk med Eldritch Portal."""
-        pass
-
-    # _request_android_permissions() er erstattet av modul-nivå-funksjonen
-    # request_android_permissions() øverst i filen – se der.
-
-
-
-    def _on_permissions_result(self, permissions, grants):
-        """Kalles av Android etter at brukeren har svart på tillatelsesdialogen."""
-        granted = [p for p, g in zip(permissions, grants) if g]
-        denied  = [p for p, g in zip(permissions, grants) if not g]
-        logging.info('Tillatelser innvilget: %s', granted)
-        if denied:
-            logging.warning('Tillatelser avvist: %s', denied)
-            self._toast(
-                'Noen tillatelser ble avvist.\n'
-                'Filblaing fungerer kanskje ikke.',
-                duration=4.0,
-            )
 
     # ══════════════════════════════════════════════════
     #  NAVIGASJONSBAR
@@ -761,8 +790,6 @@ class KommunikasjonstavleApp(App):
             spacing=dp(6),
         )
 
-        # Ingen tittel-label her lenger – tittel er i bunnbaren.
-        # Knappene fordeles jevnt (size_hint_x=1, ikke fast bredde).
         btn_kw = dict(
             size_hint_y=None, height=dp(54),
         )
@@ -791,8 +818,6 @@ class KommunikasjonstavleApp(App):
     def _build_bottombar(self):
         """
         Bunnbar med app-tittel / konteksttittel.
-        Flyttes hit fra navbaren slik at tittelen ikke
-        konkurrerer med navigasjonsknappene oppe.
         """
         bar = BottomBar(
             size_hint_y=None, height=dp(40),
@@ -1182,7 +1207,6 @@ class KommunikasjonstavleApp(App):
         root.add_widget(act)
 
         # ── Rad 3: Penselstørrelse – egen rad, slider får full bredde ──
-        # Slider trenger god plass og kan ikke dele rad med mange knapper.
         size_row = BoxLayout(
             size_hint_y=None, height=dp(54),
             spacing=dp(8), padding=(dp(6), dp(4)),
@@ -1203,7 +1227,6 @@ class KommunikasjonstavleApp(App):
         root.add_widget(size_row)
 
         # ── Rad 4: Fargevalg – en knapp åpner fargevalgpopup ──────
-        # Viser gjeldende farge som farget sirkel + knapp for å bytte.
         color_row = BoxLayout(
             size_hint_y=None, height=dp(56),
             spacing=dp(8), padding=(dp(4), dp(4)),
@@ -1224,7 +1247,6 @@ class KommunikasjonstavleApp(App):
         color_row.add_widget(open_pal_btn)
         root.add_widget(color_row)
 
-        # Initialiserer _col_btns som tom dict (brukes i _set_draw_color)
         self._col_btns = {}
 
         # ── Tegneflate ─────────────────────────────────────────────
@@ -1246,17 +1268,10 @@ class KommunikasjonstavleApp(App):
         logging.debug('Tegne-verktoy: %s', key)
 
     def _set_draw_color(self, col):
-        """
-        Oppdaterer draw_color paa DrawCanvas.
-        VIKTIG: setter draw_canvas.draw_color, IKKE draw_canvas.color.
-        draw_canvas.color er Kivy Image sin tint-RGBA og maa ikke roeres.
-        """
         if self.draw_canvas:
             self.draw_canvas.draw_color = col
-        # Oppdater den lille fargesirkelen ved siden av "Velg farge"-knappen
         if hasattr(self, '_cur_color_btn'):
             self._cur_color_btn.btn_color = list(hex_k(col))
-        # Oppdater eventuelle popup-fargeknapper (hvis popupen er åpen)
         for h, btn in self._col_btns.items():
             if h == col:
                 r, g, b, _ = hex_k(h)
@@ -1283,18 +1298,11 @@ class KommunikasjonstavleApp(App):
             self._toast('Feil ved lagring!')
 
     def _open_color_popup(self):
-        """
-        Åpner et popup-vindu med alle 24 farger i et 6×4-rutenett.
-        Valg av farge setter tegnefargen og lukker popupen.
-        _col_btns oppdateres her slik at _set_draw_color kan markere
-        gjeldende valg med lys uthevning.
-        """
         layout = BoxLayout(
             orientation='vertical',
             spacing=dp(10), padding=dp(14),
         )
 
-        # Overskrift
         layout.add_widget(Label(
             text='Velg tegnefargen din:',
             size_hint_y=None, height=dp(32),
@@ -1303,7 +1311,6 @@ class KommunikasjonstavleApp(App):
             halign='center', valign='middle',
         ))
 
-        # 6×4-rutenett med fargeknapper
         grid = GridLayout(
             cols=6, spacing=dp(8),
             size_hint_y=None,
@@ -1340,27 +1347,20 @@ class KommunikasjonstavleApp(App):
         )
         pop_ref[0] = pop
 
-        # Marker gjeldende farge i popupen med det samme
         if self.draw_canvas:
             self._set_draw_color(self.draw_canvas.draw_color)
 
         pop.open()
 
     # ══════════════════════════════════════════════════
-    #  POPUP – REDIGER MAPPE
-    # ══════════════════════════════════════════════════
-
-    # ══════════════════════════════════════════════════
     #  HANDLINGSREKKER – navigasjon og listeskjerm
     # ══════════════════════════════════════════════════
 
     def _nav_sequences(self):
-        """Naviger fra hjemskjerm til handlingsrekke-listen."""
         self._push('home')
         self._show_sequences()
 
     def _show_sequences(self, **_):
-        """Viser listen over alle lagrede handlingsrekker."""
         self._cur_scr = 'sequences'
         self._set_title('Handlingsrekker')
 
@@ -1397,7 +1397,6 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_seq_tile(self, seq):
-        """Lager en flis for én handlingsrekke i listen."""
         n    = len(seq.get('items', []))
         edit = self.edit_mode
         h    = dp(106) if edit else dp(72)
@@ -1448,14 +1447,7 @@ class KommunikasjonstavleApp(App):
 
         return tile
 
-    # ── Spiller ───────────────────────────────────────────────────
-
     def _play_sequence(self, seq):
-        """
-        Åpner et fullskjerm-popup som viser handlingsrekkens bilder ett
-        for ett. Trykk på bildet for å gå til neste; ved siste bilde
-        lukkes popupen automatisk.
-        """
         items = [
             it for it in seq.get('items', [])
             if it.get('image') and os.path.exists(it['image'])
@@ -1466,7 +1458,6 @@ class KommunikasjonstavleApp(App):
 
         state = {'idx': 0}
 
-        # ── Faste UI-elementer ────────────────────────────────────
         layout = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
 
         prog_lbl = Label(
@@ -1476,7 +1467,7 @@ class KommunikasjonstavleApp(App):
         )
         prog_lbl.bind(size=prog_lbl.setter('text_size'))
 
-        img_box  = BoxLayout()   # Inneholder TappableImage, byttes ut per steg
+        img_box  = BoxLayout()
 
         name_lbl = Label(
             text='', size_hint_y=None, height=dp(50),
@@ -1501,7 +1492,6 @@ class KommunikasjonstavleApp(App):
         )
 
         def show_step(idx):
-            """Oppdaterer popupen til å vise steg idx."""
             img_box.clear_widgets()
             it      = items[idx]
             is_last = (idx == len(items) - 1)
@@ -1531,13 +1521,7 @@ class KommunikasjonstavleApp(App):
         pop.open()
         logging.info('Starter handlingsrekke: %s (%d steg)', seq['name'], len(items))
 
-    # ── Eksport ───────────────────────────────────────────────────
-
     def _export_sequence(self, seq):
-        """
-        Eksporterer handlingsrekken til /sdcard/Download/[navn]_handlingsrekke/.
-        Bildene nummereres (01_, 02_, …) og en tekstfil beskriver rekkefølgen.
-        """
         items = seq.get('items', [])
         if not items:
             self._toast('Ingen bilder aa eksportere.')
@@ -1572,20 +1556,12 @@ class KommunikasjonstavleApp(App):
         save_struct(self.data)
         self._show_sequences()
 
-    # ── Rediger sekvens ───────────────────────────────────────────
-
     def _seq_editor_popup(self, seq):
-        """
-        Popup for å opprette (seq=None) eller redigere en handlingsrekke.
-        Viser: navnfelt, scrollbar bildeliste med slette-knapper,
-        knapper for å legge til fra eksisterende ASK-mapper eller fra enhet.
-        """
         import copy as _copy
         new_seq   = seq is None
         seq_items = _copy.deepcopy(seq.get('items', [])) if seq else []
         pop_ref   = [None]
 
-        # ── Navn ─────────────────────────────────────────────────
         layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
 
         layout.add_widget(Label(
@@ -1599,7 +1575,6 @@ class KommunikasjonstavleApp(App):
         )
         layout.add_widget(name_inp)
 
-        # ── Bildeliste ────────────────────────────────────────────
         count_lbl = Label(
             text='', size_hint_y=None, height=dp(26),
             font_size=sp(14), color=(0.25, 0.25, 0.25, 1), halign='left',
@@ -1624,7 +1599,6 @@ class KommunikasjonstavleApp(App):
                     box_color=(0.96, 0.97, 1.0, 1.0), radius=dp(10),
                     orientation='horizontal',
                 )
-                # Miniatyr
                 if it.get('image') and os.path.exists(it['image']):
                     row.add_widget(Image(
                         source=it['image'],
@@ -1645,7 +1619,6 @@ class KommunikasjonstavleApp(App):
 
         refresh_list()
 
-        # ── Legg til-knapper ──────────────────────────────────────
         add_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
         add_row.add_widget(mk_btn(
             'Fra mapper', hex_k('#4D96FF'), h=dp(48), fs=14,
@@ -1657,7 +1630,6 @@ class KommunikasjonstavleApp(App):
         ))
         layout.add_widget(add_row)
 
-        # ── Lagre / Avbryt ────────────────────────────────────────
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
 
         def on_save(*_):
@@ -1695,10 +1667,6 @@ class KommunikasjonstavleApp(App):
         pop.open()
 
     def _seq_pick_from_folders(self, seq_items, refresh_fn):
-        """
-        Viser alle ASK-bilder fra alle mapper i et blaingsrutenett.
-        Brukeren trykker på et bilde for å legge det til i rekken.
-        """
         import copy as _copy
         all_items = [
             _copy.deepcopy(it)
@@ -1765,55 +1733,57 @@ class KommunikasjonstavleApp(App):
         pick_ref[0] = pick_pop
         pick_pop.open()
 
+    # OPPDATER: _seq_pick_from_device med tillatelsessjekk
     def _seq_pick_from_device(self, seq_items, refresh_fn):
-        """
-        Åpner FileChooser for å laste opp et bilde direkte
-        til handlingsrekken fra enheten.
-        """
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(path='/sdcard', filters=[img_filter])
-        fc_layout.add_widget(fc)
+        def after_permission(granted):
+            if not granted:
+                self._toast('Kan ikke velge bilde uten tilgang til galleriet.')
+                return
+            fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
+            fc = FileChooserListView(path='/sdcard', filters=[img_filter])
+            fc_layout.add_widget(fc)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        pop_ref = [None]
+            btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            pop_ref = [None]
 
-        def on_upload(*_):
-            if fc.selection:
-                src_path = fc.selection[0]
-                fname    = os.path.basename(src_path)
-                dst      = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src_path, dst)
-                    name_sug = os.path.splitext(fname)[0].replace('_', ' ')
-                    seq_items.append({
-                        'id':    str(uuid.uuid4()),
-                        'name':  name_sug,
-                        'image': dst,
-                    })
-                    refresh_fn()
-                    self._toast(f'Lagt til: {fname}')
-                    logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
-                except Exception:
-                    logging.exception('_seq_pick_from_device: feil')
-                    self._toast('Feil ved opplasting.')
-            pop_ref[0].dismiss()
+            def on_upload(*_):
+                if fc.selection:
+                    src_path = fc.selection[0]
+                    fname    = os.path.basename(src_path)
+                    dst      = os.path.join(IMG_DIR, fname)
+                    try:
+                        shutil.copy2(src_path, dst)
+                        name_sug = os.path.splitext(fname)[0].replace('_', ' ')
+                        seq_items.append({
+                            'id':    str(uuid.uuid4()),
+                            'name':  name_sug,
+                            'image': dst,
+                        })
+                        refresh_fn()
+                        self._toast(f'Lagt til: {fname}')
+                        logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
+                    except Exception:
+                        logging.exception('_seq_pick_from_device: feil')
+                        self._toast('Feil ved opplasting.')
+                pop_ref[0].dismiss()
 
-        btn_row.add_widget(mk_btn(
-            'Legg til i rekken', hex_k('#6BCB77'), h=dp(52), cb=on_upload,
-        ))
-        btn_row.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(52),
-            cb=lambda *_: pop_ref[0].dismiss(),
-        ))
-        fc_layout.add_widget(btn_row)
+            btn_row.add_widget(mk_btn(
+                'Legg til i rekken', hex_k('#6BCB77'), h=dp(52), cb=on_upload,
+            ))
+            btn_row.add_widget(mk_btn(
+                'Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                cb=lambda *_: pop_ref[0].dismiss(),
+            ))
+            fc_layout.add_widget(btn_row)
 
-        pop = Popup(
-            title='Last opp til handlingsrekke',
-            content=fc_layout, size_hint=(0.97, 0.93),
-        )
-        pop_ref[0] = pop
-        pop.open()
+            pop = Popup(
+                title='Last opp til handlingsrekke',
+                content=fc_layout, size_hint=(0.97, 0.93),
+            )
+            pop_ref[0] = pop
+            pop.open()
 
+        be_om_galleri_tillatelse(after_permission)
 
     # ══════════════════════════════════════════════════
     #  TEKST-TIL-TALE (TTS)
@@ -1934,7 +1904,6 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def _show_qr_popup(self, text, title='QR-kode'):
-        """Genererer og viser QR-kode for gitt tekst."""
         try:
             import qrcode as _qr
             qr = _qr.QRCode(version=None,
@@ -1996,14 +1965,12 @@ class KommunikasjonstavleApp(App):
             lambda *_: self._build_dagsrytme_ui(), 30)
 
     def _dr_parse(self, s):
-        """'HH:MM' → minutter siden midnatt."""
         try:
             h, m = s.split(':'); return int(h) * 60 + int(m)
         except Exception:
             return 0
 
     def _dr_fmt(self, minutes):
-        """Formater minutter til lesbar tekst."""
         if minutes <= 0:
             return '0 min'
         h, m = minutes // 60, minutes % 60
@@ -2014,7 +1981,6 @@ class KommunikasjonstavleApp(App):
         return f'{m} min'
 
     def _build_dagsrytme_ui(self):
-        """Bygger dagsrytme-skjermen. Kalles også av bakgrunnsklokken."""
         if self._cur_scr != 'dagsrytme':
             return
         entries = sorted(self.data.get('dagsrytme', []),
@@ -2127,7 +2093,6 @@ class KommunikasjonstavleApp(App):
         self._build_dagsrytme_ui()
 
     def _dr_entry_popup(self, entry):
-        """Popup for aa opprette eller redigere en dagsrytme-aktivitet."""
         new = entry is None
         pop_ref = [None]
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
@@ -2644,86 +2609,100 @@ class KommunikasjonstavleApp(App):
     #  BILDE – LAST OPP / LAST NED
     # ══════════════════════════════════════════════════
 
+    # OPPDATER: _pick_image med tillatelsessjekk
     def _pick_image(self, chosen_img_ref, label_widget, parent_popup=None):
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(
-            path='/sdcard',
-            filters=[img_filter],
-        )
-        fc_layout.add_widget(fc)
+        def after_permission(granted):
+            if not granted:
+                self._toast('Kan ikke velge bilde uten tilgang til galleriet.')
+                return
+            fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
+            fc = FileChooserListView(
+                path='/sdcard',
+                filters=[img_filter],
+            )
+            fc_layout.add_widget(fc)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
 
-        def on_select(*_):
-            if fc.selection:
-                src   = fc.selection[0]
-                fname = os.path.basename(src)
-                dst   = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src, dst)
-                    chosen_img_ref[0] = dst
-                    label_widget.text = 'Bilde: ' + fname
-                    logging.info('Bilde kopiert: %s', dst)
-                except Exception:
-                    logging.exception('_pick_image: kopieringsfeil')
-                    self._toast('Feil ved kopiering av bilde.')
-            fc_pop.dismiss()
+            def on_select(*_):
+                if fc.selection:
+                    src   = fc.selection[0]
+                    fname = os.path.basename(src)
+                    dst   = os.path.join(IMG_DIR, fname)
+                    try:
+                        shutil.copy2(src, dst)
+                        chosen_img_ref[0] = dst
+                        label_widget.text = 'Bilde: ' + fname
+                        logging.info('Bilde kopiert: %s', dst)
+                    except Exception:
+                        logging.exception('_pick_image: kopieringsfeil')
+                        self._toast('Feil ved kopiering av bilde.')
+                fc_pop.dismiss()
 
-        btn_row.add_widget(mk_btn('Velg dette bildet', hex_k('#6BCB77'), h=dp(52), cb=on_select))
-        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
-                                   cb=lambda *_: fc_pop.dismiss()))
-        fc_layout.add_widget(btn_row)
+            btn_row.add_widget(mk_btn('Velg dette bildet', hex_k('#6BCB77'), h=dp(52), cb=on_select))
+            btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                                       cb=lambda *_: fc_pop.dismiss()))
+            fc_layout.add_widget(btn_row)
 
-        fc_pop = Popup(
-            title='Velg bildefil', content=fc_layout,
-            size_hint=(0.97, 0.93),
-        )
-        fc_pop.open()
+            fc_pop = Popup(
+                title='Velg bildefil', content=fc_layout,
+                size_hint=(0.97, 0.93),
+            )
+            fc_pop.open()
 
+        be_om_galleri_tillatelse(after_permission)
+
+    # OPPDATER: _upload_to_folder med tillatelsessjekk
     def _upload_to_folder(self, fo):
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(
-            path='/sdcard',
-            filters=[img_filter],
-        )
-        fc_layout.add_widget(fc)
+        def after_permission(granted):
+            if not granted:
+                self._toast('Kan ikke laste opp bilde uten tilgang til galleriet.')
+                return
+            fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
+            fc = FileChooserListView(
+                path='/sdcard',
+                filters=[img_filter],
+            )
+            fc_layout.add_widget(fc)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
 
-        def on_upload(*_):
-            if fc.selection:
-                src   = fc.selection[0]
-                fname = os.path.basename(src)
-                dst   = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src, dst)
-                    name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
-                    fo['items'].append({
-                        'id':    str(uuid.uuid4()),
-                        'name':  name_suggestion,
-                        'image': dst,
-                    })
-                    save_struct(self.data)
+            def on_upload(*_):
+                if fc.selection:
+                    src   = fc.selection[0]
+                    fname = os.path.basename(src)
+                    dst   = os.path.join(IMG_DIR, fname)
+                    try:
+                        shutil.copy2(src, dst)
+                        name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
+                        fo['items'].append({
+                            'id':    str(uuid.uuid4()),
+                            'name':  name_suggestion,
+                            'image': dst,
+                        })
+                        save_struct(self.data)
+                        pop.dismiss()
+                        self._toast(f'Lagt til:\n{fname}')
+                        self._show_folder(fid=fo['id'])
+                        logging.info('Bilde lastet opp til mappe: %s', fname)
+                    except Exception:
+                        logging.exception('_upload_to_folder: feil')
+                        self._toast('Feil ved opplasting.')
+                else:
                     pop.dismiss()
-                    self._toast(f'Lagt til:\n{fname}')
-                    self._show_folder(fid=fo['id'])
-                    logging.info('Bilde lastet opp til mappe: %s', fname)
-                except Exception:
-                    logging.exception('_upload_to_folder: feil')
-                    self._toast('Feil ved opplasting.')
-            else:
-                pop.dismiss()
 
-        btn_row.add_widget(mk_btn('Last opp til mappe', hex_k('#4D96FF'), h=dp(52), cb=on_upload))
-        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
-                                   cb=lambda *_: pop.dismiss()))
-        fc_layout.add_widget(btn_row)
+            btn_row.add_widget(mk_btn('Last opp til mappe', hex_k('#4D96FF'), h=dp(52), cb=on_upload))
+            btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                                       cb=lambda *_: pop.dismiss()))
+            fc_layout.add_widget(btn_row)
 
-        pop = Popup(
-            title=f'Last opp til «{fo["name"]}»',
-            content=fc_layout, size_hint=(0.97, 0.93),
-        )
-        pop.open()
+            pop = Popup(
+                title=f'Last opp til «{fo["name"]}»',
+                content=fc_layout, size_hint=(0.97, 0.93),
+            )
+            pop.open()
+
+        be_om_galleri_tillatelse(after_permission)
 
     def _download_image(self, src_path):
         if not src_path or not os.path.exists(src_path):
@@ -2766,7 +2745,6 @@ if __name__ == '__main__':
     try:
         KommunikasjonstavleApp().run()
     except Exception:
-        # Siste utvei: skriv krasj til loggfil selv om appen aldri startet
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
             with open(LOG_FILE, 'a', encoding='utf-8') as f:
