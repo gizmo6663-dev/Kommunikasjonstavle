@@ -164,9 +164,15 @@ def hex_p(h):
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
-    """Lager en farget Kivy-knapp uten bakgrunnsbilde."""
+    """
+    Lager en farget Kivy-knapp uten bakgrunnsbilde.
+    size_hint_y og height legges inn via setdefault slik at verdier
+    sendt via **kw (f.eks. fra btn_kw-dict) aldri kolliderer.
+    """
+    kw.setdefault('size_hint_y', None)
+    kw.setdefault('height', h)
     b = Button(
-        text=text, size_hint_y=None, height=h,
+        text=text,
         font_size=sp(fs), background_normal='',
         background_color=bg, color=fg, bold=True, **kw,
     )
