@@ -446,14 +446,18 @@ class KommunikasjonstavleApp(App):
             spacing=dp(4),
         )
 
-        btn_kw = dict(size_hint_x=None, width=dp(72), size_hint_y=None, height=dp(54))
+        # btn_kw innehar size_hint_y og height – send IKKE h= til mk_btn i tillegg.
+        btn_kw = dict(
+            size_hint_x=None, width=dp(72),
+            size_hint_y=None, height=dp(54),
+        )
 
         self._btn_back = mk_btn(
-            '<  Bak', hex_k('#4D96FF'), fs=13, h=dp(54),
+            '<  Bak', hex_k('#4D96FF'), fs=13,
             cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
-            'Hjem', hex_k('#6BCB77'), fs=13, h=dp(54),
+            'Hjem', hex_k('#6BCB77'), fs=13,
             cb=self.go_home, **btn_kw,
         )
         self._lbl_title = Label(
@@ -461,11 +465,11 @@ class KommunikasjonstavleApp(App):
             color=(0.08, 0.10, 0.35, 1),
         )
         self._btn_draw = mk_btn(
-            'Tegn', hex_k('#FF9F43'), fs=13, h=dp(54),
+            'Tegn', hex_k('#FF9F43'), fs=13,
             cb=self.go_draw, **btn_kw,
         )
         self._btn_edit = mk_btn(
-            'Red.', hex_k('#C77DFF'), fs=13, h=dp(54),
+            'Red.', hex_k('#C77DFF'), fs=13,
             cb=self.toggle_edit, **btn_kw,
         )
 
