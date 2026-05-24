@@ -403,6 +403,33 @@ def img_filter(folder, filename):
     )
 
 
+def request_android_permissions():
+    """
+    Kopi av Eldritch Portals tillatelsesmetode – bekreftet å fungere
+    på Samsung Galaxy S25 Ultra (Android 15).
+
+    Viktige detaljer kopiert fra EP:
+      - Modul-nivå-funksjon (ikke metode), kalles via Clock fra build()
+      - Ingen check_permission() først – kaller request_permissions()
+        direkte. check_permission() returnerte feilaktig True og hindret
+        at dialogen noen gang ble vist.
+      - Ingen callback – Android håndterer stille hvis allerede innvilget.
+      - Bare except: pass – EP-stil, ingen logging som svelger feilen.
+      - Permission.READ_MEDIA_IMAGES som konstant (ikke streng) –
+        slik EP gjør det.
+    """
+    if platform != 'android':
+        return
+    try:
+        from android.permissions import request_permissions, Permission
+        request_permissions([
+            Permission.READ_EXTERNAL_STORAGE,
+            Permission.READ_MEDIA_IMAGES,
+        ])
+    except:
+        pass
+
+
 # ══════════════════════════════════════════════════════════════════
 #  WIDGET: TRYKKBART BILDE
 # ══════════════════════════════════════════════════════════════════
@@ -677,6 +704,9 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._bottombar)
 
         self._show_home()
+        # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
+        # Må ligge her (ikke on_start) for riktig timing på Android.
+        Clock.schedule_once(lambda dt: request_android_permissions(), 0.5)
         return root
 
     # ══════════════════════════════════════════════════
@@ -693,51 +723,12 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def on_start(self):
-        """Ber om Android-lagringstillatelser straks appen er klar."""
-        if platform == 'android':
-            Clock.schedule_once(lambda *_: self._request_android_permissions(), 0.5)
+        """on_start er ikke lenger brukt til tillatelser.
+        Kallet er flyttet til build() via Clock, identisk med Eldritch Portal."""
+        pass
 
-    def _request_android_permissions(self):
-        """
-        Velger riktige tillatelser basert paa Android API-nivaa:
-
-          Android 13+ (API 33+):
-            READ_MEDIA_IMAGES  – utloser "Gi tilgang til bilder"-dialog.
-            READ_EXTERNAL_STORAGE er utdatert og viser INGEN dialog paa
-            Android 13+, noe som forklarte at ingenting skjedde ved oppstart.
-
-          Android 12 og eldre:
-            READ_EXTERNAL_STORAGE + WRITE_EXTERNAL_STORAGE.
-
-        Tillatelsesstrengene er hardkodet (ikke Permission.KONSTANT) fordi
-        READ_MEDIA_IMAGES mangler som konstant i eldre p4a-versjoner og
-        ville utloese AttributeError som svelget hele foresporselen.
-        """
-        try:
-            from android.permissions import request_permissions, check_permission
-            from jnius import autoclass
-
-            api = autoclass('android.os.Build$VERSION').SDK_INT
-            logging.info('Android API-nivaa: %d', api)
-
-            if api >= 33:
-                # Android 13+ – kun READ_MEDIA_IMAGES gir bilder-dialog
-                perms = ['android.permission.READ_MEDIA_IMAGES']
-            else:
-                perms = [
-                    'android.permission.READ_EXTERNAL_STORAGE',
-                    'android.permission.WRITE_EXTERNAL_STORAGE',
-                ]
-
-            missing = [p for p in perms if not check_permission(p)]
-            if missing:
-                logging.info('Forespor tillatelser: %s', missing)
-                request_permissions(missing, self._on_permissions_result)
-            else:
-                logging.info('Alle noedvendige tillatelser er allerede innvilget.')
-
-        except Exception:
-            logging.exception('_request_android_permissions: feil')
+    # _request_android_permissions() er erstattet av modul-nivå-funksjonen
+    # request_android_permissions() øverst i filen – se der.
 
 
 
