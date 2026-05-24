@@ -19,18 +19,28 @@ jobs:
             -v ${{ github.workspace }}:/home/user/hostcwd \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            -c "pip install cmake==3.28.4 --quiet && buildozer android debug"
+            -c "pip install cmake==3.28.4 --quiet && buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log; exit \${PIPESTATUS[0]}"
 
       - name: Finn APK-fil
         id: find_apk
+        if: success()
         run: |
           APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
           echo "Fant APK: $APK"
 
       - name: Last opp APK som artefakt
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kommunikasjonstavle-apk
           path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
+
+      - name: Last opp bygglogg (alltid)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ github.workspace }}/build.log
+          retention-days: 14
