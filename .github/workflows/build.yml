@@ -17,8 +17,9 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
+            --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            android debug
+            -c "pip install cmake==3.28.4 --quiet && buildozer android debug"
 
       - name: Finn APK-fil
         id: find_apk
