@@ -44,6 +44,7 @@ from kivy.metrics import dp, sp
 from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.properties import ListProperty, NumericProperty
+from kivy.utils import platform
 
 
 try:
@@ -250,7 +251,8 @@ DEFAULT_STRUCT = {
         {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": []},
         {"id": "f5", "name": "Klaer",         "color": "#C77DFF", "image": None, "items": []},
         {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": []},
-    ]
+    ],
+    "sequences": [],
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -334,7 +336,11 @@ def load_struct():
     if os.path.exists(STRUCT_FILE):
         try:
             with open(STRUCT_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                d = json.load(f)
+            # Migrer eldre filer som mangler sequences-nøkkel
+            if 'sequences' not in d:
+                d['sequences'] = []
+            return d
         except Exception as e:
             logging.error('Feil ved lasting av structure.json: %s', e)
     import copy
@@ -354,13 +360,18 @@ def get_folder(d, fid):
 def img_filter(folder, filename):
     """
     FileChooser-filter for bildefiler.
-    Mapper sendes alltid gjennom (nødvendig for navigasjon).
-    Filendelser sjekkes case-insensitivt – løser problemet med
-    at Kivys innebygde glob-filter er case-sensitivt på Android.
+    1. Mapper vises alltid (nødvendig for navigasjon).
+    2. Filendelser sjekkes case-insensitivt.
+    3. os.path.isdir er innkapslet i try/except – på Android kan
+       manglende tillatelse gi OSError/PermissionError, noe som
+       ellers ville skjule alle oppføringer.
     """
-    full = os.path.join(folder, filename)
-    if os.path.isdir(full):
-        return True
+    try:
+        full = os.path.join(folder, filename)
+        if os.path.isdir(full):
+            return True
+    except Exception:
+        pass
     return filename.lower().endswith(
         ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif')
     )
@@ -643,6 +654,112 @@ class KommunikasjonstavleApp(App):
         return root
 
     # ══════════════════════════════════════════════════
+    #  ANDROID-TILLATELSER
+    #
+    #  Android 6+ (API 23+) krever at "farlige" tillatelser
+    #  (lagring, kamera, …) bes om eksplisitt under kjøring,
+    #  selv om de er deklarert i AndroidManifest.xml.
+    #  Uten dette vil FileChooser vise mapper men ingen filer.
+    #
+    #  For Android 11+ (API 30+) trengs i tillegg
+    #  MANAGE_EXTERNAL_STORAGE for å lese/skrive til /sdcard
+    #  utenfor appens private mappe. Dette åpner en Settings-side
+    #  der brukeren aktiverer tilgang manuelt.
+    # ══════════════════════════════════════════════════
+
+    def on_start(self):
+        """Ber om Android-lagringstillatelser straks appen er klar."""
+        if platform == 'android':
+            Clock.schedule_once(lambda *_: self._request_android_permissions(), 0.5)
+
+    def _request_android_permissions(self):
+        """
+        Trinn 1: Be om READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE
+                 og READ_MEDIA_IMAGES (Android 13+) via standard dialog.
+        Trinn 2: Be om MANAGE_EXTERNAL_STORAGE via Settings-intent
+                 (Android 11+) – nødvendig for full /sdcard-tilgang.
+        """
+        try:
+            from android.permissions import (
+                request_permissions, check_permission, Permission,
+            )
+            perms = [
+                Permission.READ_EXTERNAL_STORAGE,
+                Permission.WRITE_EXTERNAL_STORAGE,
+            ]
+            # READ_MEDIA_IMAGES ble innført i API 33 (Android 13)
+            try:
+                perms.append(Permission.READ_MEDIA_IMAGES)
+            except AttributeError:
+                logging.info('READ_MEDIA_IMAGES ikke tilgjengelig (eldre API).')
+
+            # Sjekk om tillatelsene allerede er innvilget
+            missing = [p for p in perms if not check_permission(p)]
+            if missing:
+                request_permissions(missing, self._on_permissions_result)
+                logging.info('Forespor tillatelser: %s', missing)
+            else:
+                logging.info('Alle lagringstillatelser allerede innvilget.')
+
+        except Exception:
+            logging.exception('_request_android_permissions: feil')
+
+        # Separat forespørsel om MANAGE_EXTERNAL_STORAGE (Android 11+)
+        Clock.schedule_once(lambda *_: self._request_manage_storage(), 1.5)
+
+    def _request_manage_storage(self):
+        """
+        MANAGE_EXTERNAL_STORAGE kan ikke bes om via vanlig dialog.
+        I stedet åpnes Android Settings-siden for appen, der brukeren
+        selv skrur på "Tillat tilgang til alle filer".
+        Kalles bare på Android 11+ (API 30+) hvis tillatelsen mangler.
+        """
+        try:
+            from jnius import autoclass
+            from android import mActivity
+
+            VersionClass = autoclass('android.os.Build$VERSION')
+            if VersionClass.SDK_INT < 30:
+                logging.info('MANAGE_EXTERNAL_STORAGE: ikke nødvendig (API < 30).')
+                return
+
+            Environment = autoclass('android.os.Environment')
+            if Environment.isExternalStorageManager():
+                logging.info('MANAGE_EXTERNAL_STORAGE: allerede innvilget.')
+                return
+
+            # Åpne Settings-siden for denne appen
+            Intent   = autoclass('android.content.Intent')
+            Uri      = autoclass('android.net.Uri')
+            Settings = autoclass('android.provider.Settings')
+
+            intent = Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+            )
+            pkg_uri = Uri.parse(
+                'package:' + mActivity.getPackageName()
+            )
+            intent.setData(pkg_uri)
+            mActivity.startActivity(intent)
+            logging.info('MANAGE_EXTERNAL_STORAGE: Settings-intent startet.')
+
+        except Exception:
+            logging.exception('_request_manage_storage: feil')
+
+    def _on_permissions_result(self, permissions, grants):
+        """Kalles av Android etter at brukeren har svart på tillatelsesdialogen."""
+        granted = [p for p, g in zip(permissions, grants) if g]
+        denied  = [p for p, g in zip(permissions, grants) if not g]
+        logging.info('Tillatelser innvilget: %s', granted)
+        if denied:
+            logging.warning('Tillatelser avvist: %s', denied)
+            self._toast(
+                'Noen tillatelser ble avvist.\n'
+                'Filblaing fungerer kanskje ikke.',
+                duration=4.0,
+            )
+
+    # ══════════════════════════════════════════════════
     #  NAVIGASJONSBAR
     # ══════════════════════════════════════════════════
 
@@ -728,6 +845,8 @@ class KommunikasjonstavleApp(App):
     def go_draw(self, *_):
         if self._cur_scr == 'folder':
             self.nav_stack.append(('folder', {'fid': self.cur_folder}))
+        elif self._cur_scr == 'sequences':
+            self.nav_stack.append(('sequences', {}))
         elif self._cur_scr not in ('draw',):
             self.nav_stack.append(('home', {}))
         self._show_draw()
@@ -739,6 +858,8 @@ class KommunikasjonstavleApp(App):
         self._set_edit_highlight(self.edit_mode)
         if self._cur_scr == 'folder':
             self._show_folder(fid=self.cur_folder)
+        elif self._cur_scr == 'sequences':
+            self._show_sequences()
         else:
             self._show_home()
 
@@ -762,6 +883,14 @@ class KommunikasjonstavleApp(App):
             orientation='vertical',
             spacing=dp(10), padding=dp(12),
         )
+
+        # Handlingsrekker-knapp alltid synlig øverst
+        outer.add_widget(mk_btn(
+            'Handlingsrekker',
+            hex_k('#4ECDC4'),
+            h=dp(56), fs=16,
+            cb=lambda *_: self._nav_sequences(),
+        ))
 
         if self.edit_mode:
             outer.add_widget(mk_btn(
@@ -1202,6 +1331,465 @@ class KommunikasjonstavleApp(App):
         if self.draw_canvas:
             self._set_draw_color(self.draw_canvas.draw_color)
 
+        pop.open()
+
+    # ══════════════════════════════════════════════════
+    #  POPUP – REDIGER MAPPE
+    # ══════════════════════════════════════════════════
+
+    # ══════════════════════════════════════════════════
+    #  HANDLINGSREKKER – navigasjon og listeskjerm
+    # ══════════════════════════════════════════════════
+
+    def _nav_sequences(self):
+        """Naviger fra hjemskjerm til handlingsrekke-listen."""
+        self._push('home')
+        self._show_sequences()
+
+    def _show_sequences(self, **_):
+        """Viser listen over alle lagrede handlingsrekker."""
+        self._cur_scr = 'sequences'
+        self._set_title('Handlingsrekker')
+
+        outer = BoxLayout(
+            orientation='vertical',
+            spacing=dp(10), padding=dp(12),
+        )
+
+        if self.edit_mode:
+            outer.add_widget(mk_btn(
+                '+  Ny handlingsrekke', hex_k('#6BCB77'), h=dp(52),
+                cb=lambda *_: self._seq_editor_popup(None),
+            ))
+
+        seqs = self.data.get('sequences', [])
+        if not seqs:
+            outer.add_widget(Label(
+                text='Ingen handlingsrekker ennaa.\nTrykk "Red." og "+" for aa lage en.',
+                font_size=sp(16), color=(0.4, 0.4, 0.5, 1),
+                halign='center', valign='middle',
+            ))
+        else:
+            sv = ScrollView()
+            vbox = BoxLayout(
+                orientation='vertical',
+                spacing=dp(10), size_hint_y=None,
+            )
+            vbox.bind(minimum_height=vbox.setter('height'))
+            for seq in seqs:
+                vbox.add_widget(self._make_seq_tile(seq))
+            sv.add_widget(vbox)
+            outer.add_widget(sv)
+
+        self._set_content(outer)
+
+    def _make_seq_tile(self, seq):
+        """Lager en flis for én handlingsrekke i listen."""
+        n    = len(seq.get('items', []))
+        edit = self.edit_mode
+        h    = dp(106) if edit else dp(72)
+
+        tile = RBox(
+            orientation='vertical',
+            size_hint_y=None, height=h,
+            spacing=dp(4), padding=(dp(6), dp(6)),
+            box_color=(1.0, 1.0, 1.0, 1.0), radius=dp(16),
+        )
+
+        lbl = f'{seq["name"]}  ({n} {"bilde" if n == 1 else "bilder"})'
+        if edit:
+            tap = lambda s=seq: self._seq_editor_popup(s)
+        else:
+            tap = lambda s=seq: self._play_sequence(s)
+
+        main_btn = RBtn(
+            text=lbl,
+            btn_color=list(hex_k('#4ECDC4')),
+            color=(0.02, 0.12, 0.18, 1),
+            bold=True, font_size=sp(17),
+            radius=dp(12),
+        )
+        main_btn.bind(on_release=lambda b, t=tap: t())
+        tile.add_widget(main_btn)
+
+        if edit:
+            row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(6))
+            row.add_widget(mk_btn(
+                'Eksporter', hex_k('#FF9F43'), h=dp(38), fs=13,
+                cb=lambda *_, s=seq: self._export_sequence(s),
+            ))
+            row.add_widget(mk_btn(
+                'Slett', hex_k('#FF6B6B'), h=dp(38), fs=13,
+                cb=lambda *_, s=seq: self._del_sequence(s),
+            ))
+            tile.add_widget(row)
+
+        return tile
+
+    # ── Spiller ───────────────────────────────────────────────────
+
+    def _play_sequence(self, seq):
+        """
+        Åpner et fullskjerm-popup som viser handlingsrekkens bilder ett
+        for ett. Trykk på bildet for å gå til neste; ved siste bilde
+        lukkes popupen automatisk.
+        """
+        items = [
+            it for it in seq.get('items', [])
+            if it.get('image') and os.path.exists(it['image'])
+        ]
+        if not items:
+            self._toast('Ingen bilder i handlingsrekken.\nLegg til bilder i redigeringsmodus.')
+            return
+
+        state = {'idx': 0}
+
+        # ── Faste UI-elementer ────────────────────────────────────
+        layout = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(8))
+
+        prog_lbl = Label(
+            text='', size_hint_y=None, height=dp(36),
+            font_size=sp(15), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center',
+        )
+        prog_lbl.bind(size=prog_lbl.setter('text_size'))
+
+        img_box  = BoxLayout()   # Inneholder TappableImage, byttes ut per steg
+
+        name_lbl = Label(
+            text='', size_hint_y=None, height=dp(50),
+            font_size=sp(22), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center',
+        )
+        name_lbl.bind(size=name_lbl.setter('text_size'))
+
+        instr_lbl = Label(
+            text='', size_hint_y=None, height=dp(28),
+            font_size=sp(13), color=(0.45, 0.48, 0.55, 1),
+            halign='center',
+        )
+        instr_lbl.bind(size=instr_lbl.setter('text_size'))
+
+        for w in [prog_lbl, img_box, name_lbl, instr_lbl]:
+            layout.add_widget(w)
+
+        pop = Popup(
+            title=seq['name'], content=layout,
+            size_hint=(1, 1),
+        )
+
+        def show_step(idx):
+            """Oppdaterer popupen til å vise steg idx."""
+            img_box.clear_widgets()
+            it      = items[idx]
+            is_last = (idx == len(items) - 1)
+
+            prog_lbl.text  = f'Steg {idx + 1} av {len(items)}'
+            name_lbl.text  = it.get('name', '')
+            instr_lbl.text = (
+                'Trykk pa bildet for aa avslutte'
+                if is_last else
+                'Trykk pa bildet for neste steg'
+            )
+
+            def advance(*_):
+                if is_last:
+                    pop.dismiss()
+                else:
+                    nxt = idx + 1
+                    state['idx'] = nxt
+                    show_step(nxt)
+
+            img_box.add_widget(TappableImage(
+                advance, source=it['image'],
+                allow_stretch=True, keep_ratio=True,
+            ))
+
+        show_step(0)
+        pop.open()
+        logging.info('Starter handlingsrekke: %s (%d steg)', seq['name'], len(items))
+
+    # ── Eksport ───────────────────────────────────────────────────
+
+    def _export_sequence(self, seq):
+        """
+        Eksporterer handlingsrekken til /sdcard/Download/[navn]_handlingsrekke/.
+        Bildene nummereres (01_, 02_, …) og en tekstfil beskriver rekkefølgen.
+        """
+        items = seq.get('items', [])
+        if not items:
+            self._toast('Ingen bilder aa eksportere.')
+            return
+        safe = seq['name'].replace(' ', '_').replace('/', '_')
+        export_dir = os.path.join(DOWNLOAD_DIR, f'{safe}_handlingsrekke')
+        try:
+            os.makedirs(export_dir, exist_ok=True)
+            manifest = [f'Handlingsrekke: {seq["name"]}\n']
+            for i, it in enumerate(items, 1):
+                img_path = it.get('image', '')
+                if img_path and os.path.exists(img_path):
+                    ext      = os.path.splitext(img_path)[1].lower() or '.png'
+                    dst_name = f'{i:02d}_{it["name"].replace(" ", "_")}{ext}'
+                    shutil.copy2(img_path, os.path.join(export_dir, dst_name))
+                    manifest.append(f'{i}. {it["name"]}  ->  {dst_name}')
+                else:
+                    manifest.append(f'{i}. {it["name"]}  (ingen bildefil)')
+            txt_path = os.path.join(export_dir, 'rekkefølge.txt')
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(manifest))
+            self._toast(f'Eksportert til Nedlastinger:\n{safe}_handlingsrekke/')
+            logging.info('Eksportert sekvens: %s', export_dir)
+        except Exception:
+            logging.exception('_export_sequence: feil')
+            self._toast('Feil ved eksport.')
+
+    def _del_sequence(self, seq):
+        self.data['sequences'] = [
+            s for s in self.data.get('sequences', []) if s['id'] != seq['id']
+        ]
+        save_struct(self.data)
+        self._show_sequences()
+
+    # ── Rediger sekvens ───────────────────────────────────────────
+
+    def _seq_editor_popup(self, seq):
+        """
+        Popup for å opprette (seq=None) eller redigere en handlingsrekke.
+        Viser: navnfelt, scrollbar bildeliste med slette-knapper,
+        knapper for å legge til fra eksisterende ASK-mapper eller fra enhet.
+        """
+        import copy as _copy
+        new_seq   = seq is None
+        seq_items = _copy.deepcopy(seq.get('items', [])) if seq else []
+        pop_ref   = [None]
+
+        # ── Navn ─────────────────────────────────────────────────
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
+
+        layout.add_widget(Label(
+            text='Navn pa handlingsrekken:',
+            size_hint_y=None, height=dp(28),
+            font_size=sp(15), color=(0, 0, 0, 1), halign='left',
+        ))
+        name_inp = TextInput(
+            text='' if new_seq else seq['name'],
+            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16),
+        )
+        layout.add_widget(name_inp)
+
+        # ── Bildeliste ────────────────────────────────────────────
+        count_lbl = Label(
+            text='', size_hint_y=None, height=dp(26),
+            font_size=sp(14), color=(0.25, 0.25, 0.25, 1), halign='left',
+        )
+        layout.add_widget(count_lbl)
+
+        list_sv = ScrollView(size_hint_y=None, height=dp(200))
+        list_box = BoxLayout(
+            orientation='vertical', spacing=dp(4), size_hint_y=None,
+        )
+        list_box.bind(minimum_height=list_box.setter('height'))
+        layout.add_widget(list_sv)
+        list_sv.add_widget(list_box)
+
+        def refresh_list():
+            list_box.clear_widgets()
+            count_lbl.text = f'Bilder i rekken: {len(seq_items)}'
+            for i, it in enumerate(seq_items):
+                row = RBox(
+                    size_hint_y=None, height=dp(52),
+                    spacing=dp(6), padding=(dp(6), dp(4)),
+                    box_color=(0.96, 0.97, 1.0, 1.0), radius=dp(10),
+                    orientation='horizontal',
+                )
+                # Miniatyr
+                if it.get('image') and os.path.exists(it['image']):
+                    row.add_widget(Image(
+                        source=it['image'],
+                        size_hint=(None, 1), width=dp(44),
+                        allow_stretch=True, keep_ratio=True,
+                    ))
+                row.add_widget(Label(
+                    text=f'{i + 1}.  {it["name"]}',
+                    font_size=sp(14), color=(0.08, 0.08, 0.08, 1),
+                    halign='left',
+                ))
+                row.add_widget(mk_btn(
+                    'Fjern', hex_k('#FF6B6B'), h=dp(44), fs=12,
+                    size_hint_x=None, width=dp(72),
+                    cb=lambda *_, idx=i: (seq_items.pop(idx), refresh_list()),
+                ))
+                list_box.add_widget(row)
+
+        refresh_list()
+
+        # ── Legg til-knapper ──────────────────────────────────────
+        add_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        add_row.add_widget(mk_btn(
+            'Fra mapper', hex_k('#4D96FF'), h=dp(48), fs=14,
+            cb=lambda *_: self._seq_pick_from_folders(seq_items, refresh_list),
+        ))
+        add_row.add_widget(mk_btn(
+            'Fra enhet', hex_k('#FF9F43'), h=dp(48), fs=14,
+            cb=lambda *_: self._seq_pick_from_device(seq_items, refresh_list),
+        ))
+        layout.add_widget(add_row)
+
+        # ── Lagre / Avbryt ────────────────────────────────────────
+        btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+
+        def on_save(*_):
+            nm = name_inp.text.strip()
+            if not nm:
+                self._toast('Skriv inn et navn.')
+                return
+            if new_seq:
+                if 'sequences' not in self.data:
+                    self.data['sequences'] = []
+                self.data['sequences'].append({
+                    'id':    str(uuid.uuid4()),
+                    'name':  nm,
+                    'items': seq_items,
+                })
+            else:
+                seq.update({'name': nm, 'items': seq_items})
+            save_struct(self.data)
+            pop_ref[0].dismiss()
+            self._show_sequences()
+
+        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save))
+        btn_row.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(50),
+            cb=lambda *_: pop_ref[0].dismiss(),
+        ))
+        layout.add_widget(btn_row)
+
+        pop = Popup(
+            title='Ny handlingsrekke' if new_seq else f'Rediger: {seq["name"]}',
+            content=layout,
+            size_hint=(0.95, 0.94),
+        )
+        pop_ref[0] = pop
+        pop.open()
+
+    def _seq_pick_from_folders(self, seq_items, refresh_fn):
+        """
+        Viser alle ASK-bilder fra alle mapper i et blaingsrutenett.
+        Brukeren trykker på et bilde for å legge det til i rekken.
+        """
+        import copy as _copy
+        all_items = [
+            _copy.deepcopy(it)
+            for fo in self.data.get('folders', [])
+            for it in fo.get('items', [])
+            if it.get('image') and os.path.exists(it['image'])
+        ]
+
+        if not all_items:
+            self._toast('Ingen ASK-bilder funnet.\nLegg til bilder i mappene forst.')
+            return
+
+        pick_ref = [None]
+        layout   = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        layout.add_widget(Label(
+            text='Trykk pa et bilde for aa legge det til i rekken:',
+            size_hint_y=None, height=dp(30),
+            font_size=sp(14), color=(0.1, 0.1, 0.1, 1), halign='center',
+        ))
+
+        grid = GridLayout(cols=3, spacing=dp(8), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+
+        for it in all_items:
+            cell = BoxLayout(
+                orientation='vertical',
+                size_hint_y=None, height=dp(116), spacing=dp(2),
+            )
+
+            def make_pick(item=it):
+                def on_pick(*_):
+                    seq_items.append(item)
+                    refresh_fn()
+                    pick_ref[0].dismiss()
+                return on_pick
+
+            cell.add_widget(TappableImage(
+                make_pick(),
+                source=it['image'],
+                size_hint=(1, None), height=dp(80),
+                allow_stretch=True, keep_ratio=True,
+            ))
+            lbl = Label(
+                text=it['name'], font_size=sp(11),
+                color=(0.1, 0.1, 0.1, 1), halign='center',
+                size_hint_y=None, height=dp(28),
+            )
+            lbl.bind(size=lbl.setter('text_size'))
+            cell.add_widget(lbl)
+            grid.add_widget(cell)
+
+        sv = ScrollView()
+        sv.add_widget(grid)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(50),
+            cb=lambda *_: pick_ref[0].dismiss(),
+        ))
+
+        pick_pop = Popup(
+            title='Velg ASK-bilde',
+            content=layout, size_hint=(0.95, 0.92),
+        )
+        pick_ref[0] = pick_pop
+        pick_pop.open()
+
+    def _seq_pick_from_device(self, seq_items, refresh_fn):
+        """
+        Åpner FileChooser for å laste opp et bilde direkte
+        til handlingsrekken fra enheten.
+        """
+        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
+        fc = FileChooserListView(path='/sdcard', filters=[img_filter])
+        fc_layout.add_widget(fc)
+
+        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        pop_ref = [None]
+
+        def on_upload(*_):
+            if fc.selection:
+                src_path = fc.selection[0]
+                fname    = os.path.basename(src_path)
+                dst      = os.path.join(IMG_DIR, fname)
+                try:
+                    shutil.copy2(src_path, dst)
+                    name_sug = os.path.splitext(fname)[0].replace('_', ' ')
+                    seq_items.append({
+                        'id':    str(uuid.uuid4()),
+                        'name':  name_sug,
+                        'image': dst,
+                    })
+                    refresh_fn()
+                    self._toast(f'Lagt til: {fname}')
+                    logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
+                except Exception:
+                    logging.exception('_seq_pick_from_device: feil')
+                    self._toast('Feil ved opplasting.')
+            pop_ref[0].dismiss()
+
+        btn_row.add_widget(mk_btn(
+            'Legg til i rekken', hex_k('#6BCB77'), h=dp(52), cb=on_upload,
+        ))
+        btn_row.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(52),
+            cb=lambda *_: pop_ref[0].dismiss(),
+        ))
+        fc_layout.add_widget(btn_row)
+
+        pop = Popup(
+            title='Last opp til handlingsrekke',
+            content=fc_layout, size_hint=(0.97, 0.93),
+        )
+        pop_ref[0] = pop
         pop.open()
 
     # ══════════════════════════════════════════════════
