@@ -20,7 +20,7 @@ android.ndk = 25b
 android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
-p4a.branch = v2024.01.21
+# p4a.branch fjernet – bruker p4a bundlet i Docker-imaget
 
 # ─── Tillatelser ──────────────────────────────────────────────────
 # READ_EXTERNAL_STORAGE og WRITE_EXTERNAL_STORAGE (Android < 13)
