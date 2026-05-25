@@ -598,57 +598,55 @@ class TappableImage(Image):
 
 class DrawCanvas(Image):
     """
-    PIL/Pillow-basert tegneflate, vist via Kivy Texture.
+    PIL/Pillow-basert tegneflate med stempel-basert pensel og
+    Catmull-Rom stabilisering.
 
-    VIKTIG: bruker 'draw_color' (ikke 'color') fordi Kivy Image
-    har en innebygd 'color'-egenskap som styrer bilde-tint (RGBA).
-    Hvis vi hadde brukt 'self.color' ville hele lerretsbildet fått
-    endret farge ved hvert fargevalg, og PIL-koden ville lest feil verdi.
+    VIKTIG: bruker 'draw_color' (ikke 'color') for å unngå kollisjon
+    med Kivy Image sin innebygde 'color'-tint-egenskap.
 
-    Koordinatsystem:
-      Kivy: origo nederst-venstre
-      PIL:  origo øverst-venstre
-    Konvertering i _kv2pil().
+    Penselkvalitet:
+      Stempel-metoden maler fylte sirkler langs hele banen i stedet
+      for d.line(). Dette gir myke, runde strøk uten hakkete kanter.
+      Tettheten styres av 'spacing' (brøkdel av radius).
 
-    Verktøy: pen, eraser, line, rect, ellipse, fill
+    Stabilisering (lazy brush):
+      Rå touch-punkter samles i _raw_pts under tegning.
+      Glidende gjennomsnitt av siste N punkter gir stabil
+      sanntidspreview der N = self.stabilize * 2.
+      Ved finger-opp tegnes hele strøket på nytt via Catmull-Rom
+      spline-interpolasjon – krokete linjer rettes opp retroaktivt.
+      stabilize=0 → ingen effekt. stabilize=10 → maksimal glatthet.
     """
 
     def __init__(self, **kw):
         super().__init__(allow_stretch=True, keep_ratio=False, **kw)
-        self._pil       = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
-        self._base      = None   # Snapshot for rubber-band-tegning
-        self._prev      = None   # Forrige touch-punkt (freehand)
-        self._start     = None   # Startpunkt for shape-verktøy
-        self.tool       = 'pen'
-        self.draw_color = '#000000'  # Tegnefargen (IKKE Image.color!)
-        self.size_px    = 6
-        self._history   = []   # Angre-bunke (PIL-kopier)
-        self._redo      = []   # Gjenta-bunke
-        self._MAX_HIST  = 20
+        self._pil        = PILImage.new('RGB', (CANVAS_W, CANVAS_H), (255, 255, 255))
+        self._base       = None    # Snapshot for rubber-band
+        self._start      = None    # Startpunkt for shapes
+        self._raw_pts    = []      # Alle rå touch-punkter for strøket
+        self._stab_pts   = []      # Stabiliserte punkter (glidende snitt)
+        self._stroke_base = None   # Canvas-kopi fra start av strøk (for re-tegning)
+        self.tool        = 'pen'
+        self.draw_color  = '#000000'
+        self.size_px     = 6
+        self.stabilize   = 4       # 0–10, der 0=av og 10=maks
+        self._history    = []
+        self._redo       = []
+        self._MAX_HIST   = 20
         self._refresh()
 
-    # ── Koordinater ───────────────────────────────────────────────
+    # ── Koordinater ──────────────────────────────────────────────
 
     def _kv2pil(self, kx, ky):
-        """
-        Konverterer Kivy-touch-koordinater til PIL-pikselkoordinater.
-        Returnerer (0,0) og logger en advarsel hvis widgeten ennå
-        ikke har fått sin endelige størrelse (divisjon-med-null-vern).
-        """
         if self.width == 0 or self.height == 0:
-            logging.warning('_kv2pil: width=%s height=%s – canvas ikke layoutet ennå', self.width, self.height)
             return (0, 0)
         px = int((kx - self.x) / self.width  * CANVAS_W)
         py = int((1.0 - (ky - self.y) / self.height) * CANVAS_H)
-        return (
-            max(0, min(CANVAS_W - 1, px)),
-            max(0, min(CANVAS_H - 1, py)),
-        )
+        return (max(0, min(CANVAS_W-1, px)), max(0, min(CANVAS_H-1, py)))
 
-    # ── Teksturoppdatering ─────────────────────────────────────────
+    # ── Tekstur ───────────────────────────────────────────────────
 
     def _refresh(self):
-        """Konverterer PIL-bildet til en Kivy-tekstur og oppdaterer widgeten."""
         if not PIL_OK:
             return
         try:
@@ -658,9 +656,101 @@ class DrawCanvas(Image):
             tex.flip_vertical()
             self.texture = tex
         except Exception:
-            logging.exception('_refresh: feil ved teksturoppdatering')
+            logging.exception('_refresh feil')
 
-    # ── Touch-hendelser ────────────────────────────────────────────
+    # ── Stabilisering ─────────────────────────────────────────────
+
+    def _moving_avg(self, pts, window):
+        """
+        Glidende gjennomsnitt over punktbuffer.
+        Hvert utgangspunkt er snittet av de siste 'window' inngangspunktene.
+        Gir sanntids-stabilisering mens fingeren beveger seg.
+        """
+        if window <= 1 or len(pts) < 2:
+            return list(pts)
+        result = []
+        for i in range(len(pts)):
+            s = max(0, i - window + 1)
+            w = pts[s:i+1]
+            result.append((
+                int(sum(p[0] for p in w) / len(w)),
+                int(sum(p[1] for p in w) / len(w)),
+            ))
+        return result
+
+    def _catmull_rom(self, pts, subdivisions=6):
+        """
+        Catmull-Rom spline-interpolasjon.
+        Genererer 'subdivisions' mellompunkter mellom hvert par av
+        kontrollpunkter, noe som gjør krokete touch-sekvenser glatte.
+        Fantom-endepunkter legges til slik at kurven berører
+        alle originalpunkter.
+        """
+        if len(pts) < 2:
+            return list(pts)
+        p = [pts[0]] + list(pts) + [pts[-1]]
+        out = []
+        for i in range(1, len(p) - 2):
+            p0, p1, p2, p3 = p[i-1], p[i], p[i+1], p[i+2]
+            for j in range(subdivisions):
+                t  = j / subdivisions
+                t2 = t * t
+                t3 = t2 * t
+                x  = int(0.5 * (
+                    2*p1[0]
+                    + (-p0[0] + p2[0]) * t
+                    + (2*p0[0] - 5*p1[0] + 4*p2[0] - p3[0]) * t2
+                    + (-p0[0] + 3*p1[0] - 3*p2[0] + p3[0]) * t3
+                ))
+                y  = int(0.5 * (
+                    2*p1[1]
+                    + (-p0[1] + p2[1]) * t
+                    + (2*p0[1] - 5*p1[1] + 4*p2[1] - p3[1]) * t2
+                    + (-p0[1] + 3*p1[1] - 3*p2[1] + p3[1]) * t3
+                ))
+                out.append((
+                    max(0, min(CANVAS_W-1, x)),
+                    max(0, min(CANVAS_H-1, y)),
+                ))
+        out.append(pts[-1])
+        return out
+
+    # ── Stempel-pensel ────────────────────────────────────────────
+
+    def _stamp_path(self, pts, col, r, erase=False):
+        """
+        Maler fylte sirkler (stempler) langs en punktliste.
+        Avstand mellom stempler = r * 0.35 → tett, sammenhengende strøk.
+        Mye jevnere enn d.line() fordi hver sirkel er rund og glatt.
+        erase=True bruker hvit farge (viskelær).
+        """
+        if not pts:
+            return
+        fill  = (255, 255, 255) if erase else col
+        d     = ImageDraw.Draw(self._pil)
+        r     = max(1, r)
+        step  = max(1, int(r * 0.35))   # tetthet: 35 % av radius
+        acc   = 0.0                      # akkumulert avstand siden siste stempel
+
+        def stamp(x, y):
+            d.ellipse([x-r, y-r, x+r, y+r], fill=fill)
+
+        stamp(*pts[0])
+        px, py = pts[0]
+        for x, y in pts[1:]:
+            dx   = x - px
+            dy   = y - py
+            dist = (dx*dx + dy*dy) ** 0.5
+            acc += dist
+            while acc >= step:
+                acc -= step
+                frac = 1.0 - acc / max(dist, 1)
+                sx   = int(px + dx * frac)
+                sy   = int(py + dy * frac)
+                stamp(sx, sy)
+            px, py = x, y
+
+    # ── Touch ─────────────────────────────────────────────────────
 
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos):
@@ -668,21 +758,29 @@ class DrawCanvas(Image):
         touch.grab(self)
         try:
             pt = self._kv2pil(*touch.pos)
-            self._start = pt
-            self._prev  = pt
+            self._start    = pt
+            self._raw_pts  = [pt]
+            self._stab_pts = [pt]
+
             if self.tool == 'fill':
                 self._push_history()
                 self._do_fill(pt)
                 self._refresh()
+
             elif self.tool in ('pen', 'eraser'):
                 self._push_history()
-                self._draw_dot(pt)
+                self._stroke_base = self._pil.copy()
+                r = max(1, self.size_px // 2)
+                self._stamp_path([pt], self._col(), r,
+                                 erase=(self.tool == 'eraser'))
                 self._refresh()
+
             elif self.tool in ('line', 'rect', 'ellipse'):
                 self._push_history()
                 self._base = self._pil.copy()
+
         except Exception:
-            logging.exception('on_touch_down: PIL-feil')
+            logging.exception('on_touch_down feil')
         return True
 
     def on_touch_move(self, touch):
@@ -690,17 +788,35 @@ class DrawCanvas(Image):
             return False
         try:
             pt = self._kv2pil(*touch.pos)
+
             if self.tool in ('pen', 'eraser'):
-                if self._prev:
-                    self._draw_seg(self._prev, pt)
-                self._prev = pt
+                self._raw_pts.append(pt)
+
+                # Sanntids-stabilisering: glidende snitt
+                win = max(1, self.stabilize * 2)
+                smoothed = self._moving_avg(self._raw_pts, win)
+                new_stab = smoothed[len(self._stab_pts):]
+                if not new_stab:
+                    new_stab = [smoothed[-1]]
+                self._stab_pts.extend(new_stab)
+
+                # Tegn bare de nye stemmelpunktene (ikke hele strøket)
+                if len(self._stab_pts) >= 2:
+                    seg = self._stab_pts[-2:]
+                else:
+                    seg = self._stab_pts
+                r = max(1, self.size_px // 2)
+                self._stamp_path(seg, self._col(), r,
+                                 erase=(self.tool == 'eraser'))
                 self._refresh()
+
             elif self.tool in ('line', 'rect', 'ellipse') and self._base:
                 self._pil = self._base.copy()
                 self._draw_shape(self._start, pt)
                 self._refresh()
+
         except Exception:
-            logging.exception('on_touch_move: PIL-feil')
+            logging.exception('on_touch_move feil')
         return True
 
     def on_touch_up(self, touch):
@@ -709,64 +825,69 @@ class DrawCanvas(Image):
         touch.ungrab(self)
         try:
             pt = self._kv2pil(*touch.pos)
-            if self.tool in ('line', 'rect', 'ellipse') and self._base:
+
+            if self.tool in ('pen', 'eraser') and self._stroke_base is not None:
+                self._raw_pts.append(pt)
+
+                if self.stabilize > 0 and len(self._raw_pts) >= 3:
+                    # Post-strøk: gjenopprett canvas-snapshot og
+                    # tegn hele strøket på nytt via Catmull-Rom.
+                    # Dette er det som glatter ut rystende linjer.
+                    win      = max(1, self.stabilize * 2)
+                    smoothed = self._moving_avg(self._raw_pts, win)
+                    subs     = max(2, self.stabilize)
+                    final    = self._catmull_rom(smoothed, subdivisions=subs)
+                    self._pil = self._stroke_base.copy()
+                    r = max(1, self.size_px // 2)
+                    self._stamp_path(final, self._col(), r,
+                                     erase=(self.tool == 'eraser'))
+                    self._refresh()
+
+                self._stroke_base = None
+                self._raw_pts     = []
+                self._stab_pts    = []
+
+            elif self.tool in ('line', 'rect', 'ellipse') and self._base:
                 self._pil = self._base.copy()
                 self._draw_shape(self._start, pt)
                 self._refresh()
                 self._base = None
+
         except Exception:
-            logging.exception('on_touch_up: PIL-feil')
+            logging.exception('on_touch_up feil')
         self._start = None
-        self._prev  = None
         return True
 
-    # ── PIL-primitiver ─────────────────────────────────────────────
+    # ── Shapes ───────────────────────────────────────────────────
 
     def _col(self):
-        """Returnerer gjeldende farge som PIL RGB-tuple."""
         return (255, 255, 255) if self.tool == 'eraser' else hex_p(self.draw_color)
-
-    def _draw_dot(self, pt):
-        d = ImageDraw.Draw(self._pil)
-        r = max(1, self.size_px // 2)
-        x, y = pt
-        d.ellipse([x - r, y - r, x + r, y + r], fill=self._col())
-
-    def _draw_seg(self, p1, p2):
-        d = ImageDraw.Draw(self._pil)
-        d.line([p1, p2], fill=self._col(), width=max(1, self.size_px))
 
     def _draw_shape(self, p1, p2):
         if not p1 or not p2:
             return
-        d = ImageDraw.Draw(self._pil)
-        x0, y0 = min(p1[0], p2[0]), min(p1[1], p2[1])
-        x1, y1 = max(p1[0], p2[0]), max(p1[1], p2[1])
-        c = hex_p(self.draw_color)
-        w = max(1, self.size_px)
+        d  = ImageDraw.Draw(self._pil)
+        x0 = min(p1[0], p2[0]); y0 = min(p1[1], p2[1])
+        x1 = max(p1[0], p2[0]); y1 = max(p1[1], p2[1])
+        c  = hex_p(self.draw_color)
+        w  = max(1, self.size_px)
         if self.tool == 'line':
-            d.line([p1, p2], fill=c, width=w)
+            # Lines bruker Catmull-Rom mellom to punkter for mykere avslutt
+            pts   = [p1, p2]
+            final = self._catmull_rom(pts, subdivisions=8)
+            self._stamp_path(final, c, w // 2)
         elif self.tool == 'rect':
             d.rectangle([x0, y0, x1, y1], outline=c, width=w)
         elif self.tool == 'ellipse':
             d.ellipse([x0, y0, x1, y1], outline=c, width=w)
 
     def _do_fill(self, pt):
-        """
-        Floodfill (malingsspann): fyller sammenhengende fargeomraade
-        fra touch-punktet med gjeldende draw_color.
-        thresh=30 gir toleranse for anti-aliasede kanter.
-        """
         try:
-            ImageDraw.floodfill(
-                self._pil, pt,
-                hex_p(self.draw_color),
-                thresh=30,
-            )
+            ImageDraw.floodfill(self._pil, pt, hex_p(self.draw_color), thresh=30)
         except Exception:
-            logging.exception('_do_fill: floodfill-feil')
+            logging.exception('_do_fill feil')
 
-    # ── Offentlige metoder ─────────────────────────────────────────
+    # ── Offentlige metoder ────────────────────────────────────────
 
     def clear_canvas(self, *_):
         self._push_history()
@@ -782,40 +903,29 @@ class DrawCanvas(Image):
                 (CANVAS_W, CANVAS_H), PILImage.LANCZOS)
             self._refresh()
         except Exception:
-            logging.exception('load_from: feil ved bildeopplasting')
+            logging.exception('load_from feil')
 
-    # ── Angre / Gjenta ─────────────────────────────────────────────
+    # ── Angre / Gjenta ────────────────────────────────────────────
 
     def _push_history(self):
-        """
-        Lagrer en kopi av gjeldende PIL-bilde til angre-bunken.
-        Kalles FØR en destruktiv operasjon starter.
-        Tømmer gjenta-bunken (ny handling gjør gjenta ugyldig).
-        """
         self._history.append(self._pil.copy())
         if len(self._history) > self._MAX_HIST:
             self._history.pop(0)
         self._redo.clear()
 
     def angre(self, *_):
-        """Angrer siste handling (Ctrl+Z-ekvivalent)."""
         if not self._history:
-            logging.debug('angre: tom historikk')
             return
         self._redo.append(self._pil.copy())
         self._pil = self._history.pop()
         self._refresh()
-        logging.debug('angre: %d steg igjen i historikk', len(self._history))
 
     def gjenta(self, *_):
-        """Gjentar sist angret handling."""
         if not self._redo:
-            logging.debug('gjenta: tom gjenta-bunke')
             return
         self._history.append(self._pil.copy())
         self._pil = self._redo.pop()
         self._refresh()
-        logging.debug('gjenta: %d steg igjen i gjenta-bunke', len(self._redo))
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1386,26 +1496,57 @@ class KommunikasjonstavleApp(App):
         ))
         root.add_widget(act)
 
-        # ── Rad 3: Penselstørrelse – egen rad, slider får full bredde ──
-        # Slider trenger god plass og kan ikke dele rad med mange knapper.
+        # ── Rad 3: Penselstørrelse ────────────────────────────────
         size_row = BoxLayout(
-            size_hint_y=None, height=dp(54),
-            spacing=dp(8), padding=(dp(6), dp(4)),
+            size_hint_y=None, height=dp(50),
+            spacing=dp(8), padding=(dp(6), dp(2)),
         )
         size_row.add_widget(Label(
-            text='Penselstorrelse:', size_hint_x=None, width=dp(148),
-            font_size=sp(14), bold=True,
+            text='Storrelse:', size_hint_x=None, width=dp(90),
+            font_size=sp(13), bold=True,
             color=(0.10, 0.10, 0.10, 1), halign='left',
         ))
         self._size_slider = Slider(min=2, max=60, value=6, step=1)
         self._size_lbl    = Label(
-            text=' 6 px', size_hint_x=None, width=dp(52),
-            font_size=sp(14), color=(0.10, 0.10, 0.10, 1),
+            text=' 6 px', size_hint_x=None, width=dp(48),
+            font_size=sp(13), color=(0.10, 0.10, 0.10, 1),
         )
         self._size_slider.bind(value=self._on_size_change)
         size_row.add_widget(self._size_slider)
         size_row.add_widget(self._size_lbl)
         root.add_widget(size_row)
+
+        # ── Rad 4: Stabilisering ──────────────────────────────────
+        stab_row = BoxLayout(
+            size_hint_y=None, height=dp(50),
+            spacing=dp(8), padding=(dp(6), dp(2)),
+        )
+        stab_row.add_widget(Label(
+            text='Stabilisering:', size_hint_x=None, width=dp(110),
+            font_size=sp(13), bold=True,
+            color=(0.10, 0.10, 0.10, 1), halign='left',
+        ))
+        self._stab_slider = Slider(min=0, max=10, value=4, step=1)
+        self._stab_lbl    = Label(
+            text='4', size_hint_x=None, width=dp(28),
+            font_size=sp(13), color=(0.10, 0.10, 0.10, 1),
+        )
+        def on_stab(sl, val):
+            v = int(val)
+            self._stab_lbl.text = str(v)
+            if self.draw_canvas:
+                self.draw_canvas.stabilize = v
+        self._stab_slider.bind(value=on_stab)
+        stab_row.add_widget(self._stab_slider)
+        stab_row.add_widget(self._stab_lbl)
+
+        stab_info = Label(
+            text='0=av  10=maks',
+            size_hint_x=None, width=dp(84),
+            font_size=sp(11), color=(0.50, 0.50, 0.50, 1),
+        )
+        stab_row.add_widget(stab_info)
+        root.add_widget(stab_row)
 
         # ── Rad 4: Fargevalg – en knapp åpner fargevalgpopup ──────
         # Viser gjeldende farge som farget sirkel + knapp for å bytte.
@@ -1434,6 +1575,7 @@ class KommunikasjonstavleApp(App):
 
         # ── Tegneflate ─────────────────────────────────────────────
         self.draw_canvas = DrawCanvas()
+        self.draw_canvas.stabilize = int(self._stab_slider.value)
         root.add_widget(self.draw_canvas)
         logging.info('DrawCanvas opprettet.')
 
