@@ -1255,7 +1255,7 @@ class KommunikasjonstavleApp(App):
             ))
 
         # ── 3-kolonne mappegrid ───────────────────────────────────
-        grid = GridLayout(cols=3, spacing=dp(8), padding=(dp(4), dp(4)), size_hint_y=None)
+        grid = GridLayout(cols=3, spacing=dp(6), padding=(dp(6), dp(6)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for fo in self.data['folders']:
             grid.add_widget(self._make_folder_tile(fo))
@@ -1266,61 +1266,36 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_folder_tile(self, fo):
-        """
-        Mappeflise: bare en stor RBtn uten hvit boks rundt.
-        Ryddigere utseende – mapper trenger ikke et lag til.
-        Bildet (om det finnes) vises som bakgrunn via canvas.before
-        eller klippet over knappen.
-        """
-        has_img = bool(fo.get('image') and os.path.exists(fo['image']))
-        edit    = self.edit_mode
-
-        # Høyder: mellom gammel (168/200) og dobbelt nåværende (240/296)
-        # Setter den til ~160 uten bilde, ~185 med bilde
-        TILE_H = dp(155) if (edit and not has_img) else (
-                 dp(188) if edit else (dp(158) if not has_img else dp(185)))
+        """Enkel farget flis med sentrert navn – ingen bilde."""
+        edit   = self.edit_mode
+        TILE_H = dp(176) if edit else dp(142)
+        btn_h  = dp(138) if edit else dp(142)
 
         if edit:
             tap = lambda f=fo: self._folder_popup(f)
         else:
             tap = lambda f=fo: self._open_folder(f)
 
-        # Yttercontainer – transparent, bare for stabling
         cell = BoxLayout(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
             spacing=dp(3),
         )
 
-        if has_img:
-            # Bilde klippet innenfor avrundet ramme via RBox
-            img_box = RBox(
-                size_hint=(1, None), height=dp(108),
-                box_color=(0.96, 0.97, 0.99, 1.0),
-                radius=dp(14),
-                padding=(dp(2), dp(2)),
-            )
-            img_box.add_widget(TappableImage(
-                tap, source=fo['image'],
-                allow_stretch=True, keep_ratio=True,
-            ))
-            cell.add_widget(img_box)
-
         btn = RBtn(
             text=fo['name'],
-            size_hint=(1, None),
-            height=dp(46),
+            size_hint=(1, None), height=btn_h,
             btn_color=list(hex_k(fo['color'])),
             color=(0.05, 0.05, 0.2, 1),
-            bold=True, font_size=fsp(14),
-            radius=dp(12),
+            bold=True, font_size=fsp(16),
+            radius=dp(16),
         )
         btn.bind(on_release=lambda b, t=tap: t())
         cell.add_widget(btn)
 
         if edit:
             cell.add_widget(mk_btn(
-                'Slett', hex_k('#FF6B6B'), h=dp(36), fs=12,
+                'Slett', hex_k('#FF6B6B'), h=dp(34), fs=12,
                 cb=lambda *_, f=fo: self._del_folder(f),
             ))
 
