@@ -527,7 +527,7 @@ def _open_android_picker(callback):
     try:
         from jnius import autoclass
         from android import mActivity
-        from android.activity import bind as activity_bind
+        from android.activity import bind as activity_bind, unbind as activity_unbind
 
         _pick_image_callback[0] = callback
 
@@ -539,7 +539,7 @@ def _open_android_picker(callback):
         def on_activity_result(request_code, result_code, data):
             if request_code != _PICK_IMAGE_REQUEST:
                 return
-            activity_bind(on_activity_result=on_activity_result)  # unbind
+            activity_unbind(on_activity_result=on_activity_result)  # fjern binding
             cb = _pick_image_callback[0]
             _pick_image_callback[0] = None
             if result_code != -1 or data is None:   # RESULT_OK = -1
@@ -832,6 +832,7 @@ class KommunikasjonstavleApp(App):
     def build(self):
         setup_logging()
         Window.clearcolor = (0.95, 0.96, 0.98, 1)
+        Window.softinput_mode = 'below_target'  # Skyv innhold over tastatur
 
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
@@ -2765,9 +2766,27 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def _item_popup(self, fo, it):
-        new    = it is None
-        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+        new = it is None
 
+        # ScrollView sørger for at innholdet kan scrolles opp når tastaturet
+        # dukker opp – forutsetter at Window.softinput_mode = 'below_target'.
+        sv     = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14),
+                           size_hint_y=None)
+        layout.bind(minimum_height=layout.setter('height'))
+
+        # ── Bildeforhåndsvisning ──────────────────────────────────
+        init_src = ''
+        if it and it.get('image') and os.path.exists(it.get('image', '')):
+            init_src = it['image']
+        img_preview = Image(
+            source=init_src,
+            size_hint_y=None, height=dp(180),
+            allow_stretch=True, keep_ratio=True,
+        )
+        layout.add_widget(img_preview)
+
+        # ── Navn-felt ─────────────────────────────────────────────
         layout.add_widget(Label(
             text='Navn (etikett under bildet):',
             size_hint_y=None, height=dp(28),
@@ -2779,6 +2798,7 @@ class KommunikasjonstavleApp(App):
         )
         layout.add_widget(name_inp)
 
+        # ── Filnavn-etikett og bildevelger ────────────────────────
         chosen_img = [it.get('image') if it else None]
         img_lbl = Label(
             text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
@@ -2788,11 +2808,29 @@ class KommunikasjonstavleApp(App):
         layout.add_widget(img_lbl)
 
         pop_ref = [None]
+
+        def do_pick(*_):
+            """Åpner bildevelger og oppdaterer forhåndsvisning + etikett."""
+            if platform == 'android':
+                def on_picked(dst):
+                    if dst:
+                        chosen_img[0]      = dst
+                        img_lbl.text       = 'Bilde: ' + os.path.basename(dst)
+                        img_preview.source = dst
+                        img_preview.reload()
+                        logging.info('Bilde valgt: %s', dst)
+                    else:
+                        self._toast('Ingen bilde valgt.')
+                _open_android_picker(on_picked)
+            else:
+                # Fallback: bruk eksisterende _pick_image for desktop-testing
+                self._pick_image(chosen_img, img_lbl)
+
         pick_btn = mk_btn('Velg ASK-bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
-        pick_btn.bind(on_release=lambda *_: self._pick_image(
-            chosen_img, img_lbl))
+        pick_btn.bind(on_release=do_pick)
         layout.add_widget(pick_btn)
 
+        # ── Lagre / Avbryt ────────────────────────────────────────
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
 
         def on_ok(*_):
@@ -2818,9 +2856,11 @@ class KommunikasjonstavleApp(App):
         ))
         layout.add_widget(btn_row)
 
+        sv.add_widget(layout)
+
         pop = Popup(
             title='Nytt ASK-bilde' if new else 'Rediger ASK-bilde',
-            content=layout, size_hint=(0.93, 0.82),
+            content=sv, size_hint=(0.93, 0.82),
         )
         pop_ref[0] = pop
         pop.open()
