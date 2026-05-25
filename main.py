@@ -484,29 +484,29 @@ _pick_image_callback = [None]
 
 def _copy_content_uri(uri, dst_path):
     """
-    Kopierer en Android content-URI (f.eks. content://media/...)
-    til en lokal filsti via ContentResolver input stream.
-    Returnerer True ved suksess.
+    Kopierer en Android content-URI til en lokal filsti.
+
+    Bruker openFileDescriptor() i stedet for openInputStream() +
+    Java byte-array fordi jnius ikke kan instansiere primitive
+    Java-arrays ([B) via autoclass() – dette var rotaarsaken til
+    "No constructor available"-feilen.
+
+    openFileDescriptor() returnerer en ekte POSIX file descriptor
+    som Python kan lese direkte med os.fdopen() uten Java-arrays.
     """
     try:
         from jnius import autoclass
         from android import mActivity
-        cr = mActivity.getContentResolver()
-        in_stream = cr.openInputStream(uri)
-        ByteArrayOutputStream = autoclass('java.io.ByteArrayOutputStream')
-        baos = ByteArrayOutputStream()
-        buf = bytearray(8192)
-        JavaArray = autoclass('[B')
-        jbuf = JavaArray(8192)
-        n = in_stream.read(jbuf)
-        while n > 0:
-            baos.write(jbuf, 0, n)
-            n = in_stream.read(jbuf)
-        in_stream.close()
+        cr  = mActivity.getContentResolver()
+        pfd = cr.openFileDescriptor(uri, 'r')
+        fd  = pfd.detachFd()           # Python-lesbar int fd
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        with open(dst_path, 'wb') as f:
-            f.write(bytes(baos.toByteArray()))
-        _plog(f'_copy_content_uri OK: {dst_path}')
+        with os.fdopen(fd, 'rb') as src_f:
+            data = src_f.read()
+        pfd.close()
+        with open(dst_path, 'wb') as dst_f:
+            dst_f.write(data)
+        _plog(f'_copy_content_uri OK: {dst_path} ({len(data)} bytes)')
         return True
     except Exception as e:
         _plog(f'_copy_content_uri feil: {e}')
