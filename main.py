@@ -226,6 +226,21 @@ TOOL_ACTIVE = {
     'fill':    '#4A148C',
 }
 
+BRUSH_COLORS = {
+    'rund':         '#4D96FF',
+    'myk':          '#C77DFF',
+    'kalligrafisk': '#FF9F43',
+    'spray':        '#6BCB77',
+    'piksel':       '#FF6B6B',
+}
+BRUSH_ACTIVE = {
+    'rund':         '#0D47A1',
+    'myk':          '#7B2FBE',
+    'kalligrafisk': '#B36800',
+    'spray':        '#2E7D32',
+    'piksel':       '#B71C1C',
+}
+
 # Fargepalett for tegning (12 farger)
 # 24 farger i 6 kolonner × 4 rader – brukes i fargevalgpopup.
 PALETTE = [
@@ -630,6 +645,7 @@ class DrawCanvas(Image):
         self.draw_color  = '#000000'
         self.size_px     = 6
         self.stabilize   = 4       # 0–10, der 0=av og 10=maks
+        self.brush_type  = 'rund'  # rund | myk | kalligrafisk | spray | piksel
         self._history    = []
         self._redo       = []
         self._MAX_HIST   = 20
@@ -719,21 +735,83 @@ class DrawCanvas(Image):
 
     def _stamp_path(self, pts, col, r, erase=False):
         """
-        Maler fylte sirkler (stempler) langs en punktliste.
-        Avstand mellom stempler = r * 0.35 → tett, sammenhengende strøk.
-        Mye jevnere enn d.line() fordi hver sirkel er rund og glatt.
-        erase=True bruker hvit farge (viskelær).
+        Maler penselstrøk langs punktliste – penseltype bestemmer utseende.
+
+        rund:         Fylte sirkler. Klassisk, ren strek.
+        myk:          Samme som rund men med ufylt Alpha-overlegg –
+                      simulert myk kant via ImageFilter.GaussianBlur på
+                      en midlertidig RGBA-flate.
+        kalligrafisk: Ellipse vridd 45°, bredde/høyde 2:1 –
+                      imiterer kalligrafipenn.
+        spray:        Tilfeldig fordelte prikker innenfor radius,
+                      tetthet synker utover – spraybokse-effekt.
+        piksel:       Firkantede stempler, ingen utjevning.
+                      Piksel-kunst-estetikk.
         """
         if not pts:
             return
-        fill  = (255, 255, 255) if erase else col
-        d     = ImageDraw.Draw(self._pil)
-        r     = max(1, r)
-        step  = max(1, int(r * 0.35))   # tetthet: 35 % av radius
-        acc   = 0.0                      # akkumulert avstand siden siste stempel
+        import random as _rnd
+        fill = (255, 255, 255) if erase else col
+        d    = ImageDraw.Draw(self._pil)
+        r    = max(1, r)
+        bt   = 'rund' if erase else self.brush_type
+
+        step = max(1, int(r * (0.5 if bt == 'spray' else 0.35)))
+        acc  = 0.0
 
         def stamp(x, y):
-            d.ellipse([x-r, y-r, x+r, y+r], fill=fill)
+            if bt == 'rund':
+                d.ellipse([x-r, y-r, x+r, y+r], fill=fill)
+
+            elif bt == 'myk':
+                # Tegn en litt lysere sirkel rundt for myk kant
+                outer = max(1, int(r * 1.6))
+                # Kjerne
+                d.ellipse([x-r, y-r, x+r, y+r], fill=fill)
+                # To halvtransparente ringar utover
+                a1 = tuple(max(0, int(c * 0.55)) for c in fill) if fill != (255,255,255) else (220,220,220)
+                a2 = tuple(max(0, int(c * 0.25)) for c in fill) if fill != (255,255,255) else (240,240,240)
+                r2 = max(r+1, int(r*1.3))
+                r3 = max(r+2, int(r*1.65))
+                d.ellipse([x-r2, y-r2, x+r2, y+r2], fill=a1)
+                d.ellipse([x-r3, y-r3, x+r3, y+r3], fill=a2)
+                # Tegn kjernen på topp igjen
+                d.ellipse([x-r, y-r, x+r, y+r], fill=fill)
+
+            elif bt == 'kalligrafisk':
+                # Flat ellipse vridd ~45 grader
+                rw = max(1, int(r * 1.8))
+                rh = max(1, int(r * 0.55))
+                # Rotasjon via polygon
+                import math
+                ang  = math.radians(45)
+                cos_ = math.cos(ang)
+                sin_ = math.sin(ang)
+                pts4 = [
+                    (x + cos_*rw - sin_*(-rh), y + sin_*rw + cos_*(-rh)),
+                    (x + cos_*rw - sin_*rh,    y + sin_*rw + cos_*rh),
+                    (x - cos_*rw - sin_*rh,    y - sin_*rw + cos_*rh),
+                    (x - cos_*rw - sin_*(-rh), y - sin_*rw + cos_*(-rh)),
+                ]
+                d.polygon([(int(px), int(py)) for px, py in pts4], fill=fill)
+
+            elif bt == 'spray':
+                # Tette prikker sentralt, spredt utover
+                n_dots = max(6, r * 2)
+                for _ in range(n_dots):
+                    dist2 = _rnd.gauss(0, r * 0.5)
+                    ang2  = _rnd.uniform(0, 6.2832)
+                    import math
+                    sx = int(x + math.cos(ang2) * dist2)
+                    sy = int(y + math.sin(ang2) * dist2)
+                    sx = max(0, min(CANVAS_W-1, sx))
+                    sy = max(0, min(CANVAS_H-1, sy))
+                    dot_r = max(1, r // 4)
+                    d.ellipse([sx-dot_r, sy-dot_r, sx+dot_r, sy+dot_r], fill=fill)
+
+            elif bt == 'piksel':
+                # Hard firkant – ingen avrunding
+                d.rectangle([x-r, y-r, x+r, y+r], fill=fill)
 
         stamp(*pts[0])
         px, py = pts[0]
@@ -1197,8 +1275,10 @@ class KommunikasjonstavleApp(App):
         has_img = bool(fo.get('image') and os.path.exists(fo['image']))
         edit    = self.edit_mode
 
-        TILE_H = dp(130) if (edit and not has_img) else (
-                 dp(155) if edit else (dp(120) if not has_img else dp(148)))
+        # Høyder: mellom gammel (168/200) og dobbelt nåværende (240/296)
+        # Setter den til ~160 uten bilde, ~185 med bilde
+        TILE_H = dp(155) if (edit and not has_img) else (
+                 dp(188) if edit else (dp(158) if not has_img else dp(185)))
 
         if edit:
             tap = lambda f=fo: self._folder_popup(f)
@@ -1215,7 +1295,7 @@ class KommunikasjonstavleApp(App):
         if has_img:
             # Bilde klippet innenfor avrundet ramme via RBox
             img_box = RBox(
-                size_hint=(1, None), height=dp(82),
+                size_hint=(1, None), height=dp(108),
                 box_color=(0.96, 0.97, 0.99, 1.0),
                 radius=dp(14),
                 padding=(dp(2), dp(2)),
@@ -1448,9 +1528,9 @@ class KommunikasjonstavleApp(App):
             padding=(dp(6), dp(5)),
         )
 
-        # ── Rad 1: Verktøyknapper ──────────────────────────────────
+        # ── Rad 1a: Verktøyknapper ─────────────────────────────────
         tool_grid = GridLayout(
-            cols=6, size_hint_y=None, height=dp(56), spacing=dp(4),
+            cols=6, size_hint_y=None, height=dp(52), spacing=dp(4),
         )
         tools = [
             ('pen',     'Penn'),
@@ -1465,7 +1545,7 @@ class KommunikasjonstavleApp(App):
             b = RBtn(
                 text=lbl,
                 size_hint=(1, 1),
-                font_size=sp(14),
+                font_size=sp(13),
                 btn_color=list(hex_k(TOOL_COLORS[key])),
                 color=(1, 1, 1, 1),
                 bold=True,
@@ -1475,6 +1555,33 @@ class KommunikasjonstavleApp(App):
             tool_grid.add_widget(b)
             self._tool_btns[key] = b
         root.add_widget(tool_grid)
+
+        # ── Rad 1b: Penseltyper ─────────────────────────────────────
+        brush_grid = GridLayout(
+            cols=5, size_hint_y=None, height=dp(48), spacing=dp(4),
+        )
+        brushes = [
+            ('rund',         'Rund'),
+            ('myk',          'Myk'),
+            ('kalligrafisk', 'Kalli.'),
+            ('spray',        'Spray'),
+            ('piksel',       'Piksel'),
+        ]
+        self._brush_btns = {}
+        for key, lbl in brushes:
+            b = RBtn(
+                text=lbl,
+                size_hint=(1, 1),
+                font_size=sp(12),
+                btn_color=list(hex_k(BRUSH_COLORS[key])),
+                color=(1, 1, 1, 1),
+                bold=True,
+                radius=dp(8),
+            )
+            b.bind(on_release=lambda btn, k=key: self._set_brush_type(k))
+            brush_grid.add_widget(b)
+            self._brush_btns[key] = b
+        root.add_widget(brush_grid)
 
         # ── Rad 2: Angre / Gjenta / Lagre / Tom ──────────────────
         act = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
@@ -1582,6 +1689,7 @@ class KommunikasjonstavleApp(App):
         self._set_content(root)
         self._set_draw_tool('pen')
         self._set_draw_color('#000000')
+        self._set_brush_type('rund')
 
     def _set_draw_tool(self, key):
         if self.draw_canvas:
@@ -1591,6 +1699,16 @@ class KommunikasjonstavleApp(App):
                 TOOL_ACTIVE[k] if k == key else TOOL_COLORS[k]
             ))
         logging.debug('Tegne-verktoy: %s', key)
+
+    def _set_brush_type(self, key):
+        """Setter penseltype på DrawCanvas og uthever valgt knapp."""
+        if self.draw_canvas:
+            self.draw_canvas.brush_type = key
+        for k, btn in self._brush_btns.items():
+            btn.btn_color = list(hex_k(
+                BRUSH_ACTIVE[k] if k == key else BRUSH_COLORS[k]
+            ))
+        logging.debug('Penseltype: %s', key)
 
     def _set_draw_color(self, col):
         """
