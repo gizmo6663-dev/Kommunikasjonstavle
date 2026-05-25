@@ -834,6 +834,13 @@ class KommunikasjonstavleApp(App):
         Window.clearcolor = (0.95, 0.96, 0.98, 1)
         Window.softinput_mode = 'below_target'  # Skyv innhold over tastatur
 
+        # Android 13+ (API 34) blokkerer skriving til /sdcard/ uten
+        # MANAGE_EXTERNAL_STORAGE. Flytt bilder og tegninger til
+        # user_data_dir som alltid er skrivbar uten tillatelser.
+        global IMG_DIR, DRAW_DIR
+        IMG_DIR  = os.path.join(self.user_data_dir, 'images')
+        DRAW_DIR = os.path.join(self.user_data_dir, 'drawings')
+
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
 
@@ -2048,7 +2055,8 @@ class KommunikasjonstavleApp(App):
             text=(
                 'Trykk "Last opp" i en mappe for aa velge bilde.\n'
                 'Android-bildevelgeren apnes – ingen tillatelser trengs.\n\n'
-                'Eller kopier bilder manuelt til:\n' + IMG_DIR
+                'Bilder lagres i appens private mappe (user_data_dir/images).\n'
+                'Eksporter via "Last ned"-knappen for aa kopiere til Nedlastinger.'
             ),
             size_hint_y=None, height=dp(110),
             font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
