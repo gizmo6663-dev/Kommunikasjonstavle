@@ -467,6 +467,118 @@ def request_android_permissions():
 
 
 # ══════════════════════════════════════════════════════════════════
+#  ANDROID FILVELGER – ACTION_OPEN_DOCUMENT
+#
+#  Bruker Androids innebygde bildevelger via jnius.
+#  Krever INGEN tillatelser (bekreftet i Eldritch Portal).
+#  Virker på alle Android-versjoner og omgår alle tillatelsesproblemene
+#  med FileChooserListView på Android 13+.
+# ══════════════════════════════════════════════════════════════════
+
+# Unik request-kode for bildevelgeren
+_PICK_IMAGE_REQUEST = 9742
+
+# Lagres midlertidig mens vi venter på activity result
+_pick_image_callback = [None]
+
+
+def _copy_content_uri(uri, dst_path):
+    """
+    Kopierer en Android content-URI (f.eks. content://media/...)
+    til en lokal filsti via ContentResolver input stream.
+    Returnerer True ved suksess.
+    """
+    try:
+        from jnius import autoclass
+        from android import mActivity
+        cr = mActivity.getContentResolver()
+        in_stream = cr.openInputStream(uri)
+        ByteArrayOutputStream = autoclass('java.io.ByteArrayOutputStream')
+        baos = ByteArrayOutputStream()
+        buf = bytearray(8192)
+        JavaArray = autoclass('[B')
+        jbuf = JavaArray(8192)
+        n = in_stream.read(jbuf)
+        while n > 0:
+            baos.write(jbuf, 0, n)
+            n = in_stream.read(jbuf)
+        in_stream.close()
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        with open(dst_path, 'wb') as f:
+            f.write(bytes(baos.toByteArray()))
+        _plog(f'_copy_content_uri OK: {dst_path}')
+        return True
+    except Exception as e:
+        _plog(f'_copy_content_uri feil: {e}')
+        logging.exception('_copy_content_uri: feil')
+        return False
+
+
+def _open_android_picker(callback):
+    """
+    Åpner Androids innebygde bildevelger (ACTION_OPEN_DOCUMENT).
+    callback(dst_path) kalles med lokal filsti etter at brukeren
+    har valgt et bilde og det er kopiert til IMG_DIR.
+    Ingen tillatelser nødvendig.
+    """
+    if platform != 'android':
+        callback(None)
+        return
+    try:
+        from jnius import autoclass
+        from android import mActivity
+        from android.activity import bind as activity_bind
+
+        _pick_image_callback[0] = callback
+
+        Intent    = autoclass('android.content.Intent')
+        intent    = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.setType('image/*')
+
+        def on_activity_result(request_code, result_code, data):
+            if request_code != _PICK_IMAGE_REQUEST:
+                return
+            activity_bind(on_activity_result=on_activity_result)  # unbind
+            cb = _pick_image_callback[0]
+            _pick_image_callback[0] = None
+            if result_code != -1 or data is None:   # RESULT_OK = -1
+                _plog('Bildevelger: bruker avbrøt eller ingen data')
+                if cb:
+                    Clock.schedule_once(lambda *_: cb(None), 0)
+                return
+            uri = data.getData()
+            _plog(f'Bildevelger: URI mottatt: {uri}')
+            # Finn filnavn fra URI
+            try:
+                Cursor = autoclass('android.database.Cursor')
+                OpenableColumns = autoclass('android.provider.OpenableColumns')
+                from android import mActivity as act
+                cursor = act.getContentResolver().query(uri, None, None, None, None)
+                fname = 'bilde_' + str(uuid.uuid4())[:8] + '.jpg'
+                if cursor and cursor.moveToFirst():
+                    idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if idx >= 0:
+                        fname = cursor.getString(idx)
+                    cursor.close()
+            except Exception as e:
+                _plog(f'Filnavn-lookup feil: {e}')
+                fname = 'bilde_' + str(uuid.uuid4())[:8] + '.jpg'
+            dst = os.path.join(IMG_DIR, fname)
+            ok  = _copy_content_uri(uri, dst)
+            if cb:
+                Clock.schedule_once(lambda *_: cb(dst if ok else None), 0)
+
+        activity_bind(on_activity_result=on_activity_result)
+        mActivity.startActivityForResult(intent, _PICK_IMAGE_REQUEST)
+        _plog('ACTION_OPEN_DOCUMENT startet')
+    except Exception as e:
+        _plog(f'_open_android_picker feil: {e}')
+        logging.exception('_open_android_picker: feil')
+        callback(None)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  WIDGET: TRYKKBART BILDE
 # ══════════════════════════════════════════════════════════════════
 
@@ -1086,6 +1198,10 @@ class KommunikasjonstavleApp(App):
 
         if edit:
             row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(4))
+            row.add_widget(mk_btn(
+                'Flytt', hex_k('#FF9F43'), h=ACT_H - dp(2), fs=13,
+                cb=lambda *_, f=fo, i=it: self._move_item_popup(f, i),
+            ))
             row.add_widget(mk_btn(
                 'Last ned', hex_k('#6BCB77'), h=ACT_H - dp(2), fs=13,
                 cb=lambda *_, p=img_path: self._download_image(p),
@@ -1802,58 +1918,17 @@ class KommunikasjonstavleApp(App):
         pick_pop.open()
 
     def _seq_pick_from_device(self, seq_items, refresh_fn):
-        """
-        Åpner FileChooser for å laste opp et bilde direkte
-        til handlingsrekken fra enheten.
-        """
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(path='/sdcard', filters=[img_filter])
-        fc_layout.add_widget(fc)
-
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        pop_ref = [None]
-
-        def on_upload(*_):
-            if fc.selection:
-                src_path = fc.selection[0]
-                fname    = os.path.basename(src_path)
-                dst      = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src_path, dst)
-                    name_sug = os.path.splitext(fname)[0].replace('_', ' ')
-                    seq_items.append({
-                        'id':    str(uuid.uuid4()),
-                        'name':  name_sug,
-                        'image': dst,
-                    })
-                    refresh_fn()
-                    self._toast(f'Lagt til: {fname}')
-                    logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
-                except Exception:
-                    logging.exception('_seq_pick_from_device: feil')
-                    self._toast('Feil ved opplasting.')
-            pop_ref[0].dismiss()
-
-        btn_row.add_widget(mk_btn(
-            'Legg til i rekken', hex_k('#6BCB77'), h=dp(52), cb=on_upload,
-        ))
-        btn_row.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(52),
-            cb=lambda *_: pop_ref[0].dismiss(),
-        ))
-        fc_layout.add_widget(btn_row)
-
-        pop = Popup(
-            title='Last opp til handlingsrekke',
-            content=fc_layout, size_hint=(0.97, 0.93),
-        )
-        pop_ref[0] = pop
-        pop.open()
-
-
-    # ══════════════════════════════════════════════════
-    #  TEKST-TIL-TALE (TTS)
-    # ══════════════════════════════════════════════════
+        """Åpner Android-bildevelger for å legge bilde til i handlingsrekken."""
+        def on_picked(dst):
+            if not dst:
+                return
+            fname    = os.path.basename(dst)
+            name_sug = os.path.splitext(fname)[0].replace('_', ' ')
+            seq_items.append({'id': str(uuid.uuid4()), 'name': name_sug, 'image': dst})
+            refresh_fn()
+            self._toast(f'Lagt til: {fname}')
+            logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
+        _open_android_picker(on_picked)
 
     def _init_tts(self):
         """Initialiserer Android TextToSpeech (kalles kun én gang)."""
@@ -1962,8 +2037,83 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(26),
             font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
 
-        outer.add_widget(BoxLayout())
-        self._set_content(outer)
+        # ── Bildemappe-info ──────────────────────────────────────────
+        outer.add_widget(Label(
+            text='Importer bilder:',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='left'))
+        outer.add_widget(Label(
+            text=(
+                'Trykk "Last opp" i en mappe for aa velge bilde.\n'
+                'Android-bildevelgeren apnes – ingen tillatelser trengs.\n\n'
+                'Eller kopier bilder manuelt til:\n' + IMG_DIR
+            ),
+            size_hint_y=None, height=dp(110),
+            font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+            halign='left', valign='top'))
+
+        # ── Tilgang til alle filer (EP-stil backup) ──────────────────
+        outer.add_widget(Label(
+            text='Tilgang til alle filer (valgfritt):',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='left'))
+
+        has_access = False
+        if platform == 'android':
+            try:
+                from jnius import autoclass
+                Environment = autoclass('android.os.Environment')
+                has_access = bool(Environment.isExternalStorageManager())
+            except Exception:
+                pass
+        outer.add_widget(Label(
+            text='Status: PA' if has_access else 'Status: AV',
+            size_hint_y=None, height=dp(28),
+            font_size=fsp(14), bold=True,
+            color=(0.10, 0.55, 0.10, 1) if has_access else (0.75, 0.20, 0.20, 1),
+            halign='left'))
+        outer.add_widget(Label(
+            text='Ikke nodvendig for bildevelgeren, men gir tilgang til alle mapper.',
+            size_hint_y=None, height=dp(34),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+
+        def open_manage(*_):
+            if platform != 'android':
+                self._toast('Kun tilgjengelig paa Android.')
+                return
+            try:
+                from jnius import autoclass
+                from android import mActivity
+                Intent   = autoclass('android.content.Intent')
+                Settings = autoclass('android.provider.Settings')
+                Uri      = autoclass('android.net.Uri')
+                intent   = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.setData(Uri.parse(
+                    'package:' + mActivity.getPackageName()))
+                mActivity.startActivity(intent)
+            except Exception:
+                logging.exception('open_manage: feil')
+                self._toast('Kunne ikke apne innstillinger.')
+
+        outer.add_widget(mk_btn(
+            'Gi tilgang (apner innstillinger)',
+            hex_k('#546E7A'), h=dp(54), fs=15,
+            cb=open_manage))
+
+        # Wrap outer i ScrollView slik at innstillinger kan rulles
+        sv = ScrollView(do_scroll_x=False)
+        inner = BoxLayout(
+            orientation='vertical', spacing=dp(16),
+            padding=dp(16), size_hint_y=None)
+        inner.bind(minimum_height=inner.setter('height'))
+        for w in list(outer.children[::-1]):
+            outer.remove_widget(w)
+            inner.add_widget(w)
+        sv.add_widget(inner)
+        self._set_content(sv)
 
     # ══════════════════════════════════════════════════
     #  QR-KODE
@@ -2515,6 +2665,10 @@ class KommunikasjonstavleApp(App):
     #  POPUP – REDIGER MAPPE
     # ══════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════
+    #  POPUP – REDIGER MAPPE
+    # ══════════════════════════════════════════════════
+
     def _folder_popup(self, fo):
         new    = fo is None
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
@@ -2564,7 +2718,7 @@ class KommunikasjonstavleApp(App):
         pop_ref = [None]
         pick_btn = mk_btn('Velg bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
         pick_btn.bind(on_release=lambda *_: self._pick_image(
-            chosen_img, img_lbl, pop_ref[0]))
+            chosen_img, img_lbl))
         layout.add_widget(pick_btn)
 
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
@@ -2636,7 +2790,7 @@ class KommunikasjonstavleApp(App):
         pop_ref = [None]
         pick_btn = mk_btn('Velg ASK-bilde fra enhet', hex_k('#4D96FF'), h=dp(48))
         pick_btn.bind(on_release=lambda *_: self._pick_image(
-            chosen_img, img_lbl, pop_ref[0]))
+            chosen_img, img_lbl))
         layout.add_widget(pick_btn)
 
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
@@ -2676,91 +2830,133 @@ class KommunikasjonstavleApp(App):
         save_struct(self.data)
         self._show_folder(fid=fo['id'])
 
+    def _move_item_popup(self, src_folder, item):
+        """
+        Viser en liste med alle andre mapper å flytte item til.
+        Bildet flyttes ved å fjerne det fra src_folder og legge det
+        til i den valgte mappen – ingen filkopiering nødvendig.
+        """
+        other_folders = [
+            f for f in self.data.get('folders', [])
+            if f['id'] != src_folder['id']
+        ]
+        if not other_folders:
+            self._toast('Ingen andre mapper aa flytte til.')
+            return
+
+        pop_ref = [None]
+        layout  = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+        layout.add_widget(Label(
+            text=f'Flytt "{item["name"]}" til:',
+            size_hint_y=None, height=dp(36),
+            font_size=fsp(17), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center',
+        ))
+
+        sv   = ScrollView()
+        vbox = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
+        vbox.bind(minimum_height=vbox.setter('height'))
+
+        for dest in other_folders:
+            def make_move(dst=dest):
+                def do_move(*_):
+                    # Fjern fra kilde
+                    src_folder['items'] = [
+                        i for i in src_folder['items'] if i['id'] != item['id']
+                    ]
+                    # Legg til i mål
+                    dst['items'].append(item)
+                    save_struct(self.data)
+                    pop_ref[0].dismiss()
+                    self._toast(f'Flyttet til: {dst["name"]}')
+                    self._show_folder(fid=src_folder['id'])
+                return do_move
+
+            vbox.add_widget(mk_btn(
+                dest['name'],
+                hex_k(dest['color']),
+                color=(0.05, 0.05, 0.2, 1),
+                h=dp(62), fs=17,
+                cb=make_move(),
+            ))
+
+        sv.add_widget(vbox)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(50),
+            cb=lambda *_: pop_ref[0].dismiss(),
+        ))
+
+        pop = Popup(
+            title='Flytt bilde',
+            content=layout, size_hint=(0.88, 0.82),
+        )
+        pop_ref[0] = pop
+        pop.open()
+
     # ══════════════════════════════════════════════════
     #  BILDE – LAST OPP / LAST NED
     # ══════════════════════════════════════════════════
 
     def _pick_image(self, chosen_img_ref, label_widget, parent_popup=None):
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(
-            path='/sdcard',
-            filters=[img_filter],
-        )
-        fc_layout.add_widget(fc)
-
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-
-        def on_select(*_):
-            if fc.selection:
-                src   = fc.selection[0]
-                fname = os.path.basename(src)
-                dst   = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src, dst)
+        """
+        Åpner Androids innebygde bildevelger (ACTION_OPEN_DOCUMENT).
+        Ingen tillatelser nødvendig – Android håndterer alt.
+        På ikke-Android brukes FileChooserListView som fallback.
+        """
+        if platform == 'android':
+            def on_picked(dst):
+                if dst:
                     chosen_img_ref[0] = dst
-                    label_widget.text = 'Bilde: ' + fname
-                    logging.info('Bilde kopiert: %s', dst)
-                except Exception:
-                    logging.exception('_pick_image: kopieringsfeil')
-                    self._toast('Feil ved kopiering av bilde.')
-            fc_pop.dismiss()
-
-        btn_row.add_widget(mk_btn('Velg dette bildet', hex_k('#6BCB77'), h=dp(52), cb=on_select))
-        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
-                                   cb=lambda *_: fc_pop.dismiss()))
-        fc_layout.add_widget(btn_row)
-
-        fc_pop = Popup(
-            title='Velg bildefil', content=fc_layout,
-            size_hint=(0.97, 0.93),
-        )
-        fc_pop.open()
+                    label_widget.text = 'Bilde: ' + os.path.basename(dst)
+                    logging.info('Bilde valgt: %s', dst)
+                else:
+                    self._toast('Ingen bilde valgt.')
+            _open_android_picker(on_picked)
+        else:
+            # Fallback for desktop-testing
+            fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
+            fc = FileChooserListView(path=os.path.expanduser('~'), filters=[img_filter])
+            fc_layout.add_widget(fc)
+            btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            fc_pop_ref = [None]
+            def on_select(*_):
+                if fc.selection:
+                    src = fc.selection[0]
+                    dst = os.path.join(IMG_DIR, os.path.basename(src))
+                    try:
+                        shutil.copy2(src, dst)
+                        chosen_img_ref[0] = dst
+                        label_widget.text = 'Bilde: ' + os.path.basename(dst)
+                    except Exception:
+                        logging.exception('_pick_image fallback: feil')
+                fc_pop_ref[0].dismiss()
+            btn_row.add_widget(mk_btn('Velg', hex_k('#6BCB77'), h=dp(52), cb=on_select))
+            btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
+                cb=lambda *_: fc_pop_ref[0].dismiss()))
+            fc_layout.add_widget(btn_row)
+            pop = Popup(title='Velg bilde', content=fc_layout, size_hint=(0.97, 0.93))
+            fc_pop_ref[0] = pop
+            pop.open()
 
     def _upload_to_folder(self, fo):
-        fc_layout = BoxLayout(orientation='vertical', spacing=dp(8))
-        fc = FileChooserListView(
-            path='/sdcard',
-            filters=[img_filter],
-        )
-        fc_layout.add_widget(fc)
-
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-
-        def on_upload(*_):
-            if fc.selection:
-                src   = fc.selection[0]
-                fname = os.path.basename(src)
-                dst   = os.path.join(IMG_DIR, fname)
-                try:
-                    shutil.copy2(src, dst)
-                    name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
-                    fo['items'].append({
-                        'id':    str(uuid.uuid4()),
-                        'name':  name_suggestion,
-                        'image': dst,
-                    })
-                    save_struct(self.data)
-                    pop.dismiss()
-                    self._toast(f'Lagt til:\n{fname}')
-                    self._show_folder(fid=fo['id'])
-                    logging.info('Bilde lastet opp til mappe: %s', fname)
-                except Exception:
-                    logging.exception('_upload_to_folder: feil')
-                    self._toast('Feil ved opplasting.')
-            else:
-                pop.dismiss()
-
-        btn_row.add_widget(mk_btn('Last opp til mappe', hex_k('#4D96FF'), h=dp(52), cb=on_upload))
-        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
-                                   cb=lambda *_: pop.dismiss()))
-        fc_layout.add_widget(btn_row)
-
-        pop = Popup(
-            title=f'Last opp til «{fo["name"]}»',
-            content=fc_layout, size_hint=(0.97, 0.93),
-        )
-        pop.open()
-
+        """Åpner Android-bildevelger og legger valgt bilde til i mappen."""
+        def on_picked(dst):
+            if not dst:
+                self._toast('Ingen bilde valgt.')
+                return
+            fname = os.path.basename(dst)
+            name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
+            fo['items'].append({
+                'id':    str(uuid.uuid4()),
+                'name':  name_suggestion,
+                'image': dst,
+            })
+            save_struct(self.data)
+            self._toast(f'Lagt til: {fname}')
+            self._show_folder(fid=fo['id'])
+            logging.info('Bilde lastet opp til mappe: %s', fname)
+        _open_android_picker(on_picked)
     def _download_image(self, src_path):
         if not src_path or not os.path.exists(src_path):
             self._toast('Ingen bildefil aa laste ned.')
