@@ -71,42 +71,42 @@ _KV = """
     background_color: 0, 0, 0, 0
     bold: True
     canvas.before:
-        # 1. Mjuk skygge forskjøvet ned-høyre
+        # 1. Lett skygge (halvert offset og opacity vs originalt)
         Color:
-            rgba: 0.04, 0.06, 0.18, 0.26
+            rgba: 0.04, 0.06, 0.18, 0.13
         RoundedRectangle:
-            pos: self.x + dp(3), self.y - dp(5)
-            size: self.width - dp(4), self.height * 0.80
-            radius: [self.radius + dp(3)]
-        # 2. Hoved-farge (beholdes fra btn_color – ingen fargeendring)
+            pos: self.x + dp(1.5), self.y - dp(2.5)
+            size: self.width - dp(2), self.height * 0.88
+            radius: [self.radius + dp(1.5)]
+        # 2. Hoved-farge
         Color:
             rgba: self.btn_color
         RoundedRectangle:
             pos: self.pos
             size: self.size
             radius: [self.radius]
-        # 3. Mørk ytre kantlinje – gir dybde mot lys bakgrunn
+        # 3. Subtil ytre kantlinje
         Color:
-            rgba: 0, 0, 0, 0.20
+            rgba: 0, 0, 0, 0.14
         Line:
-            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), self.radius)
+            rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
+            width: 1.0
+        # 4. Lys toppglans – gradert fra hvit øverst
+        Color:
+            rgba: 1, 1, 1, 0.22
+        Line:
+            rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
             width: 1.2
-        # 4. Lys indre kantlinje – imiterer lett skinnende overflate
-        Color:
-            rgba: 1, 1, 1, 0.35
-        Line:
-            rounded_rectangle: (self.x + dp(2.5), self.y + dp(2.5), self.width - dp(5), self.height - dp(5), max(1, self.radius - dp(1)))
-            width: 1.5
 
 <RBox>:
     canvas.before:
-        # 1. Skygge
+        # 1. Minimal skygge (halvvert)
         Color:
-            rgba: 0.04, 0.06, 0.18, 0.20
+            rgba: 0.04, 0.06, 0.18, 0.10
         RoundedRectangle:
-            pos: self.x + dp(4), self.y - dp(6)
-            size: self.width - dp(6), self.height * 0.82
-            radius: [self.radius + dp(3)]
+            pos: self.x + dp(2), self.y - dp(3)
+            size: self.width - dp(3), self.height * 0.90
+            radius: [self.radius + dp(1.5)]
         # 2. Bakgrunnsfarge
         Color:
             rgba: self.box_color
@@ -114,18 +114,12 @@ _KV = """
             pos: self.pos
             size: self.size
             radius: [self.radius]
-        # 3. Mørk ytre kant
+        # 3. Subtil ytre kant
         Color:
-            rgba: 0, 0, 0, 0.15
+            rgba: 0, 0, 0, 0.08
         Line:
-            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), self.radius)
-            width: 1.1
-        # 4. Lys indre kant
-        Color:
-            rgba: 1, 1, 1, 0.28
-        Line:
-            rounded_rectangle: (self.x + dp(2.5), self.y + dp(2.5), self.width - dp(5), self.height - dp(5), max(1, self.radius - dp(1)))
-            width: 1.4
+            rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
+            width: 0.9
 
 <NavBar>:
     canvas.before:
@@ -337,10 +331,7 @@ def fsp(base_size):
 
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
-    Lager en RBtn (avrundet knapp med skygge og dobbel kant).
-    bg sendes som btn_color – IKKE background_color – fordi KV-regelen
-    bruker btn_color og setter background_color til gjennomsiktig.
-    size_hint_y / height løses via setdefault for å unngå duplikat-kw.
+    Lager en RBtn med opacity-dimming ved trykk (visuell respons).
     """
     kw.setdefault('size_hint_y', None)
     kw.setdefault('height', h)
@@ -350,6 +341,12 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         font_size=sp(fs),
         color=fg, bold=True, **kw,
     )
+    from kivy.animation import Animation
+    def _on_press(btn, *_):
+        Animation(opacity=0.72, duration=0.06, t='out_quad').start(btn)
+    def _on_release_anim(btn, *_):
+        Animation(opacity=1.0, duration=0.10, t='out_quad').start(btn)
+    b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
         b.bind(on_release=cb)
     return b
@@ -831,7 +828,7 @@ class KommunikasjonstavleApp(App):
 
     def build(self):
         setup_logging()
-        Window.clearcolor = (0.95, 0.96, 0.98, 1)
+        Window.clearcolor = (0.94, 0.95, 0.98, 1)
         Window.softinput_mode = 'below_target'  # Skyv innhold over tastatur
 
         # Android 13+ (API 34) blokkerer skriving til /sdcard/ uten
@@ -946,21 +943,26 @@ class KommunikasjonstavleApp(App):
 
     def _build_bottombar(self):
         """
-        Bunnbar med app-tittel / konteksttittel.
-        Flyttes hit fra navbaren slik at tittelen ikke
-        konkurrerer med navigasjonsknappene oppe.
+        Bunnbar: tittel til venstre, Innstillinger-knapp til høyre.
         """
         bar = BottomBar(
-            size_hint_y=None, height=dp(40),
-            padding=(dp(8), dp(4)),
+            size_hint_y=None, height=dp(54),
+            padding=(dp(6), dp(4)),
+            spacing=dp(6),
         )
         self._lbl_title = Label(
-            text=APP_TITLE, bold=True, font_size=sp(16),
+            text=APP_TITLE, bold=True, font_size=sp(15),
             color=(0.08, 0.10, 0.35, 1),
-            halign='center', valign='middle',
+            halign='left', valign='middle',
         )
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
         bar.add_widget(self._lbl_title)
+        bar.add_widget(mk_btn(
+            'Innst.', hex_k('#78909C'),
+            h=dp(46), fs=13,
+            size_hint_x=None, width=dp(72),
+            cb=lambda *_: self._nav_settings(),
+        ))
         return bar
 
     def _set_title(self, t):
@@ -1008,18 +1010,30 @@ class KommunikasjonstavleApp(App):
     def _push(self, scr, **kw):
         self.nav_stack.append((scr, kw))
 
-    def _set_content(self, widget):
-        # Avbryt dagsrytme-klokke når vi forlater dagsrytme-skjermen
+    def _set_content(self, widget, animate=True):
+        """
+        Bytter innholdsflaten med en kort fade+slide-inn animasjon.
+        animate=False brukes internt (f.eks. dagsrytme-oppdatering).
+        """
+        # Avbryt dagsrytme-klokke
         if self._cur_scr != 'dagsrytme':
             ev = getattr(self, '_dr_event', None)
             if ev:
                 ev.cancel()
                 self._dr_event = None
-        # Pause tidsur-teller ved skjermbytte
+        # Pause tidsur
         if self._cur_scr != 'tidsur' and getattr(self, '_timer_running', False):
             self._tidsur_stop()
+
         self._content.clear_widgets()
+        widget.opacity = 0
         self._content.add_widget(widget)
+        if animate:
+            from kivy.animation import Animation
+            anim = Animation(opacity=1, duration=0.18, t='out_quad')
+            anim.start(widget)
+        else:
+            widget.opacity = 1
 
     # ══════════════════════════════════════════════════
     #  HJEMSKJERM
@@ -1030,34 +1044,30 @@ class KommunikasjonstavleApp(App):
         self.cur_folder = None
         self._set_title(APP_TITLE)
 
-        outer = BoxLayout(
-            orientation='vertical',
-            spacing=dp(10), padding=dp(12),
-        )
+        outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6)))
 
-        # Øvre knapperutenett – alltid synlig
-        r1 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
-        r1.add_widget(mk_btn('Handlingsrekker', hex_k('#4ECDC4'), h=dp(52), fs=14,
-            cb=lambda *_: self._nav_sequences()))
-        r1.add_widget(mk_btn('Dagsrytme', hex_k('#FF9F43'), h=dp(52), fs=14,
-            cb=lambda *_: self._nav_dagsrytme()))
-        outer.add_widget(r1)
-        r2 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
-        r2.add_widget(mk_btn('Tidsur', hex_k('#4D96FF'), h=dp(52), fs=14,
-            cb=lambda *_: self._nav_tidsur()))
-        r2.add_widget(mk_btn('Bildepar-spill', hex_k('#C77DFF'), h=dp(52), fs=14,
-            cb=lambda *_: self._nav_bildepar()))
-        outer.add_widget(r2)
-        outer.add_widget(mk_btn('Innstillinger', hex_k('#78909C'), h=dp(46), fs=14,
-            cb=lambda *_: self._nav_settings()))
+        # ── Fire hurtigknapper i én rad (nav-knapp-størrelse) ─────
+        qrow = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(6))
+        _qcols = [
+            ('Rekker',  '#4ECDC4', self._nav_sequences),
+            ('Dagsplan','#FF9F43', self._nav_dagsrytme),
+            ('Tidsur',  '#4D96FF', self._nav_tidsur),
+            ('Spill',   '#C77DFF', self._nav_bildepar),
+        ]
+        for lbl, col, fn in _qcols:
+            qrow.add_widget(mk_btn(lbl, hex_k(col), h=dp(50), fs=13,
+                cb=lambda *_, f=fn: f()))
+        outer.add_widget(qrow)
 
+        # ── «Ny mappe»-knapp kun i redigeringsmodus ───────────────
         if self.edit_mode:
             outer.add_widget(mk_btn(
-                '+  Legg til mappe', hex_k('#6BCB77'), h=dp(52),
+                '+  Ny mappe', hex_k('#6BCB77'), h=dp(46), fs=14,
                 cb=lambda *_: self._folder_popup(None),
             ))
 
-        grid = GridLayout(cols=2, spacing=dp(14), padding=(dp(6), dp(8)), size_hint_y=None)
+        # ── 3-kolonne mappegrid ───────────────────────────────────
+        grid = GridLayout(cols=3, spacing=dp(8), padding=(dp(4), dp(4)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for fo in self.data['folders']:
             grid.add_widget(self._make_folder_tile(fo))
@@ -1068,50 +1078,59 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_folder_tile(self, fo):
+        """
+        Mappeflise: bare en stor RBtn uten hvit boks rundt.
+        Ryddigere utseende – mapper trenger ikke et lag til.
+        Bildet (om det finnes) vises som bakgrunn via canvas.before
+        eller klippet over knappen.
+        """
         has_img = bool(fo.get('image') and os.path.exists(fo['image']))
         edit    = self.edit_mode
 
-        TILE_H  = dp(200) if edit else dp(168)
-        IMG_H   = dp(100)
-        LBL_H   = dp(56)
-        DEL_H   = dp(40)
+        TILE_H = dp(130) if (edit and not has_img) else (
+                 dp(155) if edit else (dp(120) if not has_img else dp(148)))
 
         if edit:
             tap = lambda f=fo: self._folder_popup(f)
         else:
             tap = lambda f=fo: self._open_folder(f)
 
-        cell = RBox(
+        # Yttercontainer – transparent, bare for stabling
+        cell = BoxLayout(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
-            spacing=dp(4),
-            padding=(dp(4), dp(4)),
-            box_color=(1.0, 1.0, 1.0, 1.0),
-            radius=dp(18),
+            spacing=dp(3),
         )
 
         if has_img:
-            cell.add_widget(TappableImage(
+            # Bilde klippet innenfor avrundet ramme via RBox
+            img_box = RBox(
+                size_hint=(1, None), height=dp(82),
+                box_color=(0.96, 0.97, 0.99, 1.0),
+                radius=dp(14),
+                padding=(dp(2), dp(2)),
+            )
+            img_box.add_widget(TappableImage(
                 tap, source=fo['image'],
-                size_hint=(1, None), height=IMG_H,
                 allow_stretch=True, keep_ratio=True,
             ))
+            cell.add_widget(img_box)
 
-        lbl_h = LBL_H if has_img else (dp(155) if not edit else dp(115))
         btn = RBtn(
             text=fo['name'],
-            size_hint=(1, None), height=lbl_h,
+            size_hint=(1, None),
+            height=dp(46),
             btn_color=list(hex_k(fo['color'])),
             color=(0.05, 0.05, 0.2, 1),
-            bold=True, font_size=sp(18),
-            radius=dp(14),
+            bold=True, font_size=fsp(14),
+            radius=dp(12),
         )
         btn.bind(on_release=lambda b, t=tap: t())
         cell.add_widget(btn)
 
         if edit:
             cell.add_widget(mk_btn(
-                'Slett mappe', hex_k('#FF6B6B'), h=DEL_H, fs=13,
+                'Slett', hex_k('#FF6B6B'), h=dp(36), fs=12,
                 cb=lambda *_, f=fo: self._del_folder(f),
             ))
 
@@ -1141,18 +1160,22 @@ class KommunikasjonstavleApp(App):
         )
 
         if self.edit_mode:
-            btn_bar = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(8))
+            btn_bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
             btn_bar.add_widget(mk_btn(
-                '+  Nytt bilde', hex_k('#6BCB77'), h=dp(50),
+                '+  Nytt bilde', hex_k('#6BCB77'), h=dp(46), fs=13,
                 cb=lambda *_: self._item_popup(fo, None),
             ))
             btn_bar.add_widget(mk_btn(
-                'Last opp', hex_k('#4D96FF'), h=dp(50),
+                'Last opp', hex_k('#4D96FF'), h=dp(46), fs=13,
                 cb=lambda *_: self._upload_to_folder(fo),
+            ))
+            btn_bar.add_widget(mk_btn(
+                '+  Ny mappe', hex_k('#FF9F43'), h=dp(46), fs=13,
+                cb=lambda *_: self._folder_popup(None),
             ))
             outer.add_widget(btn_bar)
 
-        grid = GridLayout(cols=3, spacing=dp(12), padding=(dp(6), dp(8)), size_hint_y=None)
+        grid = GridLayout(cols=4, spacing=dp(6), padding=(dp(4), dp(4)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
             grid.add_widget(self._make_item_tile(fo, it))
@@ -1163,59 +1186,74 @@ class KommunikasjonstavleApp(App):
         self._set_content(outer)
 
     def _make_item_tile(self, fo, it):
+        """
+        ASK-bilde-kort: bilde klippet innenfor RBox-rammen + etikett.
+        4-kolonne grid betyr smalere fliser – tilpassede størrelser.
+        """
         img_path = it.get('image') or ''
         has_img  = bool(img_path and os.path.exists(img_path))
         edit     = self.edit_mode
 
-        TILE_H = dp(210) if edit else dp(166)
-        IMG_H  = dp(116) if edit else dp(120)
-        LBL_H  = dp(44)
-        ACT_H  = dp(42)
+        IMG_H  = dp(78)
+        LBL_H  = dp(34)
+        ACT_H  = dp(36)
+        TILE_H = (IMG_H + LBL_H + ACT_H + dp(14)) if edit else (IMG_H + LBL_H + dp(10))
 
         if edit:
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
             tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
 
+        # Kortcontainer med farget bakgrunn fra mappens farge (tonet)
+        r, g, b, _ = hex_k(fo.get('color', '#4D96FF'))
+        card_col   = (r * 0.15 + 0.85, g * 0.15 + 0.85, b * 0.15 + 0.85, 1.0)
+
         cell = RBox(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
-            spacing=dp(4),
-            padding=(dp(4), dp(4)),
-            box_color=(1.0, 1.0, 1.0, 1.0),
-            radius=dp(18),
+            spacing=dp(2),
+            padding=(dp(3), dp(3)),
+            box_color=list(card_col),
+            radius=dp(14),
         )
 
         if has_img:
-            cell.add_widget(TappableImage(
-                tap, source=img_path,
+            # Bilde fyller RBox nøyaktig – ingen overflow
+            img_box = RBox(
                 size_hint=(1, None), height=IMG_H,
+                box_color=(1.0, 1.0, 1.0, 0.0),
+                radius=dp(10),
+                padding=0,
+            )
+            img_box.add_widget(TappableImage(
+                tap, source=img_path,
                 allow_stretch=True, keep_ratio=True,
             ))
+            cell.add_widget(img_box)
 
-        lbl_h = LBL_H if has_img else (dp(158) if not edit else dp(118))
+        lbl_h = LBL_H if has_img else (dp(100) if not edit else dp(78))
         btn = RBtn(
             text=it['name'],
             size_hint=(1, None), height=lbl_h,
-            btn_color=list(hex_k('#4D96FF')),
-            color=(1, 1, 1, 1), bold=True, font_size=sp(14),
-            radius=dp(14),
+            btn_color=list(hex_k(fo.get('color', '#4D96FF'))),
+            color=(1, 1, 1, 1), bold=True, font_size=fsp(11),
+            radius=dp(10),
         )
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
 
         if edit:
-            row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(4))
+            row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(2))
             row.add_widget(mk_btn(
-                'Flytt', hex_k('#FF9F43'), h=ACT_H - dp(2), fs=13,
+                'Flytt', hex_k('#FF9F43'), h=ACT_H - dp(2), fs=10,
                 cb=lambda *_, f=fo, i=it: self._move_item_popup(f, i),
             ))
             row.add_widget(mk_btn(
-                'Last ned', hex_k('#6BCB77'), h=ACT_H - dp(2), fs=13,
+                'Ned', hex_k('#6BCB77'), h=ACT_H - dp(2), fs=10,
                 cb=lambda *_, p=img_path: self._download_image(p),
             ))
             row.add_widget(mk_btn(
-                'Slett', hex_k('#FF6B6B'), h=ACT_H - dp(2), fs=13,
+                'Slett', hex_k('#FF6B6B'), h=ACT_H - dp(2), fs=10,
                 cb=lambda *_, f=fo, i=it: self._del_item(f, i),
             ))
             cell.add_widget(row)
@@ -1234,19 +1272,26 @@ class KommunikasjonstavleApp(App):
         self._cur_scr = 'image'
         self._set_title(name)
 
-        layout = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(8))
+        layout = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
 
-        # Bildet fyller tilgjengelig plass
-        layout.add_widget(Image(
+        # Bilde i RBox for fin innramming
+        img_frame = RBox(
+            size_hint=(1, 1),
+            box_color=(0.97, 0.97, 0.99, 1.0),
+            radius=dp(18),
+            padding=dp(4),
+        )
+        img_frame.add_widget(Image(
             source=path,
             allow_stretch=True, keep_ratio=True,
         ))
+        layout.add_widget(img_frame)
 
-        # Etikett (bildets navn) rett under bildet
+        # Etikett rett under bildet
         name_lbl = Label(
             text=name,
-            size_hint_y=None, height=dp(48),
-            font_size=sp(20), bold=True,
+            size_hint_y=None, height=dp(52),
+            font_size=fsp(22), bold=True,
             color=(0.08, 0.10, 0.35, 1),
             halign='center', valign='middle',
         )
@@ -2313,6 +2358,7 @@ class KommunikasjonstavleApp(App):
         sv = ScrollView()
         sv.add_widget(outer)
         self._content.clear_widgets()
+        sv.opacity = 1  # ingen fade for bakgrunnsoppdatering
         self._content.add_widget(sv)
 
     def _dr_delete(self, entry):
