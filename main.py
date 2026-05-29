@@ -193,12 +193,14 @@ class BottomBar(BoxLayout):
 # ══════════════════════════════════════════════════════════════════
 
 APP_TITLE    = 'Kommunikasjonstavle'
-DATA_DIR     = '/sdcard/Documents/Kommunikasjonstavle'
-IMG_DIR      = os.path.join(DATA_DIR, 'images')
-DRAW_DIR     = os.path.join(DATA_DIR, 'drawings')
-STRUCT_FILE  = os.path.join(DATA_DIR, 'structure.json')
-LOG_FILE     = os.path.join(DATA_DIR, 'crash.log')
 DOWNLOAD_DIR = '/sdcard/Download'
+
+# Disse settes i build() via App.user_data_dir
+DATA_DIR    = None
+IMG_DIR     = None
+DRAW_DIR    = None
+STRUCT_FILE = None
+LOG_FILE    = None
 
 CANVAS_W = 960
 CANVAS_H = 1280   # Portrettformat passer mobilskjerm
@@ -281,7 +283,8 @@ def setup_logging():
     sys.excepthook fanger opp alle ubehandlede Python-unntak.
     """
     try:
-        os.makedirs(DATA_DIR, exist_ok=True)
+        if DATA_DIR:
+            os.makedirs(DATA_DIR, exist_ok=True)
         logging.basicConfig(
             filename=LOG_FILE,
             level=logging.DEBUG,
@@ -367,7 +370,7 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     return b
 
 def load_struct():
-    if os.path.exists(STRUCT_FILE):
+    if STRUCT_FILE and os.path.exists(STRUCT_FILE):
         try:
             with open(STRUCT_FILE, 'r', encoding='utf-8') as f:
                 d = json.load(f)
@@ -385,10 +388,14 @@ def load_struct():
     return copy.deepcopy(DEFAULT_STRUCT)
 
 def save_struct(d):
-    os.makedirs(DATA_DIR, exist_ok=True)
+    if not STRUCT_FILE:
+        logging.error('save_struct: STRUCT_FILE ikke satt ennå')
+        return
+    os.makedirs(os.path.dirname(STRUCT_FILE), exist_ok=True)
     try:
         with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
             json.dump(d, f, ensure_ascii=False, indent=2)
+        logging.debug('structure.json lagret til %s', STRUCT_FILE)
     except Exception as e:
         logging.error('Feil ved lagring av structure.json: %s', e)
 
@@ -422,9 +429,10 @@ def _plog(msg):
     tillatelsesproblemeer uten å stole på logging-modulen.
     """
     try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(f'[PERM] {msg}\n')
+        if LOG_FILE:
+            os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(f'[PERM] {msg}\n')
     except Exception:
         pass
 
@@ -479,19 +487,50 @@ def request_android_permissions():
 
 
 # ══════════════════════════════════════════════════════════════════
-#  ANDROID FILVELGER – ACTION_OPEN_DOCUMENT
+#  BILDEIMPORT – TO METODER
 #
-#  Bruker Androids innebygde bildevelger via jnius.
-#  Krever INGEN tillatelser (bekreftet i Eldritch Portal).
-#  Virker på alle Android-versjoner og omgår alle tillatelsesproblemene
-#  med FileChooserListView på Android 13+.
+#  Metode A – ACTION_OPEN_DOCUMENT (filvelger):
+#    Trykk "Velg bilde" i appen → Androids innebygde filvelger åpnes.
+#    Krever ingen tillatelser. Fungerer på alle Android-versjoner.
+#
+#  Metode B – Share intent (del fra Galleri):
+#    Åpne bilde i Galleri → Del → Kommunikasjonstavle.
+#    Appen mottar bildet via on_new_intent / _SHARE_PENDING.
+#    Krever at intent_filters.xml er inkludert i APK-en (se buildozer.spec).
+#
+#  Vurdering: ACTION_OPEN_DOCUMENT er beholdt som primærmetode fordi den
+#  er mer forutsigbar (brukeren ser hva som skjer i appen). Share-mottak
+#  er lagt til som tilleggsmetode – begge bruker _copy_content_uri().
 # ══════════════════════════════════════════════════════════════════
 
-# Unik request-kode for bildevelgeren
-_PICK_IMAGE_REQUEST = 9742
-
-# Lagres midlertidig mens vi venter på activity result
+# Request-kode for ACTION_OPEN_DOCUMENT
+_PICK_IMAGE_REQUEST  = 9742
 _pick_image_callback = [None]
+
+# Buffer for bilde mottatt via Share intent (behandles i build())
+_SHARE_PENDING = [None]
+
+
+def _handle_share_intent(intent):
+    """
+    Mottar et bilde delt fra Galleri eller annen app.
+    Lagrer URI i _SHARE_PENDING[0]; appen henter den i on_start/on_resume
+    og kaller _process_shared_image().
+    """
+    if intent is None:
+        return
+    try:
+        from jnius import autoclass
+        IntentC = autoclass('android.content.Intent')
+        action  = intent.getAction()
+        mtype   = intent.getType()
+        if action == 'android.intent.action.SEND' and mtype and mtype.startswith('image/'):
+            uri = intent.getParcelableExtra(IntentC.EXTRA_STREAM)
+            if uri:
+                _SHARE_PENDING[0] = uri
+                _plog(f'Share-intent mottatt: {uri}')
+    except Exception as e:
+        _plog(f'_handle_share_intent feil: {e}')
 
 
 def _copy_content_uri(uri, dst_path):
@@ -1019,12 +1058,14 @@ class KommunikasjonstavleApp(App):
         Window.clearcolor = (0.94, 0.95, 0.98, 1)
         Window.softinput_mode = 'below_target'  # Skyv innhold over tastatur
 
-        # Android 13+ (API 34) blokkerer skriving til /sdcard/ uten
-        # MANAGE_EXTERNAL_STORAGE. Flytt bilder og tegninger til
-        # user_data_dir som alltid er skrivbar uten tillatelser.
-        global IMG_DIR, DRAW_DIR
-        IMG_DIR  = os.path.join(self.user_data_dir, 'images')
-        DRAW_DIR = os.path.join(self.user_data_dir, 'drawings')
+        # Sett ALLE datastier fra user_data_dir – alltid skrivbar
+        # uten tillatelser på alle Android-versjoner.
+        global DATA_DIR, IMG_DIR, DRAW_DIR, STRUCT_FILE, LOG_FILE
+        DATA_DIR    = self.user_data_dir
+        IMG_DIR     = os.path.join(DATA_DIR, 'images')
+        DRAW_DIR    = os.path.join(DATA_DIR, 'drawings')
+        STRUCT_FILE = os.path.join(DATA_DIR, 'structure.json')
+        LOG_FILE    = os.path.join(DATA_DIR, 'crash.log')
 
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
@@ -1064,12 +1105,153 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def on_start(self):
-        """on_start er ikke lenger brukt til tillatelser.
-        Kallet er flyttet til build() via Clock, identisk med Eldritch Portal."""
-        pass
+        """
+        Sjekker om appen ble åpnet via Share intent (delt bilde fra Galleri).
+        Binder også on_new_intent for å fange deling mens appen kjører.
+        """
+        if platform == 'android':
+            try:
+                from android import mActivity
+                from android.activity import bind as activity_bind
+                # Sjekk startintenten (appen var ikke i forgrunnen)
+                intent = mActivity.getIntent()
+                _handle_share_intent(intent)
+                # Bind for fremtidige intents (appen er allerede åpen)
+                activity_bind(on_new_intent=lambda intent: (
+                    _handle_share_intent(intent),
+                    Clock.schedule_once(lambda *_: self._process_shared_image(), 0.3),
+                ))
+                # Behandle eventuelt ventende Share-bilde fra oppstart
+                if _SHARE_PENDING[0]:
+                    Clock.schedule_once(lambda *_: self._process_shared_image(), 0.8)
+            except Exception as e:
+                _plog(f'on_start share-sjekk feil: {e}')
 
     # _request_android_permissions() er erstattet av modul-nivå-funksjonen
     # request_android_permissions() øverst i filen – se der.
+
+    def _process_shared_image(self):
+        """
+        Behandler et bilde mottatt via Share intent.
+        Kopierer bildet til IMG_DIR og ber brukeren velge hvilken mappe
+        det skal legges i – viser en enkel mappevelger-popup.
+        """
+        uri = _SHARE_PENDING[0]
+        if not uri:
+            return
+        _SHARE_PENDING[0] = None
+
+        _plog('_process_shared_image: behandler delt bilde')
+        try:
+            # Finn filnavn fra URI
+            fname = 'delt_bilde_' + str(uuid.uuid4())[:8] + '.jpg'
+            try:
+                from jnius import autoclass
+                from android import mActivity
+                OpenableColumns = autoclass('android.provider.OpenableColumns')
+                cursor = mActivity.getContentResolver().query(
+                    uri, None, None, None, None)
+                if cursor and cursor.moveToFirst():
+                    idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if idx >= 0:
+                        fname = cursor.getString(idx)
+                    cursor.close()
+            except Exception:
+                pass
+
+            if not IMG_DIR:
+                self._toast('Appen er ikke klar ennå. Prøv igjen.')
+                return
+
+            dst = os.path.join(IMG_DIR, fname)
+            ok  = _copy_content_uri(uri, dst)
+            if not ok:
+                self._toast('Kunne ikke lese det delte bildet.')
+                return
+
+            # Be brukeren velge mappe
+            self._share_pick_folder_popup(dst, fname)
+
+        except Exception:
+            logging.exception('_process_shared_image: feil')
+            self._toast('Feil ved mottak av delt bilde.')
+
+    def _share_pick_folder_popup(self, img_path, fname):
+        """
+        Popup som lar brukeren velge hvilken mappe et Share-mottatt bilde
+        skal legges i. Filnavnet (uten extension) brukes som navneforslag.
+        """
+        folders = self.data.get('folders', [])
+        if not folders:
+            self._toast('Ingen mapper funnet. Opprett en mappe forst.')
+            return
+
+        pop_ref  = [None]
+        layout   = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+
+        layout.add_widget(Label(
+            text=f'Mottatt bilde: {fname}\nVelg hvilken mappe det skal legges i:',
+            size_hint_y=None, height=dp(56),
+            font_size=fsp(15), color=(0.08, 0.10, 0.35, 1),
+            halign='center', valign='middle',
+        ))
+
+        name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
+        layout.add_widget(Label(
+            text='Navn på symbolet:',
+            size_hint_y=None, height=dp(26),
+            font_size=fsp(13), color=(0.3, 0.3, 0.4, 1), halign='left',
+        ))
+        name_inp = TextInput(
+            text=name_suggestion,
+            multiline=False, size_hint_y=None, height=dp(50), font_size=sp(15),
+        )
+        layout.add_widget(name_inp)
+
+        sv   = ScrollView(size_hint_y=None, height=dp(220))
+        vbox = BoxLayout(orientation='vertical', spacing=dp(6), size_hint_y=None)
+        vbox.bind(minimum_height=vbox.setter('height'))
+
+        for fo in folders:
+            def make_add(dest=fo):
+                def do_add(*_):
+                    nm = name_inp.text.strip() or name_suggestion
+                    dest['items'].append({
+                        'id':    str(uuid.uuid4()),
+                        'name':  nm,
+                        'image': img_path,
+                    })
+                    save_struct(self.data)
+                    pop_ref[0].dismiss()
+                    self._toast(f'Lagt til i: {dest["name"]}')
+                    logging.info('Share-bilde lagt til: %s → %s', fname, dest["name"])
+                return do_add
+
+            vbox.add_widget(mk_btn(
+                dest['name'],
+                hex_k(fo['color']),
+                color=(0.05, 0.05, 0.2, 1),
+                h=dp(58), fs=16,
+                cb=make_add(fo),
+            ))
+
+        sv.add_widget(vbox)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn(
+            'Avbryt (slett bildet)',
+            hex_k('#9CA3AF'), h=dp(48), fs=14,
+            cb=lambda *_: (
+                os.remove(img_path) if os.path.exists(img_path) else None,
+                pop_ref[0].dismiss(),
+            ),
+        ))
+
+        pop = Popup(
+            title='Legg til delt bilde',
+            content=layout, size_hint=(0.92, 0.88),
+        )
+        pop_ref[0] = pop
+        pop.open()
 
 
 
@@ -2392,6 +2574,17 @@ class KommunikasjonstavleApp(App):
             hex_k('#546E7A'), h=dp(54), fs=15,
             cb=open_manage))
 
+        # ── Personvern ───────────────────────────────────────────────
+        outer.add_widget(Label(
+            text='Personvern:',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='left'))
+        outer.add_widget(mk_btn(
+            'Les personvernerklæringen',
+            hex_k('#4D96FF'), h=dp(54), fs=15,
+            cb=lambda *_: self._show_privacy_popup()))
+
         # Wrap outer i ScrollView slik at innstillinger kan rulles
         sv = ScrollView(do_scroll_x=False)
         inner = BoxLayout(
@@ -2403,6 +2596,65 @@ class KommunikasjonstavleApp(App):
             inner.add_widget(w)
         sv.add_widget(inner)
         self._set_content(sv)
+
+    # ══════════════════════════════════════════════════
+    #  PERSONVERNERKLÆRING
+    # ══════════════════════════════════════════════════
+
+    def _show_privacy_popup(self):
+        """
+        Viser personvernerklæringen i et scrollbart popup-vindu.
+        Teksten leses fra PERSONVERN.md hvis filen finnes, ellers
+        vises en kortversjon inline.
+        """
+        # Kortversjon (alltid tilgjengelig uten fillesing)
+        policy_text = (
+            "KOMMUNIKASJONSTAVLE - PERSONVERN\n\n"
+            "All data lagres kun lokalt pa denne enheten. "
+            "Ingenting sendes til internett, skytjenester eller tredjeparter.\n\n"
+            "ADVARSEL: Ikke last opp bilder av identifiserbare barn. "
+            "Dette er ikke nodvendig i pedagogisk sammenheng og kan "
+            "vaere i strid med GDPR. Bruk generiske ASK-symboler i stedet.\n\n"
+            "Behandlingsansvar for evt. personopplysninger i appen "
+            "ligger hos institusjonen som bruker appen.\n\n"
+            "Data slettes automatisk ved avinstallasjon.\n\n"
+            "Full personvernerklaering: Se PERSONVERN.md i appens GitHub-repository."
+        )
+        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+        sv = ScrollView()
+        lbl = Label(
+            text=policy_text,
+            font_size=fsp(14),
+            color=(0.08, 0.10, 0.25, 1),
+            halign='left', valign='top',
+            size_hint_y=None,
+        )
+        lbl.bind(
+            width=lambda *_: lbl.setter('text_size')(lbl, (lbl.width, None)),
+            texture_size=lambda *_: lbl.setter('height')(lbl, lbl.texture_size[1]),
+        )
+        sv.add_widget(lbl)
+        layout.add_widget(sv)
+
+        # Advarselsboks
+        warn = Label(
+            text='⚠  Last ikke opp bilder av barn',
+            size_hint_y=None, height=dp(42),
+            font_size=fsp(15), bold=True,
+            color=(0.78, 0.20, 0.10, 1),
+            halign='center',
+        )
+        layout.add_widget(warn)
+        layout.add_widget(mk_btn(
+            'Lukk', hex_k('#4D96FF'), h=dp(52),
+            cb=lambda *_: pop.dismiss(),
+        ))
+
+        pop = Popup(
+            title='Personvern',
+            content=layout, size_hint=(0.93, 0.88),
+        )
+        pop.open()
 
     # ══════════════════════════════════════════════════
     #  QR-KODE
@@ -3269,23 +3521,61 @@ class KommunikasjonstavleApp(App):
             pop.open()
 
     def _upload_to_folder(self, fo):
-        """Åpner Android-bildevelger og legger valgt bilde til i mappen."""
-        def on_picked(dst):
-            if not dst:
-                self._toast('Ingen bilde valgt.')
-                return
-            fname = os.path.basename(dst)
-            name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
-            fo['items'].append({
-                'id':    str(uuid.uuid4()),
-                'name':  name_suggestion,
-                'image': dst,
-            })
-            save_struct(self.data)
-            self._toast(f'Lagt til: {fname}')
-            self._show_folder(fid=fo['id'])
-            logging.info('Bilde lastet opp til mappe: %s', fname)
-        _open_android_picker(on_picked)
+        """
+        Åpner Android-bildevelger og legger valgt bilde til i mappen.
+        Viser først en advarsel om å ikke laste opp bilder av barn.
+        """
+        # Vis advarsel først – brukeren må bekrefte
+        warn_ref = [None]
+        warn_layout = BoxLayout(orientation='vertical', spacing=dp(12), padding=dp(16))
+        warn_layout.add_widget(Label(
+            text='⚠  Advarsel om personvern',
+            size_hint_y=None, height=dp(36),
+            font_size=fsp(18), bold=True,
+            color=(0.78, 0.20, 0.10, 1), halign='center',
+        ))
+        warn_layout.add_widget(Label(
+            text=(
+                'Last ikke opp bilder av identifiserbare barn.\n\n'
+                'Pedagogiske ASK-symboler viser generelle konsepter '
+                'og trenger ikke aa vise et spesifikt barn. '
+                'Bruk generiske symboler (tegninger, clip-art, PCS-symboler).'
+            ),
+            font_size=fsp(14), color=(0.15, 0.15, 0.25, 1),
+            halign='center', valign='middle',
+        ))
+        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+
+        def do_upload(*_):
+            warn_ref[0].dismiss()
+            _do_upload()
+
+        btn_row.add_widget(mk_btn('Jeg forstår – fortsett', hex_k('#FF9F43'), h=dp(52), fs=14, cb=do_upload))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52), fs=14,
+            cb=lambda *_: warn_ref[0].dismiss()))
+        warn_layout.add_widget(btn_row)
+        warn_pop = Popup(title='Personvern', content=warn_layout, size_hint=(0.90, 0.68))
+        warn_ref[0] = warn_pop
+        warn_pop.open()
+
+        def _do_upload():
+            """Selve opplastingen – kjøres etter advarsel er godkjent."""
+            def on_picked(dst):
+                if not dst:
+                    self._toast('Ingen bilde valgt.')
+                    return
+                fname = os.path.basename(dst)
+                name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
+                fo['items'].append({
+                    'id':    str(uuid.uuid4()),
+                    'name':  name_suggestion,
+                    'image': dst,
+                })
+                save_struct(self.data)
+                self._toast(f'Lagt til: {fname}')
+                self._show_folder(fid=fo['id'])
+                logging.info('Bilde lastet opp til mappe: %s', fname)
+            _open_android_picker(on_picked)
     def _download_image(self, src_path):
         if not src_path or not os.path.exists(src_path):
             self._toast('Ingen bildefil aa laste ned.')
@@ -3329,10 +3619,11 @@ if __name__ == '__main__':
     except Exception:
         # Siste utvei: skriv krasj til loggfil selv om appen aldri startet
         try:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                f.write('\n=== FATAL KRASJ ===\n')
-                _tb.print_exc(file=f)
+            if LOG_FILE:
+                os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+                with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                    f.write('\n=== FATAL KRASJ ===\n')
+                    _tb.print_exc(file=f)
         except Exception:
             pass
         raise

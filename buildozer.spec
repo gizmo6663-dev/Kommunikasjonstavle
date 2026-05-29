@@ -5,7 +5,7 @@ title = Kommunikasjonstavle
 package.name = kommunikasjonstavle
 package.domain = no.askapp
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf
+source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
 
 # ─── Versjon ──────────────────────────────────────────────────────
 version = 1.2
@@ -38,6 +38,18 @@ android.permissions = \
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
+
+# Bruk appens private lagringsmappe (user_data_dir) for all data.
+# Tilsvarer Eldritch Portals oppsett – garantert skrivbar uten
+# lagringstillatelser på Android 10+ (API 29+).
+android.private_storage = True
+
+# Intent-filter: gjør appen til mottaker for bildedeling fra galleri/andre apper.
+# Brukeren kan åpne et bilde i Galleri, trykke Del, og velge Kommunikasjonstavle.
+android.manifest.intent_filters = intent_filters.xml
+
+# singleTask: gjenbruk eksisterende Activity ved mottak av delt bilde
+android.manifest.activity_attributes = android:launchMode="singleTask"
 
 # ─── AndroidX ─────────────────────────────────────────────────────
 android.enable_androidx = True
