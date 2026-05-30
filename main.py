@@ -575,8 +575,8 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     b._update_grad_texture()
 
     def _on_press(btn, *_):
-        # Kortvipping: lett negativ rotasjon ved press
-        Animation(opacity=0.82, rotation=-1.8, duration=0.07, t='out_quad').start(btn)
+        # Lett dim ved press
+        Animation(opacity=0.78, duration=0.07, t='out_quad').start(btn)
         # Haptic feedback – kort vibrasjon (30ms)
         try:
             from plyer import vibrator
@@ -585,9 +585,7 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
             pass
 
     def _on_release_anim(btn, *_):
-        # Tilbake til normal med liten oversving
-        (Animation(opacity=1.0, rotation=1.2, duration=0.06, t='out_quad') +
-         Animation(rotation=0.0, duration=0.08, t='out_bounce')).start(btn)
+        Animation(opacity=1.0, duration=0.12, t='out_quad').start(btn)
 
     b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
@@ -1541,45 +1539,12 @@ class KommunikasjonstavleApp(App):
 
     def _show_splash_overlay(self):
         """
-        Lager en heldekkelende overlay som skjuler Kivy-logoen.
-        Bruker samme splash.png som android.presplash om den finnes,
-        ellers et PIL-generert fargeoverlay.
-        Fades ut etter 2 sekunder.
+        Kivy-logoen vises av Android FØR Python starter, styrt av
+        android.presplash i buildozer.spec. Den kan ikke dekkes over
+        med Python-kode. Denne metoden gjør derfor ingenting – det er
+        buildozer.spec sin android.presplash som er splashscreenen.
         """
-        from kivy.core.window import Window
-        from kivy.uix.floatlayout import FloatLayout
-        from kivy.uix.image import Image as KImage
-        from kivy.animation import Animation
-
-        splash_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            'assets', 'splash.png'
-        )
-
-        overlay = FloatLayout(size=Window.size)
-        with overlay.canvas.before:
-            from kivy.graphics import Color as KColor, Rectangle
-            KColor(0.07, 0.10, 0.22, 1)
-            self._splash_bg = Rectangle(pos=(0,0), size=Window.size)
-
-        if os.path.exists(splash_path):
-            img = KImage(
-                source=splash_path,
-                size_hint=(1, 1),
-                pos_hint={'center_x': .5, 'center_y': .5},
-                allow_stretch=True, keep_ratio=True,
-            )
-            overlay.add_widget(img)
-
-        Window.add_widget(overlay)
-        self._splash_overlay = overlay
-
-        def fade_out(*_):
-            anim = Animation(opacity=0, duration=0.6, t='out_quad')
-            anim.bind(on_complete=lambda *_: Window.remove_widget(overlay))
-            anim.start(overlay)
-
-        Clock.schedule_once(fade_out, 2.0)
+        pass
 
     def build(self):
         setup_logging()
@@ -1955,10 +1920,7 @@ class KommunikasjonstavleApp(App):
 
         if animate:
             from kivy.animation import Animation
-            widget.scale_x = 0.94
-            widget.scale_y = 0.94
-            anim = Animation(opacity=1, scale_x=1.0, scale_y=1.0,
-                             duration=0.20, t='out_quad')
+            anim = Animation(opacity=1, duration=0.18, t='out_quad')
             anim.start(widget)
         else:
             widget.opacity = 1

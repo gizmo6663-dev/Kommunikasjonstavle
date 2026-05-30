@@ -61,6 +61,7 @@ fullscreen = 0
 
 # ─── Ikoner og splash ─────────────────────────────────────────────
 android.icon        = assets/icon.png
+# android.icon.adaptive_foreground = assets/icon.png
 android.presplash       = assets/splash.png
 android.presplash_color = #12183A
 # (se over – satt fra splash)
