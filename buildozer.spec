@@ -12,7 +12,7 @@ source.include_patterns = assets/*
 version = 1.2
 
 # ─── Avhengigheter ────────────────────────────────────────────────
-requirements = python3,kivy==2.3.0,pillow,android,qrcode
+requirements = python3,kivy==2.3.0,pillow,android,qrcode,plyer
 
 # ─── Android-mål ──────────────────────────────────────────────────
 android.api = 34

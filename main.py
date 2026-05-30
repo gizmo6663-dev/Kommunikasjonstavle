@@ -1407,7 +1407,7 @@ class KommunikasjonstavleApp(App):
         )
 
         self._btn_back = mk_btn(
-            '← Tilbake', hex_k('#4D96FF'), fs=13,
+            '  Tilbake', hex_k('#4D96FF'), fs=13,
             cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
@@ -1733,50 +1733,62 @@ class KommunikasjonstavleApp(App):
             return
         self._push('folder', fid=self.cur_folder)
         self._cur_scr = 'image'
-        self._set_title(name)
+        self._set_title('')   # tittel vises i kortet, ikke bunnbaren
 
-        layout = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
-
-        # Bilde i RBox for fin innramming
-        img_frame = RBox(
-            size_hint=(1, 1),
-            box_color=(0.97, 0.97, 0.99, 1.0),
-            radius=dp(18),
-            padding=dp(4),
+        # Wrapper: RBox inneholder bilde + tittel tett pakket.
+        # size_hint=(1, None) + bind på minimum_height gjør at RBox
+        # kryper rundt innholdet i stedet for å fylle hele skjermen.
+        outer = BoxLayout(
+            orientation='vertical',
+            padding=dp(12), spacing=dp(8),
         )
-        img_frame.add_widget(Image(
+
+        card = RBox(
+            orientation='vertical',
+            size_hint=(1, None),
+            box_color=(0.97, 0.97, 0.99, 1.0),
+            radius=dp(20),
+            padding=dp(8),
+            spacing=dp(6),
+        )
+        card.bind(minimum_height=card.setter('height'))
+
+        card.add_widget(Image(
             source=path,
+            size_hint=(1, None), height=dp(340),
             allow_stretch=True, keep_ratio=True,
         ))
-        layout.add_widget(img_frame)
 
-        # Etikett rett under bildet
         name_lbl = Label(
             text=name,
-            size_hint_y=None, height=dp(52),
-            font_size=fsp(22), bold=True,
-            color=(0.08, 0.10, 0.35, 1),
+            size_hint_y=None, height=dp(48),
+            font_size=fsp(24), bold=True,
+            color=(0.06, 0.08, 0.30, 1),
             halign='center', valign='middle',
         )
         name_lbl.bind(size=name_lbl.setter('text_size'))
-        layout.add_widget(name_lbl)
+        card.add_widget(name_lbl)
 
-        btn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        btn_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
         btn_row.add_widget(mk_btn(
-            'Les opp', hex_k('#FF9F43'), h=dp(52), fs=14,
+            'Les opp', hex_k('#FF9F43'), h=dp(48), fs=14,
             cb=lambda *_: self._speak(name),
         ))
         btn_row.add_widget(mk_btn(
-            'QR-kode', hex_k('#4D96FF'), h=dp(52), fs=14,
+            'QR-kode', hex_k('#4D96FF'), h=dp(48), fs=14,
             cb=lambda *_: self._show_qr_popup(name, f'QR: {name}'),
         ))
         btn_row.add_widget(mk_btn(
-            'Last ned', hex_k('#6BCB77'), h=dp(52), fs=14,
+            'Last ned', hex_k('#6BCB77'), h=dp(48), fs=14,
             cb=lambda *_: self._download_image(path),
         ))
-        layout.add_widget(btn_row)
+        card.add_widget(btn_row)
+
+        outer.add_widget(card)
+        outer.add_widget(BoxLayout())  # spacer
+
         self._speak(name)
-        self._set_content(layout)
+        self._set_content(outer)
 
     # ══════════════════════════════════════════════════
     #  TEGNESKJERM
@@ -1906,49 +1918,51 @@ class KommunikasjonstavleApp(App):
             cb=lambda *_: self.draw_canvas.clear_canvas()))
         root.add_widget(act)
 
-        # ── Rad 3: Størrelse + Stabilisering + Fargevalg i én rad ──
-        # Alle tre kontroller samlet for å spare vertikalt rom.
-        ctrl = BoxLayout(size_hint_y=None, height=dp(50),
-                         spacing=dp(6), padding=(dp(4), dp(2)))
-
-        ctrl.add_widget(Label(text='Str:', size_hint_x=None, width=dp(30),
-            font_size=sp(12), color=(0.1, 0.1, 0.1, 1)))
+        # ── Rad 3: Penselstørrelse – egen rad, slider får full bredde ──
+        size_row = BoxLayout(size_hint_y=None, height=dp(46),
+                             spacing=dp(6), padding=(dp(4), dp(2)))
+        size_row.add_widget(Label(
+            text='Str:', size_hint_x=None, width=dp(36),
+            font_size=sp(13), bold=True, color=(0.1, 0.1, 0.1, 1)))
         self._size_slider = Slider(min=2, max=60, value=6, step=1)
-        self._size_lbl    = Label(text=' 6', size_hint_x=None, width=dp(26),
-            font_size=sp(12), color=(0.1, 0.1, 0.1, 1))
+        self._size_lbl    = Label(
+            text='  6', size_hint_x=None, width=dp(38),
+            font_size=sp(13), color=(0.1, 0.1, 0.1, 1))
         self._size_slider.bind(value=self._on_size_change)
-        ctrl.add_widget(self._size_slider)
-        ctrl.add_widget(self._size_lbl)
+        size_row.add_widget(self._size_slider)
+        size_row.add_widget(self._size_lbl)
+        root.add_widget(size_row)
 
-        ctrl.add_widget(Label(text='Stab:', size_hint_x=None, width=dp(38),
-            font_size=sp(12), color=(0.1, 0.1, 0.1, 1)))
-        self._stab_slider = Slider(min=0, max=10, value=4, step=1,
-                                   size_hint_x=None, width=dp(100))
-        self._stab_lbl    = Label(text='4', size_hint_x=None, width=dp(18),
-            font_size=sp(12), color=(0.1, 0.1, 0.1, 1))
+        # ── Rad 4: Stabilisering + Farge ────────────────────────────
+        stab_row = BoxLayout(size_hint_y=None, height=dp(46),
+                             spacing=dp(6), padding=(dp(4), dp(2)))
+        stab_row.add_widget(Label(
+            text='Stab:', size_hint_x=None, width=dp(44),
+            font_size=sp(13), bold=True, color=(0.1, 0.1, 0.1, 1)))
+        self._stab_slider = Slider(min=0, max=10, value=4, step=1)
+        self._stab_lbl    = Label(
+            text='4', size_hint_x=None, width=dp(22),
+            font_size=sp(13), color=(0.1, 0.1, 0.1, 1))
         def on_stab(sl, val):
             v = int(val)
             self._stab_lbl.text = str(v)
             if self.draw_canvas:
                 self.draw_canvas.stabilize = v
         self._stab_slider.bind(value=on_stab)
-        ctrl.add_widget(self._stab_slider)
-        ctrl.add_widget(self._stab_lbl)
+        stab_row.add_widget(self._stab_slider)
+        stab_row.add_widget(self._stab_lbl)
 
-        # Fargesirkel + Velg-knapp på samme rad
         self._cur_color_btn = RBtn(
-            size_hint=(None, None), size=(dp(42), dp(42)),
-            btn_color=list(hex_k('#000000')), radius=dp(21),
+            size_hint=(None, None), size=(dp(40), dp(40)),
+            btn_color=list(hex_k('#000000')), radius=dp(20),
         )
         self._cur_color_btn.bind(on_release=lambda *_: self._open_color_popup())
-        ctrl.add_widget(self._cur_color_btn)
-
-        open_pal_btn = mk_btn('Farge', hex_k('#4D96FF'), h=dp(44), fs=13,
-            size_hint_x=None, width=dp(68))
+        stab_row.add_widget(self._cur_color_btn)
+        open_pal_btn = mk_btn('Farge', hex_k('#4D96FF'), h=dp(42), fs=13,
+            size_hint_x=None, width=dp(72))
         open_pal_btn.bind(on_release=lambda *_: self._open_color_popup())
-        ctrl.add_widget(open_pal_btn)
-
-        root.add_widget(ctrl)
+        stab_row.add_widget(open_pal_btn)
+        root.add_widget(stab_row)
 
         # Initialiserer _col_btns som tom dict (brukes i _set_draw_color)
         self._col_btns = {}
@@ -2518,112 +2532,35 @@ class KommunikasjonstavleApp(App):
 
     def _init_tts(self):
         """
-        Initialiserer Android TextToSpeech.
-
-        Rotårsak til at PythonJavaClass-varianten ikke fungerte:
-        OnInit-callbacken ble garbage-collected av Python-GC før Android
-        rakk å kalle den, slik at _tts_ready aldri ble True.
-
-        Ny tilnærming: bruk Android sitt innebygde Intent-baserte
-        TextToSpeech-alternativ – ingen callback-klasse nødvendig.
-        Vi instansierer TTS med en anonym listener via Proxy, og
-        polling med Clock sjekker om motoren er klar.
+        Plyer sin TTS-wrapper håndterer Android TextToSpeech
+        internt uten at vi trenger PythonJavaClass-callbacks.
+        Ingen initialisering nødvendig – plyer.tts.speak() er
+        tilstandsløs og kaller Android TTS direkte.
         """
-        if hasattr(self, '_tts_initialized'):
-            return
-        self._tts_initialized = True
-        self._tts_engine      = None
-        self._tts_ready       = False
-        self._tts_pending     = []   # tekst som venter på at motoren blir klar
-
-        if platform != 'android':
-            return
-
-        try:
-            from jnius import autoclass, PythonJavaClass, java_method
-            from android import mActivity
-
-            TTS    = autoclass('android.speech.tts.TextToSpeech')
-            Locale = autoclass('java.util.Locale')
-
-            app_ref = self
-
-            class TTSInitListener(PythonJavaClass):
-                """
-                Holder en sterk referanse til seg selv i app_ref._tts_listener
-                slik at Python-GC ikke kan samle den inn før Android kaller
-                onInit(). Dette var rotproblemet med forrige implementasjon.
-                """
-                __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
-                __javacontext__    = 'app'
-
-                @java_method('(I)V')
-                def onInit(self_j, status):
-                    logging.info('TTS onInit kalt, status=%d', status)
-                    if status == TTS.SUCCESS:
-                        try:
-                            result = app_ref._tts_engine.setLanguage(Locale('nb', 'NO'))
-                            if result in (-2, -1):
-                                # nb-NO ikke støttet – prøv norsk uten region
-                                result = app_ref._tts_engine.setLanguage(
-                                    Locale('no', 'NO'))
-                            if result in (-2, -1):
-                                # Siste fallback: systemspråk
-                                app_ref._tts_engine.setLanguage(
-                                    Locale.getDefault())
-                            app_ref._tts_ready = True
-                            logging.info('TTS klar. Venter tekst: %d',
-                                         len(app_ref._tts_pending))
-                            # Les opp eventuell tekst som kom inn før motoren var klar
-                            for t in app_ref._tts_pending:
-                                app_ref._speak_now(t)
-                            app_ref._tts_pending.clear()
-                        except Exception:
-                            logging.exception('TTS setLanguage feil')
-                    else:
-                        logging.warning('TTS init feilet, status=%d', status)
-
-            # Sterk referanse – overlever til onInit er kalt
-            self._tts_listener = TTSInitListener()
-            self._tts_engine   = TTS(mActivity, self._tts_listener)
-            logging.info('TTS engine opprettet, venter på onInit ...')
-
-        except Exception:
-            logging.exception('_init_tts: feil')
+        pass   # plyer krever ingen manuell initialisering
 
     def _speak_now(self, text):
-        """Kaller speak() direkte – forutsetter at motoren er klar."""
+        """Kaller plyer.tts.speak() direkte."""
         try:
-            from jnius import autoclass
-            TTS = autoclass('android.speech.tts.TextToSpeech')
-            self._tts_engine.speak(str(text), TTS.QUEUE_FLUSH, None, 'kt_utterance')
-            logging.debug('TTS speak: %s', text[:40])
+            from plyer import tts as plyer_tts
+            plyer_tts.speak(text)
+            logging.info('TTS (plyer) talte: %s', text[:30])
         except Exception:
-            logging.exception('_speak_now: feil')
+            logging.exception('_speak_now (plyer): feil')
 
     def _speak(self, text):
         """
-        Les opp teksten via Android TTS.
-        Kaller _init_tts() ved første bruk.
-        Dersom motoren ikke er klar ennå legges teksten i kø og
-        leses opp automatisk når onInit() er ferdig.
+        Les opp tekst via plyer.tts (Android TextToSpeech).
+        plyer er den anbefalte abstraksjonslaget for TTS i Kivy-apper
+        og unngår alle PythonJavaClass-callback-problemer.
         """
         if not self.data.get('settings', {}).get('tts_enabled', False):
             return
-        if platform != 'android':
+        if not text or not text.strip():
             return
-        try:
-            self._init_tts()
-            if getattr(self, '_tts_ready', False) and self._tts_engine:
-                self._speak_now(text)
-            elif self._tts_engine:
-                # Motor er opprettet men onInit ikke kalt ennå – legg i kø
-                if not hasattr(self, '_tts_pending'):
-                    self._tts_pending = []
-                self._tts_pending.append(str(text))
-                logging.debug('TTS: tekst lagt i kø (%d i kø)', len(self._tts_pending))
-        except Exception:
-            logging.exception('_speak: feil')
+        # Liten forsinkelse sikrer at UI er ferdig oppdatert
+        # før lydkortet aktiveres (unngår kortingsartefakter)
+        Clock.schedule_once(lambda *_: self._speak_now(text), 0.2)
 
     # ══════════════════════════════════════════════════
     #  INNSTILLINGER
