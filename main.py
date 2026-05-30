@@ -2650,56 +2650,52 @@ class KommunikasjonstavleApp(App):
 
     def _show_privacy_popup(self):
         """
-        Viser personvernerklæringen i et scrollbart popup-vindu.
-        Teksten leses fra PERSONVERN.md hvis filen finnes, ellers
-        vises en kortversjon inline.
+        Viser den fullstendige personvernerklæringen i et scrollbart popup.
+        Teksten er bakt direkte inn i koden fra PERSONVERN.md.
         """
-        # Kortversjon (alltid tilgjengelig uten fillesing)
-        policy_text = (
-            "KOMMUNIKASJONSTAVLE - PERSONVERN\n\n"
-            "All data lagres kun lokalt på denne enheten. "
-            "Ingenting sendes til internett, skytjenester eller tredjeparter.\n\n"
-            "ADVARSEL: Ikke last opp bilder av identifiserbare barn. "
-            "Dette er ikke nødvendig i pedagogisk sammenheng og kan "
-            "være i strid med GDPR. Bruk generiske ASK-symboler i stedet.\n\n"
-            "Behandlingsansvar for evt. personopplysninger i appen "
-            "ligger hos institusjonen som bruker appen.\n\n"
-            "Data slettes automatisk ved avinstallasjon.\n\n"
-            "Full personvernerklæring: Se PERSONVERN.md i appens GitHub-repository."
+        policy_text = "PERSONVERNERKL\u00c6RING \u2013 KOMMUNIKASJONSTAVLE\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nVersjon: 1.2  \nSist oppdatert: Mai 2025  \nUtvikler: Privat utvikler (ikke-kommersiell applikasjon)\n\n\n\n\nHVA ER KOMMUNIKASJONSTAVLE?\n\nKommunikasjonstavle er en Android-applikasjon utviklet for bruk i pedagogisk sammenheng i barnehage og skole. Appen er laget for \u00e5 st\u00f8tte kommunikasjon med barn ved hjelp av bilder og symboler (ASK \u2013 Alternativ og Supplerende Kommunikasjon).\n\n\n\n\nHVILKE OPPLYSNINGER SAMLES INN?\n\nIngen personopplysninger sendes fra denne appen.\n\nAll informasjon appen lagrer, befinner seg utelukkende p\u00e5 den enheten appen er installert p\u00e5. Det sendes ingenting til internett, ingen skytjeneste, ingen server og ingen tredjepart.\n\nAppen lagrer lokalt p\u00e5 enheten:\n- Mappestruktur og kategorier du oppretter\n- Bildefiler du laster opp\n- Tegninger du lager i appen\n- Innstillinger (tekstst\u00f8rrelse, tale p\u00e5/av)\n- En teknisk feillogg (`crash.log`) ved programfeil\n\nIngen av disse dataene forlater enheten.\n\n\n\n\nVIKTIG ADVARSEL OM BILDER AV BARN\n\nVi frar\u00e5der p\u00e5 det sterkeste \u00e5 laste opp fotografier av identifiserbare barn i appen.\n\nGrunnen er enkel: det er ikke n\u00f8dvendig i pedagogisk sammenheng. Pedagogiske ASK-symboler viser generelle konsepter \u2013 mat, aktiviteter, f\u00f8lelser \u2013 og trenger ikke \u00e5 knyttes til et bestemt barn. Symbolbiblioteker som PCS (Picture Communication Symbols) er nettopp utviklet for dette form\u00e5let.\n\nDersom bilder av identifiserbare barn likevel lastes opp, er dette en personopplysning underlagt GDPR (personvernforordningen). Behandlingsansvaret ligger da hos den institusjonen (barnehagen eller skolen) som bruker appen, ikke hos apputvikleren. Foresattes samtykke vil i slike tilfeller normalt v\u00e6re p\u00e5krevd.\n\n\n\n\nHVEM HAR BEHANDLINGSANSVARET?\n\nApputvikleren samler ikke inn, mottar eller har tilgang til noen data fra appen.\n\nBehandlingsansvar for eventuelle personopplysninger som legges inn i appen, ligger hos:\n- Den kommunen, det private selskapet eller den enkeltpersonen som installerer og bruker appen\n- I tr\u00e5d med norsk tolkning av GDPR (personopplysningsloven, LOV-2018-06-15-38)\n\n\n\n\nTREDJEPARTSBIBLIOTEKER OG AVHENGIGHETER\n\nAppen benytter f\u00f8lgende programvarekomponenter som er bakt inn i applikasjonen:\n\nKomponent  Form\u00e5l  Sender data?\nPython / Kivy  App-rammeverk  Nei\nPillow (PIL)  Bildebehandling  Nei\nqrcode  QR-kode-generering  Nei\nAndroid SDK  Android-plattform  Se Googles egne vilk\u00e5r\n\nAndroid-plattformen (Google) kan samle inn diagnostikk- og bruksdata uavhengig av denne appen, i henhold til Googles egne personvernvilk\u00e5r.\n\n\n\n\nSLETTING AV DATA\n\nAll data appen har lagret slettes automatisk n\u00e5r appen avinstalleres fra enheten. Det finnes ingen ekstern kopi \u00e5 be om sletting av.\n\n\u00d8nsker du \u00e5 slette enkeltdata mens appen er installert:\n- Bilder og mapper: Slett via redigeringsmodus i appen\n- Tegninger: Slett filene manuelt fra enhetens filsystem\n- All appdata: Avinstaller appen, eller g\u00e5 til Innstillinger \u2192 Apper \u2192 Kommunikasjonstavle \u2192 Lagring \u2192 Slett data\n\n\n\n\nPCS-SYMBOLER (PICTURE COMMUNICATION SYMBOLS)\n\nDersom denne versjonen av appen inkluderer PCS-symboler fra Tobii DynaVox, er disse brukt i henhold til lisensavtale med Tobii DynaVox. PCS\u00ae er et registrert varemerke tilh\u00f8rende Tobii DynaVox.\n\n\n\n\nUNIVERSELL UTFORMING\n\nAppen er utviklet med tanke p\u00e5 tilgjengelighet for brukere med ulike kommunikasjonsbehov. Justerbar tekstst\u00f8rrelse og h\u00f8ykontrastalternativer er tilgjengelig i innstillinger.\n\n\n\n\nKONTAKT\n\nSp\u00f8rsm\u00e5l om personvern eller appen kan rettes til apputvikleren via GitHub-prosjektets \u00abIssues\u00bb-seksjon.\n\n\n\n\nENDRINGER I PERSONVERNERKL\u00c6RINGEN\n\nVesentlige endringer i denne erkl\u00e6ringen vil gjenspeiles i versjonsnummeret \u00f8verst. Det anbefales \u00e5 lese erkl\u00e6ringen p\u00e5 nytt ved oppgradering av appen."
+
+        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(12))
+
+        # Advarsel øverst – tydelig og umiddelbart synlig
+        warn_box = RBox(
+            size_hint_y=None, height=dp(56),
+            box_color=(1.0, 0.94, 0.92, 1.0),
+            radius=dp(10), padding=(dp(10), dp(8)),
         )
-        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
-        sv = ScrollView()
+        warn_box.add_widget(Label(
+            text='Advarsel: Last ikke opp bilder av barn',
+            font_size=fsp(14), bold=True,
+            color=(0.70, 0.08, 0.06, 1),
+            halign='center', valign='middle',
+        ))
+        outer.add_widget(warn_box)
+
+        # Scrollbar tekst
+        sv  = ScrollView(do_scroll_x=False)
         lbl = Label(
             text=policy_text,
-            font_size=fsp(14),
-            color=(0.12, 0.14, 0.30, 1),   # mørk marineblå – lesbar på lys bakgrunn
+            font_size=fsp(13),
+            color=(0.10, 0.12, 0.28, 1),
             halign='left', valign='top',
             size_hint_y=None,
+            padding=(dp(4), dp(4)),
         )
         lbl.bind(
             width=lambda *_: lbl.setter('text_size')(lbl, (lbl.width, None)),
             texture_size=lambda *_: lbl.setter('height')(lbl, lbl.texture_size[1]),
         )
         sv.add_widget(lbl)
-        layout.add_widget(sv)
+        outer.add_widget(sv)
 
-        # Advarselsboks
-        warn = Label(
-            text='Advarsel: Last ikke opp bilder av barn',
-            size_hint_y=None, height=dp(42),
-            font_size=fsp(15), bold=True,
-            color=(0.72, 0.10, 0.08, 1),
-            halign='center',
-        )
-        layout.add_widget(warn)
-        layout.add_widget(mk_btn(
-            'Lukk', hex_k('#4D96FF'), h=dp(52),
+        outer.add_widget(mk_btn(
+            'Lukk', hex_k('#4D96FF'), h=dp(54),
             cb=lambda *_: pop.dismiss(),
         ))
 
         pop = Popup(
-            title='Personvern',
-            content=layout, size_hint=(0.93, 0.88),
+            title='Personvernerklæring – Kommunikasjonstavle',
+            content=outer, size_hint=(0.95, 0.92),
         )
         pop.open()
 
