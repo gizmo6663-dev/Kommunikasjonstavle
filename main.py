@@ -497,12 +497,32 @@ def text_on(bg_hex):
     return (1.0, 1.0, 1.0, 1.0)           # hvit
 
 def haptic_feedback():
-    """Kort vibrasjon via plyer. Kalles ved alle knappetrykk."""
+    """
+    Haptisk feedback ved knappetrykk.
+    Metode 1: performHapticFeedback() via Android View – krever INGEN tillatelse.
+    Metode 2: plyer.vibrator(40) som fallback.
+    """
+    if platform != 'android':
+        return
+    # ── Metode 1: View.performHapticFeedback (anbefalt av Google) ──
+    try:
+        from jnius import autoclass
+        View            = autoclass('android.view.View')
+        PythonActivity  = autoclass('org.kivy.android.PythonActivity')
+        root_view       = (PythonActivity.mActivity
+                           .getWindow().getDecorView().getRootView())
+        if root_view:
+            # HAPTIC_FEEDBACK_VIRTUAL_KEY = 1 – standard klikk-effekt
+            root_view.performHapticFeedback(1)
+            return
+    except Exception as e:
+        logging.debug('performHapticFeedback feilet: %s', e)
+    # ── Metode 2: plyer (int, ikke float) ──────────────────────────
     try:
         from plyer import vibrator
-        vibrator.vibrate(0.04)   # 40 millisekunder
+        vibrator.vibrate(40)     # må være int (millisekunder)
     except Exception as e:
-        logging.debug('Vibrasjon feilet: %s', e)
+        logging.debug('plyer.vibrator feilet: %s', e)
 
 
 def fsp(base_size):
