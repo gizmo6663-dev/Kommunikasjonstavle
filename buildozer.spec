@@ -35,7 +35,8 @@ p4a.branch = v2024.01.21
 android.permissions = \
     android.permission.READ_EXTERNAL_STORAGE, \
     android.permission.WRITE_EXTERNAL_STORAGE, \
-    android.permission.READ_MEDIA_IMAGES
+    android.permission.READ_MEDIA_IMAGES, \
+    android.permission.VIBRATE
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
@@ -60,9 +61,9 @@ orientation = portrait
 fullscreen = 0
 
 # ─── Ikoner og splash ─────────────────────────────────────────────
-android.icon        = assets/icon.png
+android.icon        = %(source.dir)s/assets/icon.png
 # android.icon.adaptive_foreground = assets/icon.png
-android.presplash       = assets/splash.png
+android.presplash       = %(source.dir)s/assets/splash.png
 android.presplash_color = #12183A
 # (se over – satt fra splash)
 

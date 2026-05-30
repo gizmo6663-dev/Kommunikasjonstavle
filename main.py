@@ -72,6 +72,11 @@ _KV = """
     background_color: 0, 0, 0, 0
     bold: True
     canvas.before:
+        # Rotasjon rundt midten av knappen
+        PushMatrix:
+        Rotate:
+            angle: self.rotation
+            origin: self.center
         # 1. Skygge
         Color:
             rgba: 0.04, 0.06, 0.18, 0.13
@@ -106,6 +111,7 @@ _KV = """
         Line:
             rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
             width: 1.1
+        PopMatrix:
 
 <RBox>:
     canvas.before:
@@ -218,12 +224,12 @@ if os.path.exists(_FONT_PATH):
 class RBtn(Button):
     """
     Avrundet knapp med skygge, kantlinje og PIL-basert lineær gradient.
-    PIL genererer én liten gradient-tekstur (1×64 px) som tiles horisontalt.
-    Dette gir ekte lineær gradient i Kivy uten Mesh-kompleksitet.
-    btn_color styrer basisfargen; gradient legger lys øverst og skygge nedenfor.
+    rotation er NumericProperty slik at Animation kan animere den
+    via PushMatrix/Rotate/PopMatrix i KV-regelen.
     """
     btn_color = ListProperty([0.30, 0.50, 1.0, 1.0])
     radius    = NumericProperty(dp(14))
+    rotation  = NumericProperty(0.0)
 
     def on_btn_color(self, *_):
         self._update_grad_texture()
@@ -574,18 +580,33 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     # Generer gradient-tekstur med det samme
     b._update_grad_texture()
 
+    # Lagre original farge for tilbakestilling
+    orig_color = list(btn_color)
+
     def _on_press(btn, *_):
-        # Lett dim ved press
-        Animation(opacity=0.78, duration=0.07, t='out_quad').start(btn)
-        # Haptic feedback – kort vibrasjon (30ms)
-        try:
-            from plyer import vibrator
-            vibrator.vibrate(0.03)
-        except Exception:
-            pass
+        # Mørklegg + vipp lett til venstre
+        r, g, bv, a = btn.btn_color
+        btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
+        Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
+        # Haptic
+        if platform == 'android':
+            try:
+                from plyer import vibrator
+                vibrator.vibrate(30)
+            except Exception:
+                try:
+                    from jnius import autoclass
+                    from android import mActivity
+                    vib = mActivity.getSystemService('vibrator')
+                    vib.vibrate(30)
+                except Exception:
+                    pass
 
     def _on_release_anim(btn, *_):
-        Animation(opacity=1.0, duration=0.12, t='out_quad').start(btn)
+        btn.btn_color = list(orig_color)
+        # Tilbake med liten oversving: -2.5 → +1.2 → 0
+        (Animation(rotation=1.2, duration=0.07, t='out_quad') +
+         Animation(rotation=0.0, duration=0.09, t='out_bounce')).start(btn)
 
     b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
@@ -886,11 +907,20 @@ class TappableImage(Image):
         now = Clock.get_time()
         dt  = now - self._last_touch
         self._last_touch = now
+        # Visuell feedback: kort dimming
+        from kivy.animation import Animation
+        Animation(opacity=0.65, duration=0.06).start(self)
         if dt < 0.35 and dt > 0.01:
             self._show_zoom_popup()
         else:
             self._action()
         return True
+
+    def on_touch_up(self, touch):
+        if self.collide_point(*touch.pos):
+            from kivy.animation import Animation
+            Animation(opacity=1.0, duration=0.12).start(self)
+        return super().on_touch_up(touch)
 
     def _show_zoom_popup(self):
         from kivy.uix.floatlayout import FloatLayout
@@ -1474,50 +1504,59 @@ def smart_input(text='', hint='', on_save=None, **kw):
 #  KONFETTI
 # ══════════════════════════════════════════════════════════════════
 
-def launch_confetti(duration=2.8):
+def launch_confetti(duration=3.0):
+    """
+    Konfetti faller fra TOPPEN av skjermen ned.
+    Partikler starter over skjermen (y > H) og faller nedover
+    (vy er positiv tyngdekraft, y synker).
+    Stor størrelse (20-40px) og full alpha for god synlighet.
+    """
     import random as _r
     from kivy.uix.widget import Widget as KWidget
+    from kivy.graphics import Color as KC, Rectangle
     W, H = Window.size
-    n = 55
-    gravity = 0.45
-    cols = ['#FFD93D','#FF6B6B','#6BCB77','#4D96FF','#C77DFF','#FF9F43','#4ECDC4']
+    n = 80
+    cols = ['#FFD93D','#FF6B6B','#6BCB77','#4D96FF','#C77DFF','#FF9F43','#FF6BB5']
     particles = []
     for _ in range(n):
         particles.append({
-            'x': _r.uniform(0, W), 'y': H + _r.uniform(0, 60),
-            'vx': _r.uniform(-2.5,2.5), 'vy': _r.uniform(-12,-5),
-            'rot': _r.uniform(0,360), 'rot_spd': _r.uniform(-8,8),
+            # Start spredt over toppen av skjermen
+            'x':   _r.uniform(-20, W + 20),
+            'y':   H + _r.uniform(0, H * 0.5),  # Kivy: y=0 er bunn, H er topp
+            'vx':  _r.uniform(-3, 3),
+            'vy':  _r.uniform(6, 16),            # positiv = oppover i Kivy
             'col': hex_k(_r.choice(cols))[:3],
-            'size': _r.randint(8,18), 'born': Clock.get_time(),
+            'w':   _r.randint(14, 28),
+            'h':   _r.randint(8,  18),
+            'born': Clock.get_time(),
         })
-    overlay = KWidget(size=Window.size)
+    overlay = KWidget(size=Window.size, pos=(0, 0))
     Window.add_widget(overlay)
     started = Clock.get_time()
     _ev = [None]
+
     def update(dt):
         overlay.canvas.clear()
         now   = Clock.get_time()
         alive = False
-        from kivy.graphics import Color as KC, Ellipse
         with overlay.canvas:
             for p in particles:
-                p['vy'] += gravity
+                # Kivy Y-akse: 0=bunn, H=topp. Faller = y avtar
+                p['y']  -= p['vy']     # faller nedover (y synker)
                 p['x']  += p['vx']
-                p['y']  -= p['vy']
+                p['vy'] *= 0.99        # svak luftmotstand
                 age   = now - p['born']
-                alpha = max(0.0, 1.0 - age / duration)
-                if p['y'] > -p['size']*2 and alpha > 0:
+                # Ingen fade de første 0.8s – full synlighet
+                alpha = 1.0 if age < 0.8 else max(0.0, 1.0 - (age - 0.8) / (duration - 0.8))
+                if p['y'] > -p['h'] * 2 and alpha > 0:
                     alive = True
                 KC(*p['col'], alpha)
-                s = p['size']
-                Ellipse(pos=(p['x']-s//2, p['y']-s//4), size=(s, s//2))
-        if not alive or now - started > duration + 0.5:
+                Rectangle(pos=(p['x'], p['y']), size=(p['w'], p['h']))
+        if not alive or now - started > duration + 0.3:
             _ev[0].cancel()
-            from kivy.animation import Animation
-            a = Animation(opacity=0, duration=0.3)
-            a.bind(on_complete=lambda *_: Window.remove_widget(overlay))
-            a.start(overlay)
-    _ev[0] = Clock.schedule_interval(update, 1/40)
+            Window.remove_widget(overlay)
+
+    _ev[0] = Clock.schedule_interval(update, 1/50)
 
 
 # ══════════════════════════════════════════════════════════════════
