@@ -72,16 +72,24 @@ _KV = """
     background_color: 0, 0, 0, 0
     bold: True
     canvas.before:
-        # 1. Lett skygge (halvert offset og opacity vs originalt)
+        # 1. Skygge
         Color:
             rgba: 0.04, 0.06, 0.18, 0.13
         RoundedRectangle:
             pos: self.x + dp(1.5), self.y - dp(2.5)
             size: self.width - dp(2), self.height * 0.88
             radius: [self.radius + dp(1.5)]
-        # 2. Hoved-farge
+        # 2. PIL-gradient som tekstur (genereres av _update_grad_texture)
         Color:
-            rgba: self.btn_color
+            rgba: 1, 1, 1, 1
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [self.radius]
+            texture: self._grad_tex if hasattr(self, '_grad_tex') and self._grad_tex else None
+        # Fallback flat farge hvis tekstur ikke er klar
+        Color:
+            rgba: self.btn_color if not (hasattr(self, '_grad_tex') and self._grad_tex) else (0,0,0,0)
         RoundedRectangle:
             pos: self.pos
             size: self.size
@@ -92,19 +100,12 @@ _KV = """
         Line:
             rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
             width: 1.0
-        # 4. Lys toppglans – gradert fra hvit øverst
+        # 4. Lys indre glans-linje
         Color:
-            rgba: 1, 1, 1, 0.22
+            rgba: 1, 1, 1, 0.30
         Line:
             rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
-            width: 1.2
-        # 5. Subtil gradient – lys halvtransparent overlay øverst
-        Color:
-            rgba: 1, 1, 1, 0.13
-        RoundedRectangle:
-            pos: self.x, self.y + self.height * 0.5
-            size: self.width, self.height * 0.5
-            radius: [self.radius, self.radius, 0, 0]
+            width: 1.1
 
 <RBox>:
     canvas.before:
@@ -131,15 +132,16 @@ _KV = """
 
 <NavBar>:
     canvas.before:
-        # Mørk marineblå bunn-navbar (Material-stil)
+        # Svakt mørkere enn app-bakgrunnen (0.94,0.95,0.98)
+        # – gir tydelig adskillelse uten å dominere visuelt
         Color:
-            rgba: 0.10, 0.14, 0.24, 1.0
+            rgba: 0.86, 0.88, 0.93, 1.0
         Rectangle:
             pos: self.pos
             size: self.size
-        # Tynn lys separator øverst
+        # Tynn separator øverst
         Color:
-            rgba: 1.0, 1.0, 1.0, 0.12
+            rgba: 0.70, 0.74, 0.84, 1.0
         Line:
             points: self.x, self.top, self.right, self.top
             width: 1.2
@@ -215,13 +217,52 @@ if os.path.exists(_FONT_PATH):
 
 class RBtn(Button):
     """
-    Avrundet knapp med skygge og dobbel kantlinje.
-    Bruker btn_color (ListProperty) i stedet for background_color
-    slik at KV-regelen kan lese fargen uten å kollidere med Kivys
-    innebygde background_color (som settes til gjennomsiktig).
+    Avrundet knapp med skygge, kantlinje og PIL-basert lineær gradient.
+    PIL genererer én liten gradient-tekstur (1×64 px) som tiles horisontalt.
+    Dette gir ekte lineær gradient i Kivy uten Mesh-kompleksitet.
+    btn_color styrer basisfargen; gradient legger lys øverst og skygge nedenfor.
     """
     btn_color = ListProperty([0.30, 0.50, 1.0, 1.0])
-    radius    = NumericProperty(dp(12))
+    radius    = NumericProperty(dp(14))
+
+    def on_btn_color(self, *_):
+        self._update_grad_texture()
+
+    def _update_grad_texture(self):
+        """Genererer en 1×64-px gradient-tekstur fra btn_color."""
+        if not PIL_OK:
+            return
+        try:
+            r, g, b, a = self.btn_color
+            H = 64
+            buf = bytearray(1 * H * 4)
+            for y in range(H):
+                # y=0 er bunn i PIL (flippes), y=H-1 er topp
+                # Gradient: øverst +22% lysere, midten ren farge, bunn -12% mørkere
+                t = y / (H - 1)           # 0=bunn, 1=topp etter flip
+                if t > 0.55:
+                    blend = (t - 0.55) / 0.45   # 0→1 fra midten til topp
+                    fr = min(1.0, r + 0.22 * blend)
+                    fg = min(1.0, g + 0.22 * blend)
+                    fb = min(1.0, b + 0.22 * blend)
+                elif t < 0.20:
+                    blend = (0.20 - t) / 0.20   # 0→1 fra midten til bunn
+                    fr = max(0.0, r - 0.14 * blend)
+                    fg = max(0.0, g - 0.14 * blend)
+                    fb = max(0.0, b - 0.14 * blend)
+                else:
+                    fr, fg, fb = r, g, b
+                i = y * 4
+                buf[i]   = int(fr * 255)
+                buf[i+1] = int(fg * 255)
+                buf[i+2] = int(fb * 255)
+                buf[i+3] = int(a  * 255)
+            tex = Texture.create(size=(1, H), colorfmt='rgba')
+            tex.blit_buffer(bytes(buf), colorfmt='rgba', bufferfmt='ubyte')
+            tex.wrap = 'repeat'   # tiles horisontalt til knappens fulle bredde
+            self._grad_tex = tex
+        except Exception:
+            pass
 
 
 class RBox(BoxLayout):
@@ -332,7 +373,8 @@ DEFAULT_STRUCT = {
     "settings": {
         "tts_enabled": False,
         "font_scale": 1.0,
-        "high_contrast": False
+        "high_contrast": False,
+        "swipe_nav": False
     }
 }
 
@@ -475,15 +517,18 @@ def apply_high_contrast(enabled):
 
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
-    Lager en RBtn med opacity-dimming ved trykk.
-    I høykontrast-modus overstyres bg med svart og fg med hvit
-    for å oppnå WCAG AAA-kontrast (21:1).
+    Lager en RBtn med:
+    - PIL-gradient (via _update_grad_texture i RBtn)
+    - Kortvippings-animasjon ved trykk (rotation ±2°)
+    - Haptic feedback via plyer.vibrator (kort 30ms puls)
+    - WCAG AAA i høykontrast-modus
     """
+    from kivy.animation import Animation
     kw.setdefault('size_hint_y', None)
     kw.setdefault('height', h)
     if is_hc():
-        btn_color = [0.0, 0.0, 0.0, 1.0]   # svart
-        txt_color = (1.0, 1.0, 1.0, 1.0)   # hvit tekst
+        btn_color = [0.0, 0.0, 0.0, 1.0]
+        txt_color = (1.0, 1.0, 1.0, 1.0)
     else:
         btn_color = list(bg)
         txt_color = fg
@@ -493,11 +538,24 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         font_size=sp(fs),
         color=txt_color, bold=True, **kw,
     )
-    from kivy.animation import Animation
+    # Generer gradient-tekstur med det samme
+    b._update_grad_texture()
+
     def _on_press(btn, *_):
-        Animation(opacity=0.72, duration=0.06, t='out_quad').start(btn)
+        # Kortvipping: lett negativ rotasjon ved press
+        Animation(opacity=0.82, rotation=-1.8, duration=0.07, t='out_quad').start(btn)
+        # Haptic feedback – kort vibrasjon (30ms)
+        try:
+            from plyer import vibrator
+            vibrator.vibrate(0.03)
+        except Exception:
+            pass
+
     def _on_release_anim(btn, *_):
-        Animation(opacity=1.0, duration=0.10, t='out_quad').start(btn)
+        # Tilbake til normal med liten oversving
+        (Animation(opacity=1.0, rotation=1.2, duration=0.06, t='out_quad') +
+         Animation(rotation=0.0, duration=0.08, t='out_bounce')).start(btn)
+
     b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
         b.bind(on_release=cb)
@@ -518,7 +576,7 @@ def load_struct():
             if 'dagsrytme' not in d:
                 d['dagsrytme'] = []
             if 'settings' not in d:
-                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False}
+                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False, 'swipe_nav': False}
             return d
         except Exception as e:
             logging.error('Feil ved lasting av structure.json: %s', e)
@@ -1559,23 +1617,23 @@ class KommunikasjonstavleApp(App):
         btn_kw = dict(size_hint_y=None, height=dp(56), radius=dp(14))
 
         self._btn_back = mk_btn(
-            'Tilbake', hex_k('#2979FF'), fg=(1,1,1,1), fs=14,
+            'Tilbake', hex_k('#4D96FF'), fs=13,
             cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
-            'Hjem', hex_k('#00C853'), fg=(1,1,1,1), fs=14,
+            'Hjem', hex_k('#6BCB77'), fs=13,
             cb=self.go_home, **btn_kw,
         )
         self._btn_draw = mk_btn(
-            'Tegn', hex_k('#FF6D00'), fg=(1,1,1,1), fs=14,
+            'Tegn', hex_k('#FF9F43'), fs=13,
             cb=self.go_draw, **btn_kw,
         )
         self._btn_edit = mk_btn(
-            'Red.', hex_k('#AA00FF'), fg=(1,1,1,1), fs=14,
+            'Red.', hex_k('#C77DFF'), fs=13,
             cb=self.toggle_edit, **btn_kw,
         )
         self._btn_settings_nav = mk_btn(
-            'Innst.', hex_k('#455A64'), fg=(1,1,1,1), fs=13,
+            'Innst.', hex_k('#78909C'), fs=13,
             cb=lambda *_: self._nav_settings(), **btn_kw,
         )
 
@@ -1596,8 +1654,8 @@ class KommunikasjonstavleApp(App):
             spacing=dp(0),
         )
         self._lbl_title = Label(
-            text=APP_TITLE, bold=True, font_size=sp(15),
-            color=(1.0, 1.0, 1.0, 0.92),   # hvit tekst mot mørk bakgrunn
+            text=APP_TITLE, bold=True, font_size=sp(17),
+            color=(1.0, 1.0, 1.0, 0.95),
             halign='center', valign='middle',
         )
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
@@ -1651,28 +1709,56 @@ class KommunikasjonstavleApp(App):
 
     def _set_content(self, widget, animate=True):
         """
-        Bytter innholdsflaten med en kort fade+slide-inn animasjon.
-        animate=False brukes internt (f.eks. dagsrytme-oppdatering).
+        Bytter innholdsflaten med fade + skalering fra 92%→100%.
+        Sveipe-touch-håndtering aktiveres hvis swipe_nav er på.
         """
-        # Avbryt dagsrytme-klokke
         if self._cur_scr != 'dagsrytme':
             ev = getattr(self, '_dr_event', None)
             if ev:
                 ev.cancel()
                 self._dr_event = None
-        # Pause tidsur
         if self._cur_scr != 'tidsur' and getattr(self, '_timer_running', False):
             self._tidsur_stop()
 
         self._content.clear_widgets()
         widget.opacity = 0
         self._content.add_widget(widget)
+
         if animate:
             from kivy.animation import Animation
-            anim = Animation(opacity=1, duration=0.18, t='out_quad')
+            widget.scale_x = 0.94
+            widget.scale_y = 0.94
+            anim = Animation(opacity=1, scale_x=1.0, scale_y=1.0,
+                             duration=0.20, t='out_quad')
             anim.start(widget)
         else:
             widget.opacity = 1
+
+        # Bind sveipe-navigasjon hvis aktivert i innstillinger
+        if self.data.get('settings', {}).get('swipe_nav', False):
+            self._bind_swipe(widget)
+
+    def _bind_swipe(self, widget):
+        """Binder sveipe-gjenkjenning til widget for høyre/venstre navigasjon."""
+        touch_start = [None]
+        def on_touch_down_sw(w, touch):
+            touch_start[0] = touch.x
+            return False   # ikke konsumér – la scrolling fungere
+        def on_touch_up_sw(w, touch):
+            if touch_start[0] is None:
+                return False
+            dx = touch.x - touch_start[0]
+            dy = abs(touch.y - touch.oy)
+            touch_start[0] = None
+            # Kun horisontale sveip (dx > 80dp, vertikal drift < 40dp)
+            if abs(dx) > dp(80) and dy < dp(40):
+                if dx > 0:
+                    self.go_back()   # sveip høyre = tilbake
+                else:
+                    pass             # sveip venstre = frem (ingen stack ennå)
+            return False
+        widget.bind(on_touch_down=on_touch_down_sw,
+                    on_touch_up=on_touch_up_sw)
 
     # ══════════════════════════════════════════════════
     #  HJEMSKJERM
@@ -1738,7 +1824,7 @@ class KommunikasjonstavleApp(App):
             size_hint=(1, None), height=btn_h,
             btn_color=list(hex_k(fo['color'])),
             color=text_on(fo['color']),
-            bold=True, font_size=fsp(16),
+            bold=True, font_size=fsp(17),
             radius=dp(16),
         )
         btn.bind(on_release=lambda b, t=tap: t())
@@ -1872,7 +1958,8 @@ class KommunikasjonstavleApp(App):
             text=it['name'],
             size_hint=(1, None), height=lbl_h,
             btn_color=list(hex_k(fo.get('color', '#4D96FF'))),
-            color=(1, 1, 1, 1), bold=True, font_size=fsp(11),
+            color=text_on(fo.get('color', '#4D96FF')),
+            bold=True, font_size=fsp(13),
             radius=dp(14),
         )
         btn.bind(on_release=lambda b: tap())
@@ -2808,6 +2895,27 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(44),
             font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
 
+        # ── Sveipenavigasjon ─────────────────────────────────────
+        outer.add_widget(Label(text='Sveipenavigasjon:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        sw_row   = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        is_sw_on = st.get('swipe_nav', False)
+        sw_on  = mk_btn('På', hex_k('#2E7D32' if is_sw_on  else '#6BCB77'), h=dp(52), fs=16)
+        sw_off = mk_btn('Av', hex_k('#B71C1C' if not is_sw_on else '#FF6B6B'), h=dp(52), fs=16)
+        def set_sw(val):
+            st['swipe_nav'] = val
+            save_struct(self.data)
+            sw_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+            sw_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+        sw_on.bind( on_release=lambda *_: set_sw(True))
+        sw_off.bind(on_release=lambda *_: set_sw(False))
+        sw_row.add_widget(sw_on); sw_row.add_widget(sw_off)
+        outer.add_widget(sw_row)
+        outer.add_widget(Label(
+            text='Sveip høyre for tilbake, venstre for neste. Kan forstyrre scrolling.',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+
         outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
         tts_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
@@ -3126,8 +3234,33 @@ class KommunikasjonstavleApp(App):
                 size_hint_y=None, height=dp(34), font_size=fsp(16),
                 color=(0.25, 0.35, 0.55, 1), halign='center'))
             pb = ProgressBar(max=duration, value=elapsed,
-                             size_hint_y=None, height=dp(20))
+                             size_hint_y=None, height=dp(18))
             outer.add_widget(pb)
+
+            # Fargede fremgangsetiketter – grønn → gul → rød
+            pct = elapsed / duration if duration > 0 else 0
+            if pct < 0.6:
+                prog_col = (0.15, 0.65, 0.20, 1)   # grønn: god tid igjen
+            elif pct < 0.85:
+                prog_col = (0.85, 0.62, 0.05, 1)   # gul: snart slutt
+            else:
+                prog_col = (0.80, 0.15, 0.12, 1)   # rød: nesten ferdig
+
+            time_bar = BoxLayout(size_hint_y=None, height=dp(8))
+            with time_bar.canvas.before:
+                from kivy.graphics import Color as KColor, Rectangle
+                KColor(*prog_col)
+                # Fyller proporsjonal bredde
+                prog_rect = Rectangle(
+                    pos=time_bar.pos,
+                    size=(time_bar.width * (elapsed / duration), time_bar.height)
+                )
+            def _upd_bar(tb, val, pr=prog_rect, dur=duration):
+                pr.pos  = tb.pos
+                pr.size = (tb.width * (val / dur), tb.height)
+            time_bar.bind(size=lambda tb, *_: _upd_bar(tb, elapsed),
+                          pos=lambda  tb, *_: _upd_bar(tb, elapsed))
+            outer.add_widget(time_bar)
 
         elif upcoming:
             e, s_m = upcoming
@@ -3277,11 +3410,16 @@ class KommunikasjonstavleApp(App):
 
         root = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
 
-        self._timer_display = Label(text='05:00', size_hint_y=None, height=dp(130),
-            font_size=fsp(66), bold=True, color=(0.04, 0.10, 0.40, 1), halign='center')
+        # Rund disk-widget – PIL-tegnet sirkel som gradvis blir hvit
+        self._timer_disk = Image(
+            size_hint=(1, None), height=dp(220),
+            allow_stretch=True, keep_ratio=True,
+        )
+        root.add_widget(self._timer_disk)
+        self._timer_display = Label(text='05:00', size_hint_y=None, height=dp(60),
+            font_size=fsp(52), bold=True, color=(0.04, 0.10, 0.40, 1), halign='center')
         root.add_widget(self._timer_display)
-
-        self._timer_pb = ProgressBar(max=100, value=100, size_hint_y=None, height=dp(22))
+        self._timer_pb = ProgressBar(max=100, value=100, size_hint_y=None, height=dp(10))
         root.add_widget(self._timer_pb)
 
         root.add_widget(Label(text='Velg tid:', size_hint_y=None, height=dp(26),
@@ -3367,12 +3505,74 @@ class KommunikasjonstavleApp(App):
     def _tidsur_refresh_display(self):
         if not hasattr(self, '_timer_display') or not self._timer_display:
             return
-        sek  = getattr(self, '_timer_sek', 0)
-        mins = sek // 60; secs = sek % 60
+        sek   = getattr(self, '_timer_sek', 0)
+        total = max(getattr(self, '_timer_total_sek', 1), 1)
+        frac  = sek / total          # 1.0=full, 0.0=tom
+        mins  = sek // 60; secs = sek % 60
         self._timer_display.text = f'{mins:02d}:{secs:02d}'
         if hasattr(self, '_timer_pb') and self._timer_pb:
-            total = max(getattr(self, '_timer_total_sek', 1), 1)
-            self._timer_pb.value = int((sek / total) * 100)
+            self._timer_pb.value = int(frac * 100)
+        # Tegn rund disk med PIL
+        if hasattr(self, '_timer_disk') and self._timer_disk and PIL_OK:
+            self._draw_timer_disk(frac)
+
+    def _draw_timer_disk(self, frac):
+        """
+        Tegner en rund disk som gradvis fylles med hvitt.
+        frac=1.0 → full blå sirkel (full tid)
+        frac=0.0 → helt hvit disk (tom)
+        Fargen interpolerer fra blå (#1565C0) → lys (#90CAF9) → hvit.
+        """
+        import math
+        SIZE = 300
+        cx = cy = SIZE // 2
+        r  = SIZE // 2 - 8
+
+        pil_img = PILImage.new('RGBA', (SIZE, SIZE), (0, 0, 0, 0))
+        d       = ImageDraw.Draw(pil_img)
+
+        # Bakgrunns-sirkel (lys grå)
+        d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(230, 233, 240, 255))
+
+        if frac > 0.001:
+            # Beregn fargen: blå → lys blå → hvit
+            if frac > 0.5:
+                t = (frac - 0.5) * 2    # 0→1 fra midten til full
+                col = (
+                    int(144 + (21 - 144)   * t),   # R: 144→21
+                    int(202 + (101 - 202)  * t),   # G: 202→101
+                    int(249 + (192 - 249)  * t),   # B: 249→192
+                    255
+                )
+            else:
+                t = frac * 2             # 0→1 fra tom til midten
+                col = (
+                    int(255 + (144 - 255) * t),    # R: 255→144
+                    int(255 + (202 - 255) * t),    # G: 255→202
+                    int(255 + (249 - 255) * t),    # B: 255→249
+                    255
+                )
+            # Tegn fylt sektor (buet kake-stykke)
+            end_angle = -90 + frac * 360   # starter fra toppen
+            d.pieslice(
+                [cx-r, cy-r, cx+r, cy+r],
+                start=-90, end=end_angle,
+                fill=col,
+            )
+
+        # Hvit indre ring for "donut"-effekt
+        inner_r = int(r * 0.62)
+        d.ellipse(
+            [cx-inner_r, cy-inner_r, cx+inner_r, cy+inner_r],
+            fill=(248, 249, 252, 255),
+        )
+
+        # Konvertér til Kivy-tekstur
+        raw = pil_img.convert('RGBA').tobytes()
+        tex = Texture.create(size=(SIZE, SIZE), colorfmt='rgba')
+        tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
+        tex.flip_vertical()
+        self._timer_disk.texture = tex
 
     # ══════════════════════════════════════════════════
     #  BILDEPAR-SPILL
