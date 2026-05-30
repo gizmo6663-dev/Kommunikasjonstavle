@@ -590,24 +590,23 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         r, g, bv, a = btn.btn_color
         btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
         Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
-        # Haptic – VibrationEffect for Android 8+ (API 26+)
+        # Haptic – bruker string-konstant 'vibrator' og int -1 (DEFAULT_AMPLITUDE)
+        # for å unngå jnius-problemer med statiske Android-konstanter.
         if platform == 'android':
             try:
                 from jnius import autoclass
                 from android import mActivity
-                Vibrator = autoclass('android.os.Vibrator')
-                vib = mActivity.getSystemService(Vibrator.VIBRATOR_SERVICE)
-                try:
-                    # Android 8+ (API 26+) – VibrationEffect
-                    VibrationEffect = autoclass('android.os.VibrationEffect')
-                    effect = VibrationEffect.createOneShot(
-                        40, VibrationEffect.DEFAULT_AMPLITUDE)
-                    vib.vibrate(effect)
-                except Exception:
-                    # Fallback for eldre Android
-                    vib.vibrate(40)
+                vib = mActivity.getSystemService('vibrator')
+                VibEff = autoclass('android.os.VibrationEffect')
+                vib.vibrate(VibEff.createOneShot(40, -1))
             except Exception:
-                pass
+                try:
+                    from android import mActivity
+                    from jnius import autoclass
+                    vib = mActivity.getSystemService('vibrator')
+                    vib.vibrate(40)
+                except Exception:
+                    pass
 
     def _on_release_anim(btn, *_):
         btn.btn_color = list(orig_color)
@@ -1607,7 +1606,8 @@ class KommunikasjonstavleApp(App):
                 size_hint=(None, None),
                 width=S,
             )
-            btn.pos = (WW - S - M, WH - S - M - dp(50))
+            # Plasser under tittellinjen (46dp fra topp) med litt marg
+            btn.pos = (WW - S - M, WH - dp(46) - S - M)
             btn.bind(on_release=lambda *_: launch_confetti(3.0))
             Window.add_widget(btn)
             self._confetti_btn_widget = btn
@@ -3262,55 +3262,6 @@ class KommunikasjonstavleApp(App):
             font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
             halign='left', valign='top'))
 
-        # ── Tilgang til alle filer (EP-stil backup) ──────────────────
-        outer.add_widget(Label(
-            text='Tilgang til alle filer (valgfritt):',
-            size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True,
-            color=(0.08, 0.10, 0.35, 1), halign='left'))
-
-        has_access = False
-        if platform == 'android':
-            try:
-                from jnius import autoclass
-                Environment = autoclass('android.os.Environment')
-                has_access = bool(Environment.isExternalStorageManager())
-            except Exception:
-                pass
-        outer.add_widget(Label(
-            text='Status: PA' if has_access else 'Status: AV',
-            size_hint_y=None, height=dp(28),
-            font_size=fsp(14), bold=True,
-            color=(0.10, 0.55, 0.10, 1) if has_access else (0.75, 0.20, 0.20, 1),
-            halign='left'))
-        outer.add_widget(Label(
-            text='Ikke nødvendig for bildevelgeren, men gir tilgang til alle mapper.',
-            size_hint_y=None, height=dp(34),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
-
-        def open_manage(*_):
-            if platform != 'android':
-                self._toast('Kun tilgjengelig på Android.')
-                return
-            try:
-                from jnius import autoclass
-                from android import mActivity
-                Intent   = autoclass('android.content.Intent')
-                Settings = autoclass('android.provider.Settings')
-                Uri      = autoclass('android.net.Uri')
-                intent   = Intent(
-                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                intent.setData(Uri.parse(
-                    'package:' + mActivity.getPackageName()))
-                mActivity.startActivity(intent)
-            except Exception:
-                logging.exception('open_manage: feil')
-                self._toast('Kunne ikke apne innstillinger.')
-
-        outer.add_widget(mk_btn(
-            'Gi tilgang (åpner innstillinger)',
-            hex_k('#546E7A'), h=dp(54), fs=15,
-            cb=open_manage))
 
         # ── Konfetti-knapp ───────────────────────────────────────
         outer.add_widget(Label(text='Konfetti-knapp:', size_hint_y=None, height=dp(32),
@@ -3584,10 +3535,14 @@ class KommunikasjonstavleApp(App):
                 font_size=fsp(17), color=(0.4, 0.4, 0.5, 1),
                 halign='center', valign='middle'))
         else:
+            # Sentrert i tilgjengelig plass med spacere over og under
+            outer.add_widget(BoxLayout())  # øvre spacer
             outer.add_widget(Label(
                 text='Ingen aktiviteter lagt til.\nTrykk "Red." og "+" for å starte.',
                 font_size=fsp(16), color=(0.45, 0.45, 0.5, 1),
+                size_hint_y=None, height=dp(80),
                 halign='center', valign='middle'))
+            outer.add_widget(BoxLayout())  # nedre spacer
 
         if entries:
             outer.add_widget(Label(text='Plan for dagen:', size_hint_y=None, height=dp(26),
