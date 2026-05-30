@@ -1,4 +1,8 @@
-name: Android Kompatibilitetstesting
+name: Android Kompatibilitetstest
+
+permissions:
+  contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -70,7 +74,7 @@ jobs:
     
     steps:
       - name: Laster ned APK-artefakt fra build-workflowen
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: kommunikasjonstavle-apk
       
@@ -160,7 +164,7 @@ jobs:
       
       - name: Lagrer screenshot som artefakt
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: compatibility-screenshots
           path: screenshot_${{ matrix.device-name }}.png
@@ -168,7 +172,7 @@ jobs:
       
       - name: Lagrer test_result.json
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: test_result.json
@@ -195,12 +199,12 @@ jobs:
           sparse-checkout-cone: false
       
       - name: Laster ned alle screenshots
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: compatibility-screenshots
       
       - name: Laster ned test-resultater
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: test-results
       
@@ -212,7 +216,7 @@ jobs:
           python testing/frame_screenshots.py
       
       - name: Lagrer compatibility-report.png
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: compatibility-report
           path: testing/compatibility-report.png
