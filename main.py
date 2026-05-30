@@ -590,23 +590,24 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         r, g, bv, a = btn.btn_color
         btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
         Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
-        # Haptic – bruker string-konstant 'vibrator' og int -1 (DEFAULT_AMPLITUDE)
-        # for å unngå jnius-problemer med statiske Android-konstanter.
+        # Haptic – cast til Vibrator-klassen slik at jnius finner vibrate()
         if platform == 'android':
             try:
-                from jnius import autoclass
+                from jnius import autoclass, cast
                 from android import mActivity
-                vib = mActivity.getSystemService('vibrator')
-                VibEff = autoclass('android.os.VibrationEffect')
-                vib.vibrate(VibEff.createOneShot(40, -1))
-            except Exception:
-                try:
-                    from android import mActivity
-                    from jnius import autoclass
-                    vib = mActivity.getSystemService('vibrator')
+                Context  = autoclass('android.content.Context')
+                Vibrator = autoclass('android.os.Vibrator')
+                vib = cast('android.os.Vibrator',
+                           mActivity.getSystemService(Context.VIBRATOR_SERVICE))
+                Build = autoclass('android.os.Build$VERSION')
+                if Build.SDK_INT >= 26:
+                    VibEff = autoclass('android.os.VibrationEffect')
+                    vib.vibrate(VibEff.createOneShot(
+                        40, VibEff.DEFAULT_AMPLITUDE))
+                else:
                     vib.vibrate(40)
-                except Exception:
-                    pass
+            except Exception as _ve:
+                logging.warning('Vibrasjon feilet: %s', _ve)
 
     def _on_release_anim(btn, *_):
         btn.btn_color = list(orig_color)
