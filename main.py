@@ -496,6 +496,15 @@ def text_on(bg_hex):
         return (0.06, 0.07, 0.18, 1.0)   # nesten svart
     return (1.0, 1.0, 1.0, 1.0)           # hvit
 
+def haptic_feedback():
+    """Kort vibrasjon via plyer. Kalles ved alle knappetrykk."""
+    try:
+        from plyer import vibrator
+        vibrator.vibrate(0.04)   # 40 millisekunder
+    except Exception as e:
+        logging.debug('Vibrasjon feilet: %s', e)
+
+
 def fsp(base_size):
     """
     Skalerbar sp()-wrapper. Leser font_scale fra appens innstillinger
@@ -590,24 +599,7 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         r, g, bv, a = btn.btn_color
         btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
         Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
-        # Haptic – cast til Vibrator-klassen slik at jnius finner vibrate()
-        if platform == 'android':
-            try:
-                from jnius import autoclass, cast
-                from android import mActivity
-                Context  = autoclass('android.content.Context')
-                Vibrator = autoclass('android.os.Vibrator')
-                vib = cast('android.os.Vibrator',
-                           mActivity.getSystemService(Context.VIBRATOR_SERVICE))
-                Build = autoclass('android.os.Build$VERSION')
-                if Build.SDK_INT >= 26:
-                    VibEff = autoclass('android.os.VibrationEffect')
-                    vib.vibrate(VibEff.createOneShot(
-                        40, VibEff.DEFAULT_AMPLITUDE))
-                else:
-                    vib.vibrate(40)
-            except Exception as _ve:
-                logging.warning('Vibrasjon feilet: %s', _ve)
+        haptic_feedback()
 
     def _on_release_anim(btn, *_):
         btn.btn_color = list(orig_color)
