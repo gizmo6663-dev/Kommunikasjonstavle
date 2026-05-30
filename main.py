@@ -361,12 +361,12 @@ PALETTE = [
 
 DEFAULT_STRUCT = {
     "folders": [
-        {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": [], "subfolders": []},
-        {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": [], "subfolders": []},
-        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": [], "subfolders": []},
-        {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": [], "subfolders": []},
-        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": [], "subfolders": []},
-        {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": [], "subfolders": []},
+        {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": [], "subfolders": [], "opens": 0},
+        {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": [], "subfolders": [], "opens": 0},
+        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": [], "subfolders": [], "opens": 0},
+        {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": [], "subfolders": [], "opens": 0},
+        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": [], "subfolders": [], "opens": 0},
+        {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": [], "subfolders": [], "opens": 0},
     ],
     "sequences": [],
     "dagsrytme": [],
@@ -436,6 +436,39 @@ def hex_p(h):
     """Hex-farge (#RRGGBB) → PIL RGB-tuple (0–255)."""
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+
+def dominant_color(img_path, default=(0.94, 0.95, 0.98)):
+    """
+    Finner dominerende farge i et bilde med PIL ved å:
+    1. Skalere ned til 48×48 for ytelse
+    2. Konvertere til palette-modus (255 farger)
+    3. Velge hyppigste farge som ikke er nesten hvit/svart
+    Returnerer (r,g,b) Kivy float-tuple (0–1), blandet 15% mot hvit
+    for å gi et subtilt, ikke-overveldende bakgrunnstopp.
+    """
+    if not PIL_OK or not img_path or not os.path.exists(img_path):
+        return default
+    try:
+        img = PILImage.open(img_path).convert('RGB').resize((48, 48))
+        paletted = img.quantize(colors=8, method=PILImage.Quantize.MEDIANCUT)
+        palette  = paletted.getpalette()
+        counts   = {}
+        for px in paletted.getdata():
+            counts[px] = counts.get(px, 0) + 1
+        for idx in sorted(counts, key=counts.get, reverse=True):
+            r = palette[idx*3];  g = palette[idx*3+1];  b = palette[idx*3+2]
+            # Hopp over nesten-hvit og nesten-svart
+            lum = 0.299*r + 0.587*g + 0.114*b
+            if 35 < lum < 220:
+                # Bland 15% mot hvit for subtilt uttrykk
+                fr = (r/255 * 0.15 + 0.85)
+                fg = (g/255 * 0.15 + 0.85)
+                fb = (b/255 * 0.15 + 0.85)
+                return (fr, fg, fb)
+    except Exception:
+        pass
+    return default
 
 
 def text_on(bg_hex):
@@ -573,6 +606,8 @@ def load_struct():
             for fo in d.get('folders', []):
                 if 'subfolders' not in fo:
                     fo['subfolders'] = []
+                if 'opens' not in fo:
+                    fo['opens'] = 0
             if 'dagsrytme' not in d:
                 d['dagsrytme'] = []
             if 'settings' not in d:
@@ -837,16 +872,51 @@ def _open_android_picker(callback):
 # ══════════════════════════════════════════════════════════════════
 
 class TappableImage(Image):
-    """Image-widget med on_touch_down-binding til en callback."""
+    """
+    Image-widget med enkelt-trykk-callback og dobbelt-trykk-zoom.
+    Enkelt trykk → action-callback.
+    Dobbelt trykk (< 0.35s) → popup-zoom av bildet.
+    """
     def __init__(self, action, **kw):
         super().__init__(**kw)
-        self._action = action
+        self._action     = action
+        self._last_touch = 0
 
     def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        now = Clock.get_time()
+        dt  = now - self._last_touch
+        self._last_touch = now
+        if dt < 0.35 and dt > 0.01:
+            self._show_zoom_popup()
+        else:
             self._action()
-            return True
-        return super().on_touch_down(touch)
+        return True
+
+    def _show_zoom_popup(self):
+        from kivy.uix.floatlayout import FloatLayout
+        from kivy.animation import Animation
+        overlay = FloatLayout(size=Window.size)
+        with overlay.canvas.before:
+            from kivy.graphics import Color as KColor, Rectangle
+            KColor(0, 0, 0, 0.85)
+            Rectangle(pos=(0,0), size=Window.size)
+        zoom_img = Image(
+            source=self.source,
+            size_hint=(0.96, 0.96),
+            pos_hint={'center_x': .5, 'center_y': .5},
+            allow_stretch=True, keep_ratio=True,
+        )
+        zoom_img.opacity = 0
+        overlay.add_widget(zoom_img)
+        Window.add_widget(overlay)
+        Animation(opacity=1, duration=0.20, t='out_quad').start(zoom_img)
+        def dismiss(*_):
+            anim = Animation(opacity=0, duration=0.15)
+            anim.bind(on_complete=lambda *_: Window.remove_widget(overlay))
+            anim.start(overlay)
+        overlay.bind(on_touch_down=lambda w, t: dismiss())
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1403,6 +1473,56 @@ def smart_input(text='', hint='', on_save=None, **kw):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  KONFETTI
+# ══════════════════════════════════════════════════════════════════
+
+def launch_confetti(duration=2.8):
+    import random as _r
+    from kivy.uix.widget import Widget as KWidget
+    W, H = Window.size
+    n = 55
+    gravity = 0.45
+    cols = ['#FFD93D','#FF6B6B','#6BCB77','#4D96FF','#C77DFF','#FF9F43','#4ECDC4']
+    particles = []
+    for _ in range(n):
+        particles.append({
+            'x': _r.uniform(0, W), 'y': H + _r.uniform(0, 60),
+            'vx': _r.uniform(-2.5,2.5), 'vy': _r.uniform(-12,-5),
+            'rot': _r.uniform(0,360), 'rot_spd': _r.uniform(-8,8),
+            'col': hex_k(_r.choice(cols))[:3],
+            'size': _r.randint(8,18), 'born': Clock.get_time(),
+        })
+    overlay = KWidget(size=Window.size)
+    Window.add_widget(overlay)
+    started = Clock.get_time()
+    _ev = [None]
+    def update(dt):
+        overlay.canvas.clear()
+        now   = Clock.get_time()
+        alive = False
+        from kivy.graphics import Color as KC, Ellipse
+        with overlay.canvas:
+            for p in particles:
+                p['vy'] += gravity
+                p['x']  += p['vx']
+                p['y']  -= p['vy']
+                age   = now - p['born']
+                alpha = max(0.0, 1.0 - age / duration)
+                if p['y'] > -p['size']*2 and alpha > 0:
+                    alive = True
+                KC(*p['col'], alpha)
+                s = p['size']
+                Ellipse(pos=(p['x']-s//2, p['y']-s//4), size=(s, s//2))
+        if not alive or now - started > duration + 0.5:
+            _ev[0].cancel()
+            from kivy.animation import Animation
+            a = Animation(opacity=0, duration=0.3)
+            a.bind(on_complete=lambda *_: Window.remove_widget(overlay))
+            a.start(overlay)
+    _ev[0] = Clock.schedule_interval(update, 1/40)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
 
@@ -1414,6 +1534,52 @@ class KommunikasjonstavleApp(App):
     def is_hc_mode(self):
         """KV-tilgjengelig egenskap for høykontrast-modus."""
         return bool(self.data.get('settings', {}).get('high_contrast', False))             if hasattr(self, 'data') else False
+
+    # ══════════════════════════════════════════════════
+    #  SPLASH OVERLAY
+    # ══════════════════════════════════════════════════
+
+    def _show_splash_overlay(self):
+        """
+        Lager en heldekkelende overlay som skjuler Kivy-logoen.
+        Bruker samme splash.png som android.presplash om den finnes,
+        ellers et PIL-generert fargeoverlay.
+        Fades ut etter 2 sekunder.
+        """
+        from kivy.core.window import Window
+        from kivy.uix.floatlayout import FloatLayout
+        from kivy.uix.image import Image as KImage
+        from kivy.animation import Animation
+
+        splash_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'assets', 'splash.png'
+        )
+
+        overlay = FloatLayout(size=Window.size)
+        with overlay.canvas.before:
+            from kivy.graphics import Color as KColor, Rectangle
+            KColor(0.07, 0.10, 0.22, 1)
+            self._splash_bg = Rectangle(pos=(0,0), size=Window.size)
+
+        if os.path.exists(splash_path):
+            img = KImage(
+                source=splash_path,
+                size_hint=(1, 1),
+                pos_hint={'center_x': .5, 'center_y': .5},
+                allow_stretch=True, keep_ratio=True,
+            )
+            overlay.add_widget(img)
+
+        Window.add_widget(overlay)
+        self._splash_overlay = overlay
+
+        def fade_out(*_):
+            anim = Animation(opacity=0, duration=0.6, t='out_quad')
+            anim.bind(on_complete=lambda *_: Window.remove_widget(overlay))
+            anim.start(overlay)
+
+        Clock.schedule_once(fade_out, 2.0)
 
     def build(self):
         setup_logging()
@@ -1456,6 +1622,8 @@ class KommunikasjonstavleApp(App):
         self._show_home()
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
+        # Vis splash-overlay i 2 sekunder etter oppstart
+        Clock.schedule_once(lambda *_: self._show_splash_overlay(), 0.1)
         # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
         Clock.schedule_once(lambda dt: request_android_permissions(), 0.5)
         return root
@@ -1776,6 +1944,10 @@ class KommunikasjonstavleApp(App):
                 self._dr_event = None
         if self._cur_scr != 'tidsur' and getattr(self, '_timer_running', False):
             self._tidsur_stop()
+        # Nullstill adaptiv bakgrunn når vi forlater bilde-skjermen
+        if self._cur_scr == 'image':
+            hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else (0.94, 0.95, 0.98, 1.0)
+            Window.clearcolor = hc_bg
 
         self._content.clear_widgets()
         widget.opacity = 0
@@ -1876,6 +2048,8 @@ class KommunikasjonstavleApp(App):
             spacing=dp(3),
         )
 
+        opens    = fo.get('opens', 0)
+        border_w = min(5, 1 + opens // 4)
         btn = RBtn(
             text=fo['name'],
             size_hint=(1, None), height=btn_h,
@@ -1885,6 +2059,17 @@ class KommunikasjonstavleApp(App):
             radius=dp(16),
         )
         btn.bind(on_release=lambda b, t=tap: t())
+        r2, g2, b2, _ = hex_k(fo['color'])
+        def _add_border(b=btn, r=r2, g=g2, bv=b2, bw=border_w):
+            from kivy.graphics import Color as KColor, Line
+            with b.canvas.after:
+                KColor(max(0,r-0.18), max(0,g-0.18), max(0,bv-0.18), 0.65)
+                bl = Line(rounded_rectangle=(b.x+1,b.y+1,b.width-2,b.height-2,dp(14)), width=bw)
+            def _upd(w,*_):
+                bl.rounded_rectangle=(w.x+1,w.y+1,w.width-2,w.height-2,dp(14))
+            b.bind(pos=_upd, size=_upd)
+        btn.bind(on_kv_post=lambda b,*_: _add_border())
+        Clock.schedule_once(lambda *_: _add_border(), 0.05)
         cell.add_widget(btn)
 
         if edit:
@@ -1897,6 +2082,8 @@ class KommunikasjonstavleApp(App):
 
     def _open_folder(self, fo):
         self._push('home')
+        fo['opens'] = fo.get('opens', 0) + 1
+        save_struct(self.data)
         self.cur_folder = fo['id']
         self._show_folder(fid=fo['id'])
 
@@ -2051,6 +2238,10 @@ class KommunikasjonstavleApp(App):
         self._push('folder', fid=self.cur_folder)
         self._cur_scr = 'image'
         self._set_title('')   # tittel vises i kortet, ikke bunnbaren
+
+        # Adaptiv bakgrunn – toner mot dominerende farge i bildet
+        dom = dominant_color(path)
+        Window.clearcolor = (*dom, 1.0)
 
         # Wrapper: RBox inneholder bilde + tittel tett pakket.
         # size_hint=(1, None) + bind på minimum_height gjør at RBox
@@ -2615,6 +2806,8 @@ class KommunikasjonstavleApp(App):
                 if is_last else
                 'Trykk på bildet for neste steg'
             )
+            if is_last:
+                Clock.schedule_once(lambda *_: launch_confetti(2.2), 0.3)
 
             def advance(*_):
                 if is_last:

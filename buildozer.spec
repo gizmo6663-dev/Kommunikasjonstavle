@@ -60,9 +60,10 @@ orientation = portrait
 fullscreen = 0
 
 # ─── Ikoner og splash ─────────────────────────────────────────────
-# android.icon       = assets/icon.png
-# android.presplash  = assets/presplash.png
-# android.presplash_color = #4D96FF
+android.icon        = assets/icon.png
+android.presplash       = assets/splash.png
+android.presplash_color = #12183A
+# (se over – satt fra splash)
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
