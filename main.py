@@ -111,6 +111,8 @@ _KV = """
         Line:
             rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
             width: 1.1
+    canvas.after:
+        # PopMatrix ETTER at tekst er tegnet – slik roteres alt inkl. label
         PopMatrix:
 
 <RBox>:
@@ -1541,14 +1543,14 @@ def launch_confetti(duration=3.0):
         alive = False
         with overlay.canvas:
             for p in particles:
-                # Kivy Y-akse: 0=bunn, H=topp. Faller = y avtar
-                p['y']  -= p['vy']     # faller nedover (y synker)
+                p['y']  -= p['vy']     # faller ned (y synker mot 0)
                 p['x']  += p['vx']
-                p['vy'] *= 0.99        # svak luftmotstand
+                p['vy'] += 0.18        # tyngdekraft – akselererer nedover
                 age   = now - p['born']
-                # Ingen fade de første 0.8s – full synlighet
-                alpha = 1.0 if age < 0.8 else max(0.0, 1.0 - (age - 0.8) / (duration - 0.8))
-                if p['y'] > -p['h'] * 2 and alpha > 0:
+                # Full synlighet de første 1.2s, deretter fade
+                alpha = 1.0 if age < 1.2 else max(0.0, 1.0 - (age-1.2)/(duration-1.2))
+                # Stopp ikke før partikkelen er under bunn av skjermen (y < -h)
+                if p['y'] > -p['h'] * 3 and alpha > 0:
                     alive = True
                 KC(*p['col'], alpha)
                 Rectangle(pos=(p['x'], p['y']), size=(p['w'], p['h']))
@@ -1628,6 +1630,8 @@ class KommunikasjonstavleApp(App):
         Window.bind(on_keyboard=self.on_keyboard)
         # Vis splash-overlay i 2 sekunder etter oppstart
         Clock.schedule_once(lambda *_: self._show_splash_overlay(), 0.1)
+        self._confetti_btn_visible = False
+        self._confetti_btn_widget  = None
         # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
         Clock.schedule_once(lambda dt: request_android_permissions(), 0.5)
         return root
@@ -3279,6 +3283,22 @@ class KommunikasjonstavleApp(App):
             hex_k('#546E7A'), h=dp(54), fs=15,
             cb=open_manage))
 
+        # ── Konfetti-knapp ───────────────────────────────────────
+        outer.add_widget(Label(text='Konfetti-knapp:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        kb_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        is_kb_on = getattr(self, '_confetti_btn_visible', False)
+        kb_on  = mk_btn('På', hex_k('#2E7D32' if is_kb_on else '#6BCB77'), h=dp(52), fs=16)
+        kb_off = mk_btn('Av', hex_k('#B71C1C' if not is_kb_on else '#FF6B6B'), h=dp(52), fs=16)
+        def set_kb(val):
+            self._toggle_confetti_btn(val)
+            kb_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+            kb_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+        kb_on.bind( on_release=lambda *_: set_kb(True))
+        kb_off.bind(on_release=lambda *_: set_kb(False))
+        kb_row.add_widget(kb_on); kb_row.add_widget(kb_off)
+        outer.add_widget(kb_row)
+
         # ── Personvern ───────────────────────────────────────────────
         outer.add_widget(Label(
             text='Personvern:',
@@ -3755,6 +3775,7 @@ class KommunikasjonstavleApp(App):
         if self._timer_sek <= 0:
             self._tidsur_stop()
             self._toast('Tiden er ute!', duration=4.0)
+            Clock.schedule_once(lambda *_: launch_confetti(3.0), 0.1)
         self._tidsur_refresh_display()
 
     def _tidsur_refresh_display(self):
