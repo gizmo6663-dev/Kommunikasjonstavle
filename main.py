@@ -150,6 +150,35 @@ _KV = """
         Line:
             points: self.x, self.top, self.right, self.top
             width: 1.4
+
+<Popup>:
+    # Lys, nesten hvit bakgrunn – standard Kivy er mørk grå
+    background_color: 0.97, 0.97, 1.0, 1.0
+    background: ''
+    title_color: 0.08, 0.10, 0.35, 1
+    title_size: sp(17)
+    separator_color: 0.72, 0.78, 0.92, 1
+    canvas.before:
+        # Subtil skygge bak hele popupen
+        Color:
+            rgba: 0.04, 0.06, 0.18, 0.18
+        RoundedRectangle:
+            pos: self.x + dp(4), self.y - dp(6)
+            size: self.width - dp(6), self.height * 0.96
+            radius: [dp(16)]
+        # Hvit bakgrunn
+        Color:
+            rgba: 0.97, 0.97, 1.0, 1.0
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(14)]
+        # Tynn blå kant
+        Color:
+            rgba: 0.72, 0.78, 0.92, 1.0
+        Line:
+            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), dp(13))
+            width: 1.2
 """
 
 Builder.load_string(_KV)
@@ -2643,7 +2672,7 @@ class KommunikasjonstavleApp(App):
         lbl = Label(
             text=policy_text,
             font_size=fsp(14),
-            color=(0.08, 0.10, 0.25, 1),
+            color=(0.12, 0.14, 0.30, 1),   # mørk marineblå – lesbar på lys bakgrunn
             halign='left', valign='top',
             size_hint_y=None,
         )
@@ -2656,10 +2685,10 @@ class KommunikasjonstavleApp(App):
 
         # Advarselsboks
         warn = Label(
-            text='⚠  Last ikke opp bilder av barn',
+            text='Advarsel: Last ikke opp bilder av barn',
             size_hint_y=None, height=dp(42),
             font_size=fsp(15), bold=True,
-            color=(0.78, 0.20, 0.10, 1),
+            color=(0.72, 0.10, 0.08, 1),
             halign='center',
         )
         layout.add_widget(warn)
@@ -3614,14 +3643,13 @@ class KommunikasjonstavleApp(App):
 
     def _toast(self, msg, duration=3.0):
         lbl = Label(
-            text=msg, font_size=sp(15), color=(1, 1, 1, 1),
+            text=msg, font_size=sp(15), color=(0.08, 0.10, 0.30, 1),
             halign='center', valign='middle',
         )
         lbl.bind(size=lbl.setter('text_size'))
         pop = Popup(
             title='', content=lbl,
             size_hint=(0.78, 0.22),
-            background_color=(0.08, 0.08, 0.08, 0.93),
         )
         pop.open()
         Clock.schedule_once(lambda *_: pop.dismiss(), duration)
