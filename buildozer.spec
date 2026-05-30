@@ -6,6 +6,7 @@ package.name = kommunikasjonstavle
 package.domain = no.askapp
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
+source.include_patterns = assets/*
 
 # ─── Versjon ──────────────────────────────────────────────────────
 version = 1.2

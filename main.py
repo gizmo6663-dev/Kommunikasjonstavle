@@ -45,6 +45,7 @@ from kivy.clock import Clock
 from kivy.lang import Builder
 from kivy.properties import ListProperty, NumericProperty
 from kivy.utils import platform
+from kivy.core.text import LabelBase
 import random
 from kivy.uix.progressbar import ProgressBar
 
@@ -153,6 +154,23 @@ _KV = """
 
 Builder.load_string(_KV)
 
+# ── Fontregistrering ──────────────────────────────────────────────
+# NotoSans støtter fullt ut æ, ø, å og alle norske tegn.
+# Kivy's innebygde Roboto mangler disse på noen Android-versjoner.
+# Fonten ligger i assets/ og er inkludert i APK via buildozer.spec.
+_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'assets', 'NotoSans-Regular.ttf')
+if os.path.exists(_FONT_PATH):
+    try:
+        LabelBase.register(name='NotoSans', fn_regular=_FONT_PATH)
+        # Sett som default font for alle Kivy Label/Button
+        from kivy.config import Config
+        Config.set('kivy', 'default_font', [
+            'NotoSans', _FONT_PATH, _FONT_PATH, _FONT_PATH, _FONT_PATH,
+        ])
+    except Exception as _fe:
+        pass  # Ikke kritisk – faller tilbake til Roboto
+
 
 # ══════════════════════════════════════════════════════════════════
 #  STILEDE WIDGET-KLASSER
@@ -260,9 +278,9 @@ DEFAULT_STRUCT = {
     "folders": [
         {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": []},
         {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": []},
-        {"id": "f3", "name": "Foelelser",     "color": "#4D96FF", "image": None, "items": []},
+        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": []},
         {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": []},
-        {"id": "f5", "name": "Klaer",         "color": "#C77DFF", "image": None, "items": []},
+        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": []},
         {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": []},
     ],
     "sequences": [],
@@ -1183,7 +1201,7 @@ class KommunikasjonstavleApp(App):
         """
         folders = self.data.get('folders', [])
         if not folders:
-            self._toast('Ingen mapper funnet. Opprett en mappe forst.')
+            self._toast('Ingen mapper funnet. Opprett en mappe først.')
             return
 
         pop_ref  = [None]
@@ -1291,7 +1309,7 @@ class KommunikasjonstavleApp(App):
         )
 
         self._btn_back = mk_btn(
-            '<  Bak', hex_k('#4D96FF'), fs=13,
+            '← Tilbake', hex_k('#4D96FF'), fs=13,
             cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
@@ -1669,7 +1687,7 @@ class KommunikasjonstavleApp(App):
     def _show_draw(self, **_):
         self._cur_scr = 'draw'
         self._set_title('Tegn')
-        logging.info('Aapner tegneskjerm. PIL_OK=%s', PIL_OK)
+        logging.info('Åpner tegneskjerm. PIL_OK=%s', PIL_OK)
 
         if not PIL_OK:
             self._set_content(Label(
@@ -1766,7 +1784,7 @@ class KommunikasjonstavleApp(App):
             spacing=dp(8), padding=(dp(6), dp(2)),
         )
         size_row.add_widget(Label(
-            text='Storrelse:', size_hint_x=None, width=dp(90),
+            text='Størrelse:', size_hint_x=None, width=dp(90),
             font_size=sp(13), bold=True,
             color=(0.10, 0.10, 0.10, 1), halign='left',
         ))
@@ -2000,7 +2018,7 @@ class KommunikasjonstavleApp(App):
         seqs = self.data.get('sequences', [])
         if not seqs:
             outer.add_widget(Label(
-                text='Ingen handlingsrekker ennaa.\nTrykk "Red." og "+" for aa lage en.',
+                text='Ingen handlingsrekker ennå.\nTrykk "Red." og "+" for å lage en.',
                 font_size=sp(16), color=(0.4, 0.4, 0.5, 1),
                 halign='center', valign='middle',
             ))
@@ -2131,9 +2149,9 @@ class KommunikasjonstavleApp(App):
             prog_lbl.text  = f'Steg {idx + 1} av {len(items)}'
             name_lbl.text  = it.get('name', '')
             instr_lbl.text = (
-                'Trykk pa bildet for aa avslutte'
+                'Trykk på bildet for å avslutte'
                 if is_last else
-                'Trykk pa bildet for neste steg'
+                'Trykk på bildet for neste steg'
             )
 
             def advance(*_):
@@ -2162,7 +2180,7 @@ class KommunikasjonstavleApp(App):
         """
         items = seq.get('items', [])
         if not items:
-            self._toast('Ingen bilder aa eksportere.')
+            self._toast('Ingen bilder å eksportere.')
             return
         safe = seq['name'].replace(' ', '_').replace('/', '_')
         export_dir = os.path.join(DOWNLOAD_DIR, f'{safe}_handlingsrekke')
@@ -2211,7 +2229,7 @@ class KommunikasjonstavleApp(App):
         layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
 
         layout.add_widget(Label(
-            text='Navn pa handlingsrekken:',
+            text='Navn på handlingsrekken:',
             size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
@@ -2330,13 +2348,13 @@ class KommunikasjonstavleApp(App):
         ]
 
         if not all_items:
-            self._toast('Ingen ASK-bilder funnet.\nLegg til bilder i mappene forst.')
+            self._toast('Ingen ASK-bilder funnet.\nLegg til bilder i mappene først.')
             return
 
         pick_ref = [None]
         layout   = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
         layout.add_widget(Label(
-            text='Trykk pa et bilde for aa legge det til i rekken:',
+            text='Trykk på et bilde for å legge det til i rekken:',
             size_hint_y=None, height=dp(30),
             font_size=sp(14), color=(0.1, 0.1, 0.1, 1), halign='center',
         ))
@@ -2481,7 +2499,7 @@ class KommunikasjonstavleApp(App):
         tts_row.add_widget(tts_on); tts_row.add_widget(tts_off)
         outer.add_widget(tts_row)
         outer.add_widget(Label(
-            text='Trykk pa et ASK-bilde for aa hore etiketten.',
+            text='Trykk på et ASK-bilde for å høre etiketten.',
             size_hint_y=None, height=dp(26),
             font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
 
@@ -2515,10 +2533,10 @@ class KommunikasjonstavleApp(App):
             color=(0.08, 0.10, 0.35, 1), halign='left'))
         outer.add_widget(Label(
             text=(
-                'Trykk "Last opp" i en mappe for aa velge bilde.\n'
+                'Trykk "Last opp" i en mappe for å velge bilde.\n'
                 'Android-bildevelgeren apnes – ingen tillatelser trengs.\n\n'
                 'Bilder lagres i appens private mappe (user_data_dir/images).\n'
-                'Eksporter via "Last ned"-knappen for aa kopiere til Nedlastinger.'
+                'Eksporter via "Last ned"-knappen for å kopiere til Nedlastinger.'
             ),
             size_hint_y=None, height=dp(110),
             font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
@@ -2546,13 +2564,13 @@ class KommunikasjonstavleApp(App):
             color=(0.10, 0.55, 0.10, 1) if has_access else (0.75, 0.20, 0.20, 1),
             halign='left'))
         outer.add_widget(Label(
-            text='Ikke nodvendig for bildevelgeren, men gir tilgang til alle mapper.',
+            text='Ikke nødvendig for bildevelgeren, men gir tilgang til alle mapper.',
             size_hint_y=None, height=dp(34),
             font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
 
         def open_manage(*_):
             if platform != 'android':
-                self._toast('Kun tilgjengelig paa Android.')
+                self._toast('Kun tilgjengelig på Android.')
                 return
             try:
                 from jnius import autoclass
@@ -2570,7 +2588,7 @@ class KommunikasjonstavleApp(App):
                 self._toast('Kunne ikke apne innstillinger.')
 
         outer.add_widget(mk_btn(
-            'Gi tilgang (apner innstillinger)',
+            'Gi tilgang (åpner innstillinger)',
             hex_k('#546E7A'), h=dp(54), fs=15,
             cb=open_manage))
 
@@ -2610,15 +2628,15 @@ class KommunikasjonstavleApp(App):
         # Kortversjon (alltid tilgjengelig uten fillesing)
         policy_text = (
             "KOMMUNIKASJONSTAVLE - PERSONVERN\n\n"
-            "All data lagres kun lokalt pa denne enheten. "
+            "All data lagres kun lokalt på denne enheten. "
             "Ingenting sendes til internett, skytjenester eller tredjeparter.\n\n"
             "ADVARSEL: Ikke last opp bilder av identifiserbare barn. "
-            "Dette er ikke nodvendig i pedagogisk sammenheng og kan "
-            "vaere i strid med GDPR. Bruk generiske ASK-symboler i stedet.\n\n"
+            "Dette er ikke nødvendig i pedagogisk sammenheng og kan "
+            "være i strid med GDPR. Bruk generiske ASK-symboler i stedet.\n\n"
             "Behandlingsansvar for evt. personopplysninger i appen "
             "ligger hos institusjonen som bruker appen.\n\n"
             "Data slettes automatisk ved avinstallasjon.\n\n"
-            "Full personvernerklaering: Se PERSONVERN.md i appens GitHub-repository."
+            "Full personvernerklæring: Se PERSONVERN.md i appens GitHub-repository."
         )
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
         sv = ScrollView()
@@ -2810,7 +2828,7 @@ class KommunikasjonstavleApp(App):
                 halign='center', valign='middle'))
         else:
             outer.add_widget(Label(
-                text='Ingen aktiviteter lagt til.\nTrykk "Red." og "+" for aa starte.',
+                text='Ingen aktiviteter lagt til.\nTrykk "Red." og "+" for å starte.',
                 font_size=fsp(16), color=(0.45, 0.45, 0.5, 1),
                 halign='center', valign='middle'))
 
@@ -2855,7 +2873,7 @@ class KommunikasjonstavleApp(App):
         self._build_dagsrytme_ui()
 
     def _dr_entry_popup(self, entry):
-        """Popup for aa opprette eller redigere en dagsrytme-aktivitet."""
+        """Popup for å opprette eller redigere en dagsrytme-aktivitet."""
         new = entry is None
         pop_ref = [None]
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
@@ -3045,7 +3063,7 @@ class KommunikasjonstavleApp(App):
             if it.get('image') and os.path.exists(it['image'])
         ]
         if len(all_images) < 2:
-            self._toast('Trenger minst 2 bilder i mappene for aa spille.')
+            self._toast('Trenger minst 2 bilder i mappene for å spille.')
             return
         self._push('home')
         self._bildepar_setup_popup(all_images)
@@ -3182,7 +3200,7 @@ class KommunikasjonstavleApp(App):
 
     def _bildepar_win(self):
         lbl = Label(
-            text=f'Gratulerer!\nAlle {self._bp_matches} par funnet\ni lopet av {self._bp_moves} trekk!',
+            text=f'Gratulerer!\nAlle {self._bp_matches} par funnet\ni løpet av {self._bp_moves} trekk!',
             font_size=fsp(19), color=(0.1, 0.5, 0.1, 1),
             halign='center', valign='middle')
         lbl.bind(size=lbl.setter('text_size'))
@@ -3422,7 +3440,7 @@ class KommunikasjonstavleApp(App):
             if f['id'] != src_folder['id']
         ]
         if not other_folders:
-            self._toast('Ingen andre mapper aa flytte til.')
+            self._toast('Ingen andre mapper å flytte til.')
             return
 
         pop_ref = [None]
@@ -3538,7 +3556,7 @@ class KommunikasjonstavleApp(App):
             text=(
                 'Last ikke opp bilder av identifiserbare barn.\n\n'
                 'Pedagogiske ASK-symboler viser generelle konsepter '
-                'og trenger ikke aa vise et spesifikt barn. '
+                'og trenger ikke å vise et spesifikt barn. '
                 'Bruk generiske symboler (tegninger, clip-art, PCS-symboler).'
             ),
             font_size=fsp(14), color=(0.15, 0.15, 0.25, 1),
@@ -3578,7 +3596,7 @@ class KommunikasjonstavleApp(App):
             _open_android_picker(on_picked)
     def _download_image(self, src_path):
         if not src_path or not os.path.exists(src_path):
-            self._toast('Ingen bildefil aa laste ned.')
+            self._toast('Ingen bildefil å laste ned.')
             return
         try:
             os.makedirs(DOWNLOAD_DIR, exist_ok=True)
