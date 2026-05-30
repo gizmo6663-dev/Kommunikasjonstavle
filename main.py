@@ -312,12 +312,12 @@ PALETTE = [
 
 DEFAULT_STRUCT = {
     "folders": [
-        {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": []},
-        {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": []},
-        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": []},
-        {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": []},
-        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": []},
-        {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": []},
+        {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": [], "subfolders": []},
+        {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": [], "subfolders": []},
+        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": [], "subfolders": []},
+        {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": [], "subfolders": []},
+        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": [], "subfolders": []},
+        {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": [], "subfolders": []},
     ],
     "sequences": [],
     "dagsrytme": [],
@@ -485,6 +485,10 @@ def load_struct():
             # Migrer eldre filer som mangler sequences-nøkkel
             if 'sequences' not in d:
                 d['sequences'] = []
+            # Migrer mapper uten subfolders-nøkkel
+            for fo in d.get('folders', []):
+                if 'subfolders' not in fo:
+                    fo['subfolders'] = []
             if 'dagsrytme' not in d:
                 d['dagsrytme'] = []
             if 'settings' not in d:
@@ -508,7 +512,14 @@ def save_struct(d):
         logging.error('Feil ved lagring av structure.json: %s', e)
 
 def get_folder(d, fid):
-    return next((x for x in d['folders'] if x['id'] == fid), None)
+    """Finner mappe med gitt id – søker rekursivt i subfolders."""
+    for fo in d.get('folders', []):
+        if fo['id'] == fid:
+            return fo
+        for sub in fo.get('subfolders', []):
+            if sub['id'] == fid:
+                return sub
+    return None
 
 def img_filter(folder, filename):
     """
@@ -1153,6 +1164,118 @@ class DrawCanvas(Image):
         self._refresh()
 
 
+
+class GradientColorPicker(Image):
+    """
+    HSV gradient-fargevelger med PIL.
+    Layout (PIL top-to-bottom, flippes til Kivy):
+      [Hue-strip 30px] [Gap 3px] [SV-kvadrat 148px] [Gap 3px] [Preview 22px]
+    Berøring i hue-stripen setter tone, SV-kvadratet setter metning/lysstyrke.
+    on_color(hex_str) kalles ved hver endring.
+    """
+    PICK_W  = 220
+    HUE_H   = 30
+    SV_H    = 148
+    PREV_H  = 22
+    GAP     = 3
+    TOTAL_H = 206   # 30+3+148+3+22
+
+    def __init__(self, on_color=None, initial_hex='#FF0000', **kw):
+        super().__init__(allow_stretch=True, keep_ratio=False, **kw)
+        self._on_color = on_color
+        self._grabbed  = None
+        import colorsys
+        try:
+            r = int(initial_hex[1:3], 16) / 255
+            g = int(initial_hex[3:5], 16) / 255
+            b = int(initial_hex[5:7], 16) / 255
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            self._hue = h; self._sat = s
+            self._val = v if v > 0.05 else 1.0
+        except Exception:
+            self._hue = 0.0; self._sat = 1.0; self._val = 1.0
+        self._render()
+
+    @property
+    def current_hex(self):
+        import colorsys
+        r, g, b = colorsys.hsv_to_rgb(self._hue, self._sat, self._val)
+        return '#{:02x}{:02x}{:02x}'.format(int(r*255), int(g*255), int(b*255))
+
+    def _render(self):
+        if not PIL_OK:
+            return
+        import colorsys
+        W=self.PICK_W; TH=self.TOTAL_H; HH=self.HUE_H
+        SH=self.SV_H;  G=self.GAP
+        buf = bytearray(W * TH * 4)
+        def sp(x, y, r, g, b):
+            i=(y*W+x)*4; buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255
+        # Hue-strip
+        for x in range(W):
+            r,g,b=colorsys.hsv_to_rgb(x/W,1.0,1.0)
+            ri,gi,bi=int(r*255),int(g*255),int(b*255)
+            for y in range(HH): sp(x,y,ri,gi,bi)
+        hx=int(self._hue*(W-1))
+        for y in range(HH):
+            for dx in (-2,-1,0,1,2): sp(max(0,min(W-1,hx+dx)),y,255,255,255)
+        # Gap etter hue
+        for y in range(HH,HH+G):
+            for x in range(W): sp(x,y,210,212,220)
+        # SV-kvadrat
+        sv0=HH+G
+        br,bg2,bb=[c*255 for c in colorsys.hsv_to_rgb(self._hue,1.0,1.0)]
+        for y in range(SH):
+            v=1.0-y/SH
+            for x in range(W):
+                s=x/W
+                sp(x,sv0+y,int((255+(br-255)*s)*v),
+                   int((255+(bg2-255)*s)*v),int((255+(bb-255)*s)*v))
+        sx=int(self._sat*(W-1)); sy=sv0+int((1-self._val)*(SH-1))
+        for dy in range(-7,8):
+            for dx in range(-7,8):
+                d=(dx*dx+dy*dy)**0.5
+                xx=max(0,min(W-1,sx+dx)); yy=max(0,min(TH-1,sy+dy))
+                if 5.2<d<7.2:   sp(xx,yy,0,0,0)
+                elif 3.8<d<=5.2: sp(xx,yy,255,255,255)
+        # Gap etter SV
+        p0=HH+G+SH
+        for y in range(p0,p0+G):
+            for x in range(W): sp(x,y,210,212,220)
+        # Forhåndsvisning
+        r2,g2,b2=colorsys.hsv_to_rgb(self._hue,self._sat,self._val)
+        ri,gi,bi=int(r2*255),int(g2*255),int(b2*255)
+        for y in range(p0+G,TH):
+            for x in range(W): sp(x,y,ri,gi,bi)
+        tex=Texture.create(size=(W,TH),colorfmt='rgba')
+        tex.blit_buffer(bytes(buf),colorfmt='rgba',bufferfmt='ubyte')
+        tex.flip_vertical(); self.texture=tex
+
+    def _update(self, tx, ty):
+        if self.width==0 or self.height==0: return
+        W=self.PICK_W; TH=self.TOTAL_H
+        px=max(0.0,min(1.0,(tx-self.x)/self.width))
+        row=int((1.0-max(0.0,min(1.0,(ty-self.y)/self.height)))*TH)
+        if self._grabbed=='hue' or (self._grabbed is None and row<self.HUE_H):
+            self._grabbed='hue'; self._hue=px
+        elif self._grabbed=='sv' or (self._grabbed is None and
+                self.HUE_H+self.GAP<=row<self.HUE_H+self.GAP+self.SV_H):
+            self._grabbed='sv'; sv_row=max(0,row-self.HUE_H-self.GAP)
+            self._sat=px; self._val=1.0-sv_row/max(1,self.SV_H-1)
+        self._render()
+        if self._on_color: self._on_color(self.current_hex)
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos): return False
+        touch.grab(self); self._grabbed=None; self._update(*touch.pos); return True
+    def on_touch_move(self, touch):
+        if touch.grab_current is not self: return False
+        self._update(*touch.pos); return True
+    def on_touch_up(self, touch):
+        if touch.grab_current is not self: return False
+        touch.ungrab(self); self._grabbed=None; return True
+
+
 # ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
@@ -1638,6 +1761,26 @@ class KommunikasjonstavleApp(App):
             ))
             outer.add_widget(btn_bar)
 
+        # ── Undermapper ──────────────────────────────────────────
+        subfolders = fo.get('subfolders', [])
+        if subfolders or self.edit_mode:
+            sub_section = BoxLayout(orientation='vertical',
+                                    size_hint_y=None, spacing=dp(4))
+            sub_section.bind(minimum_height=sub_section.setter('height'))
+            if subfolders:
+                sub_grid = GridLayout(cols=3, spacing=dp(6),
+                                      size_hint_y=None)
+                sub_grid.bind(minimum_height=sub_grid.setter('height'))
+                for sub in subfolders:
+                    sub_grid.add_widget(self._make_subfolder_tile(fo, sub))
+                sub_section.add_widget(sub_grid)
+            if self.edit_mode:
+                sub_section.add_widget(mk_btn(
+                    '+  Ny undermappe', hex_k('#4ECDC4'), h=dp(42), fs=13,
+                    cb=lambda *_, f=fo: self._subfolder_popup(f, None)))
+            outer.add_widget(sub_section)
+
+        # ── ASK-bilder ────────────────────────────────────────────
         grid = GridLayout(cols=4, spacing=dp(6), padding=(dp(4), dp(4)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
@@ -2036,66 +2179,99 @@ class KommunikasjonstavleApp(App):
 
     def _open_color_popup(self):
         """
-        Åpner et popup-vindu med alle 24 farger i et 6×4-rutenett.
-        Valg av farge setter tegnefargen og lukker popupen.
-        _col_btns oppdateres her slik at _set_draw_color kan markere
-        gjeldende valg med lys uthevning.
+        Fargevalgpopup med to faner: Palett (rutenett) og Gradient (HSV-velger).
+        Faneknappene bytter innholdsflaten uten å lukke popupen.
         """
-        layout = BoxLayout(
-            orientation='vertical',
-            spacing=dp(10), padding=dp(14),
-        )
+        pop_ref     = [None]
+        cur_col     = [getattr(self.draw_canvas, 'draw_color', '#000000')
+                       if self.draw_canvas else '#000000']
 
-        # Overskrift
-        layout.add_widget(Label(
-            text='Velg tegnefargen din:',
-            size_hint_y=None, height=dp(32),
-            font_size=sp(16), bold=True,
-            color=(0.08, 0.10, 0.35, 1),
-            halign='center', valign='middle',
-        ))
+        outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(10))
 
-        # 6×4-rutenett med fargeknapper
-        grid = GridLayout(
-            cols=6, spacing=dp(6),
-            size_hint_y=None,
-        )
-        grid.bind(minimum_height=grid.setter('height'))
+        # ── Faneknapper ────────────────────────────────────────────
+        tab_row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
+        btn_pal = mk_btn('Palett',   hex_k('#0D47A1'), h=dp(42), fs=14)
+        btn_grd = mk_btn('Gradient', hex_k('#4D96FF'), h=dp(42), fs=14)
+        tab_row.add_widget(btn_pal); tab_row.add_widget(btn_grd)
+        outer.add_widget(tab_row)
 
-        pop_ref = [None]
-        self._col_btns = {}
+        # ── Innholdsflate (byttes ved faneskift) ───────────────────
+        content_box = BoxLayout(orientation='vertical')
+        outer.add_widget(content_box)
 
-        for col_hex in PALETTE:
-            cb = RBtn(
-                size_hint=(None, None),
-                size=(dp(46), dp(46)),
-                btn_color=list(hex_k(col_hex)),
-                radius=dp(23),
-            )
-            def pick(b, c=col_hex):
-                self._set_draw_color(c)
-                pop_ref[0].dismiss()
-            cb.bind(on_release=pick)
-            grid.add_widget(cb)
-            self._col_btns[col_hex] = cb
-
-        layout.add_widget(grid)
-
-        layout.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=15,
+        outer.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(48), fs=14,
             cb=lambda *_: pop_ref[0].dismiss(),
         ))
 
-        pop = Popup(
-            title='Velg farge', content=layout,
-            size_hint=(0.95, 0.90),
-        )
+        # ── Bygger palett-panel ────────────────────────────────────
+        def make_palette_panel():
+            panel = BoxLayout(orientation='vertical', spacing=dp(6))
+            panel.add_widget(Label(
+                text='Velg farge:', size_hint_y=None, height=dp(26),
+                font_size=fsp(14), bold=True,
+                color=(0.08, 0.10, 0.35, 1), halign='center'))
+            sv = ScrollView(do_scroll_x=False)
+            grid = GridLayout(cols=6, spacing=dp(6), size_hint_y=None)
+            grid.bind(minimum_height=grid.setter('height'))
+            self._col_btns = {}
+            for col_hex in PALETTE:
+                cb = RBtn(size_hint=(None, None), size=(dp(46), dp(46)),
+                          btn_color=list(hex_k(col_hex)), radius=dp(23))
+                def pick_pal(b, c=col_hex):
+                    self._set_draw_color(c)
+                    cur_col[0] = c
+                    pop_ref[0].dismiss()
+                cb.bind(on_release=pick_pal)
+                grid.add_widget(cb); self._col_btns[col_hex] = cb
+            sv.add_widget(grid); panel.add_widget(sv)
+            return panel
+
+        # ── Bygger gradient-panel ──────────────────────────────────
+        def make_gradient_panel():
+            panel = BoxLayout(orientation='vertical', spacing=dp(6))
+            panel.add_widget(Label(
+                text='Dra i fargehjulet:', size_hint_y=None, height=dp(26),
+                font_size=fsp(14), bold=True,
+                color=(0.08, 0.10, 0.35, 1), halign='center'))
+            def on_grd_color(hex_c):
+                cur_col[0] = hex_c
+                self._set_draw_color(hex_c)
+            gp = GradientColorPicker(
+                on_color=on_grd_color,
+                initial_hex=cur_col[0],
+                size_hint_y=None,
+                height=dp(GradientColorPicker.TOTAL_H * 2),
+            )
+            panel.add_widget(gp)
+            panel.add_widget(mk_btn(
+                'Velg denne fargen', hex_k('#6BCB77'), h=dp(48), fs=15,
+                cb=lambda *_: pop_ref[0].dismiss(),
+            ))
+            return panel
+
+        panels = {'pal': None, 'grd': None}
+
+        def show_tab(tab):
+            content_box.clear_widgets()
+            btn_pal.btn_color = list(hex_k('#0D47A1' if tab=='pal' else '#4D96FF'))
+            btn_grd.btn_color = list(hex_k('#0D47A1' if tab=='grd' else '#4D96FF'))
+            if tab == 'pal':
+                if panels['pal'] is None:
+                    panels['pal'] = make_palette_panel()
+                content_box.add_widget(panels['pal'])
+                self._set_draw_color(cur_col[0])
+            else:
+                if panels['grd'] is None:
+                    panels['grd'] = make_gradient_panel()
+                content_box.add_widget(panels['grd'])
+
+        btn_pal.bind(on_release=lambda *_: show_tab('pal'))
+        btn_grd.bind(on_release=lambda *_: show_tab('grd'))
+
+        pop = Popup(title='Farge', content=outer, size_hint=(0.95, 0.92))
         pop_ref[0] = pop
-
-        # Marker gjeldende farge i popupen med det samme
-        if self.draw_canvas:
-            self._set_draw_color(self.draw_canvas.draw_color)
-
+        show_tab('pal')
         pop.open()
 
     # ══════════════════════════════════════════════════
@@ -3365,26 +3541,55 @@ class KommunikasjonstavleApp(App):
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
         chosen_color = [fo['color'] if fo else FOLDER_COLORS[0]]
-        # 4×2 rutenett – alle 8 farger vises uten å flyte utenfor
-        col_grid = GridLayout(cols=4, spacing=dp(8),
-                              size_hint_y=None, height=dp(120))
-        col_btns = []
-        for c in FOLDER_COLORS:
-            cb = RBtn(
-                btn_color=list(hex_k(c)),
-                size_hint=(1, None), height=dp(52),
-                opacity=1.0 if chosen_color[0] == c else 0.5,
-                radius=dp(12),
+
+        # ── Fane-toggle for fargevalg ─────────────────────────────
+        f_tab_row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        f_btn_pal = mk_btn('Palett',   hex_k('#0D47A1'), h=dp(38), fs=13)
+        f_btn_grd = mk_btn('Gradient', hex_k('#4D96FF'), h=dp(38), fs=13)
+        f_tab_row.add_widget(f_btn_pal); f_tab_row.add_widget(f_btn_grd)
+        layout.add_widget(f_tab_row)
+
+        f_color_box = BoxLayout(orientation='vertical',
+                                size_hint_y=None, height=dp(130))
+        layout.add_widget(f_color_box)
+
+        def build_folder_palette():
+            f_color_box.clear_widgets()
+            f_btn_pal.btn_color = list(hex_k('#0D47A1'))
+            f_btn_grd.btn_color = list(hex_k('#4D96FF'))
+            col_grid = GridLayout(cols=4, spacing=dp(6),
+                                  size_hint_y=None, height=dp(118))
+            col_btns = []
+            for c in FOLDER_COLORS:
+                cb = RBtn(btn_color=list(hex_k(c)),
+                          size_hint=(1, None), height=dp(52),
+                          opacity=1.0 if chosen_color[0] == c else 0.5,
+                          radius=dp(12))
+                def pick(b, col=c, btns=col_btns, sel=chosen_color):
+                    sel[0] = col
+                    for x in btns: x.opacity = 0.5
+                    b.opacity = 1.0
+                cb.bind(on_release=pick)
+                col_grid.add_widget(cb); col_btns.append(cb)
+            f_color_box.add_widget(col_grid)
+            f_color_box.height = dp(126)
+
+        def build_folder_gradient():
+            f_color_box.clear_widgets()
+            f_btn_pal.btn_color = list(hex_k('#4D96FF'))
+            f_btn_grd.btn_color = list(hex_k('#0D47A1'))
+            def on_fc(hex_c): chosen_color[0] = hex_c
+            gp = GradientColorPicker(
+                on_color=on_fc, initial_hex=chosen_color[0],
+                size_hint_y=None,
+                height=dp(GradientColorPicker.TOTAL_H * 1.35),
             )
-            def pick(b, col=c, btns=col_btns, sel=chosen_color):
-                sel[0] = col
-                for x in btns:
-                    x.opacity = 0.5
-                b.opacity = 1.0
-            cb.bind(on_release=pick)
-            col_grid.add_widget(cb)
-            col_btns.append(cb)
-        layout.add_widget(col_grid)
+            f_color_box.add_widget(gp)
+            f_color_box.height = dp(int(GradientColorPicker.TOTAL_H * 1.35) + 4)
+
+        f_btn_pal.bind(on_release=lambda *_: build_folder_palette())
+        f_btn_grd.bind(on_release=lambda *_: build_folder_gradient())
+        build_folder_palette()
 
         chosen_img = [fo.get('image') if fo else None]
         img_lbl = Label(
@@ -3547,6 +3752,130 @@ class KommunikasjonstavleApp(App):
         fo['items'] = [i for i in fo['items'] if i['id'] != it['id']]
         save_struct(self.data)
         self._show_folder(fid=fo['id'])
+
+    # ══════════════════════════════════════════════════
+    #  UNDERMAPPER
+    # ══════════════════════════════════════════════════
+
+    def _make_subfolder_tile(self, parent_fo, sub):
+        """
+        Lager en undermappe-flis med identisk stil som mappene på startsiden:
+        én stor farget RBtn med sentrert navn, samme høyde og grid-kolonne-antall.
+        """
+        edit   = self.edit_mode
+        TILE_H = dp(176) if edit else dp(142)
+        btn_h  = dp(138) if edit else dp(142)
+
+        if edit:
+            tap = lambda s=sub, p=parent_fo: self._subfolder_popup(p, s)
+        else:
+            tap = lambda s=sub: self._open_subfolder(s)
+
+        cell = BoxLayout(orientation='vertical',
+                         size_hint_y=None, height=TILE_H, spacing=dp(3))
+
+        btn = RBtn(
+            text=sub['name'],
+            size_hint=(1, None), height=btn_h,
+            btn_color=list(hex_k(sub.get('color', '#4ECDC4'))),
+            color=(0.05, 0.05, 0.2, 1),
+            bold=True, font_size=fsp(16), radius=dp(16),
+        )
+        btn.bind(on_release=lambda b, t=tap: t())
+        cell.add_widget(btn)
+
+        if edit:
+            cell.add_widget(mk_btn(
+                'Slett', hex_k('#FF6B6B'), h=dp(34), fs=12,
+                cb=lambda *_, s=sub, p=parent_fo: self._del_subfolder(p, s)))
+        return cell
+
+    def _open_subfolder(self, sub):
+        self._push('folder', fid=self.cur_folder)
+        prev_fid = self.cur_folder
+        self.cur_folder = sub['id']
+        self._show_subfolder(sub, prev_fid)
+
+    def _show_subfolder(self, sub, parent_fid, **_):
+        """Viser innholdet i en undermappe."""
+        self._cur_scr = 'folder'
+        self._set_title(sub['name'])
+
+        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+
+        if self.edit_mode:
+            btn_bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
+            btn_bar.add_widget(mk_btn(
+                '+  Nytt bilde', hex_k('#6BCB77'), h=dp(46), fs=13,
+                cb=lambda *_: self._item_popup(sub, None)))
+            btn_bar.add_widget(mk_btn(
+                'Last opp', hex_k('#4D96FF'), h=dp(46), fs=13,
+                cb=lambda *_: self._upload_to_folder(sub)))
+            outer.add_widget(btn_bar)
+
+        grid = GridLayout(cols=4, spacing=dp(6), padding=(dp(4),dp(4)),
+                          size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+        for it in sub.get('items', []):
+            grid.add_widget(self._make_item_tile(sub, it))
+        sv = ScrollView(); sv.add_widget(grid); outer.add_widget(sv)
+        self._set_content(outer)
+
+    def _subfolder_popup(self, parent_fo, sub):
+        """Oppretter eller redigerer en undermappe."""
+        new    = sub is None
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+
+        layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
+            font_size=sp(15), color=(0,0,0,1), halign='left'))
+        name_inp = TextInput(text='' if new else sub['name'],
+            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16))
+        layout.add_widget(name_inp)
+
+        layout.add_widget(Label(text='Farge:', size_hint_y=None, height=dp(26),
+            font_size=sp(14), color=(0,0,0,1), halign='left'))
+        chosen = [sub.get('color','#4ECDC4') if sub else '#4ECDC4']
+        col_grid = GridLayout(cols=4, spacing=dp(6), size_hint_y=None, height=dp(120))
+        col_btns = []
+        for c in FOLDER_COLORS:
+            cb = RBtn(btn_color=list(hex_k(c)), size_hint=(1,None), height=dp(52),
+                      opacity=1.0 if chosen[0]==c else 0.5, radius=dp(12))
+            def pick(b, col=c, btns=col_btns, sel=chosen):
+                sel[0]=col
+                for x in btns: x.opacity=0.5
+                b.opacity=1.0
+            cb.bind(on_release=pick); col_grid.add_widget(cb); col_btns.append(cb)
+        layout.add_widget(col_grid)
+
+        btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+        def on_ok(*_):
+            nm = name_inp.text.strip()
+            if not nm: return
+            if new:
+                parent_fo.setdefault('subfolders', []).append({
+                    'id': str(uuid.uuid4()), 'name': nm,
+                    'color': chosen[0], 'items': []})
+            else:
+                sub.update({'name': nm, 'color': chosen[0]})
+            save_struct(self.data)
+            pop_ref[0].dismiss()
+            self._show_folder(fid=parent_fo['id'])
+        btn_row.add_widget(mk_btn('Lagre',  hex_k('#6BCB77'), h=dp(50), cb=on_ok))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
+            cb=lambda *_: pop_ref[0].dismiss()))
+        layout.add_widget(btn_row)
+
+        pop = Popup(
+            title='Ny undermappe' if new else 'Rediger undermappe',
+            content=layout, size_hint=(0.90, 0.82))
+        pop_ref[0] = pop; pop.open()
+
+    def _del_subfolder(self, parent_fo, sub):
+        parent_fo['subfolders'] = [
+            s for s in parent_fo.get('subfolders', []) if s['id'] != sub['id']]
+        save_struct(self.data)
+        self._show_folder(fid=parent_fo['id'])
 
     def _move_item_popup(self, src_folder, item):
         """
