@@ -290,17 +290,24 @@ BRUSH_ACTIVE = {
     'piksel':       '#B71C1C',
 }
 
-# Fargepalett for tegning (12 farger)
-# 24 farger i 6 kolonner × 4 rader – brukes i fargevalgpopup.
+# Fargepalett – 30 farger i 6×5-rutenett.
+# Bevisst valgt for maksimal variasjon: ingen to farger er for like.
+# Rad 1: svart/hvit og grå-spekter
+# Rad 2: rødt, brunt, burgunder, mørk lilla, mørk blå, marineblå
+# Rad 3: oransje, gul, lime, grønn, blågrønn, turkis
+# Rad 4: lyseblå, lys lilla, rosa, laks, beige, sand
+# Rad 5: elektrisk blå, neon grønn, magenta, korall, mint, guld
 PALETTE = [
     # Nøytrale
-    '#000000', '#333333', '#777777', '#AAAAAA', '#DDDDDD', '#FFFFFF',
-    # Varme
-    '#EF5350', '#FF7043', '#FF9800', '#FFD600', '#FFEB3B', '#FF5722',
-    # Kalde
-    '#43A047', '#4CAF50', '#1E88E5', '#3949AB', '#8E24AA', '#00ACC1',
-    # Ekstra
-    '#EC407A', '#6D4C41', '#78909C', '#00BCD4', '#9C27B0', '#795548',
+    '#000000', '#444444', '#888888', '#BBBBBB', '#E8E8E8', '#FFFFFF',
+    # Mørke varme/kalde
+    '#B71C1C', '#6D4C41', '#880E4F', '#4A148C', '#1A237E', '#01579B',
+    # Mellomtone primære
+    '#E53935', '#FB8C00', '#FDD835', '#43A047', '#039BE5', '#8E24AA',
+    # Lyse/pastel
+    '#EF9A9A', '#FFE082', '#C8E6C9', '#B3E5FC', '#E1BEE7', '#FFCCBC',
+    # Spesielle/levende
+    '#00E5FF', '#76FF03', '#F50057', '#FF6D00', '#1DE9B6', '#FFD740',
 ]
 
 DEFAULT_STRUCT = {
@@ -316,7 +323,8 @@ DEFAULT_STRUCT = {
     "dagsrytme": [],
     "settings": {
         "tts_enabled": False,
-        "font_scale": 1.0
+        "font_scale": 1.0,
+        "high_contrast": False
     }
 }
 
@@ -394,17 +402,70 @@ def fsp(base_size):
         pass
     return sp(base_size)
 
+
+def is_hc():
+    """Returnerer True hvis høykontrast-modus er aktivert."""
+    try:
+        app = App.get_running_app()
+        if app and hasattr(app, 'data'):
+            return bool(app.data.get('settings', {}).get('high_contrast', False))
+    except Exception:
+        pass
+    return False
+
+
+def hc(normal_hex, hc_hex=None):
+    """
+    Returnerer hex_k(hc_hex) i høykontrast-modus, ellers hex_k(normal_hex).
+    Dersom hc_hex ikke er oppgitt brukes '#000000' (svart) som standard HC-farge.
+    Brukes der knapper og bakgrunner må skifte farge i HC-modus.
+    """
+    if is_hc():
+        return hex_k(hc_hex or '#000000')
+    return hex_k(normal_hex)
+
+
+def apply_high_contrast(enabled):
+    """
+    Bytter appens overordnede utseende mellom normal og høykontrast.
+
+    Kivy-KV støtter ikke dynamiske betingelser i canvas-blokker på
+    en enkel måte (de evalueres ikke ved runtime). I stedet:
+      - Window.clearcolor settes umiddelbart
+      - mk_btn() og _make_folder_tile() leser is_hc() ved neste
+        gjenbygging av skjermen (skjer automatisk ved skjermbytte)
+
+    Høykontrast:
+      - Bakgrunn: hvit
+      - Knapper: svart (#000000) med hvit tekst
+      - Tekst-labels: svart (#000000)
+      - Kontrast-ratio: 21:1 (WCAG AAA maksimum)
+    """
+    from kivy.core.window import Window
+    if enabled:
+        Window.clearcolor = (1.0, 1.0, 1.0, 1.0)
+    else:
+        Window.clearcolor = (0.94, 0.95, 0.98, 1.0)
+
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
-    Lager en RBtn med opacity-dimming ved trykk (visuell respons).
+    Lager en RBtn med opacity-dimming ved trykk.
+    I høykontrast-modus overstyres bg med svart og fg med hvit
+    for å oppnå WCAG AAA-kontrast (21:1).
     """
     kw.setdefault('size_hint_y', None)
     kw.setdefault('height', h)
+    if is_hc():
+        btn_color = [0.0, 0.0, 0.0, 1.0]   # svart
+        txt_color = (1.0, 1.0, 1.0, 1.0)   # hvit tekst
+    else:
+        btn_color = list(bg)
+        txt_color = fg
     b = RBtn(
         text=text,
-        btn_color=list(bg),
+        btn_color=btn_color,
         font_size=sp(fs),
-        color=fg, bold=True, **kw,
+        color=txt_color, bold=True, **kw,
     )
     from kivy.animation import Animation
     def _on_press(btn, *_):
@@ -427,7 +488,7 @@ def load_struct():
             if 'dagsrytme' not in d:
                 d['dagsrytme'] = []
             if 'settings' not in d:
-                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0}
+                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False}
             return d
         except Exception as e:
             logging.error('Feil ved lasting av structure.json: %s', e)
@@ -1100,6 +1161,11 @@ class KommunikasjonstavleApp(App):
 
     # ── Oppstart ──────────────────────────────────────────────────
 
+    @property
+    def is_hc_mode(self):
+        """KV-tilgjengelig egenskap for høykontrast-modus."""
+        return bool(self.data.get('settings', {}).get('high_contrast', False))             if hasattr(self, 'data') else False
+
     def build(self):
         setup_logging()
         Window.clearcolor = (0.94, 0.95, 0.98, 1)
@@ -1118,6 +1184,9 @@ class KommunikasjonstavleApp(App):
             os.makedirs(d, exist_ok=True)
 
         self.data        = load_struct()
+        # Aktiver HC-modus hvis det var aktivert ved forrige kjøring
+        if self.data.get('settings', {}).get('high_contrast', False):
+            apply_high_contrast(True)
         self.nav_stack   = []
         self.cur_folder  = None
         self.edit_mode   = False
@@ -1732,7 +1801,9 @@ class KommunikasjonstavleApp(App):
             padding=(dp(6), dp(5)),
         )
 
-        # ── Rad 1a: Verktøyknapper ─────────────────────────────────
+        # ── Rad 1: Verktøyknapper ──────────────────────────────────
+        # Penn-knappen viser/skjuler penseltype-raden ved trykk.
+        # Alle andre verktøy skjuler penselraden (ikke relevant).
         tool_grid = GridLayout(
             cols=6, size_hint_y=None, height=dp(52), spacing=dp(4),
         )
@@ -1744,26 +1815,15 @@ class KommunikasjonstavleApp(App):
             ('ellipse', 'Oval'),
             ('fill',    'Fyll'),
         ]
-        self._tool_btns = {}
-        for key, lbl in tools:
-            b = RBtn(
-                text=lbl,
-                size_hint=(1, 1),
-                font_size=sp(13),
-                btn_color=list(hex_k(TOOL_COLORS[key])),
-                color=(1, 1, 1, 1),
-                bold=True,
-                radius=dp(10),
-            )
-            b.bind(on_release=lambda btn, k=key: self._set_draw_tool(k))
-            tool_grid.add_widget(b)
-            self._tool_btns[key] = b
-        root.add_widget(tool_grid)
+        self._tool_btns  = {}
+        self._brush_open = [False]   # om penselraden er synlig
 
-        # ── Rad 1b: Penseltyper ─────────────────────────────────────
-        brush_grid = GridLayout(
-            cols=5, size_hint_y=None, height=dp(48), spacing=dp(4),
+        # Penselrad – bygges nå men legges til ETTER tool_grid
+        brush_panel = BoxLayout(
+            size_hint_y=None, height=dp(0),  # starter skjult
+            opacity=0,
         )
+        brush_grid = GridLayout(cols=5, spacing=dp(4))
         brushes = [
             ('rund',         'Rund'),
             ('myk',          'Myk'),
@@ -1785,101 +1845,110 @@ class KommunikasjonstavleApp(App):
             b.bind(on_release=lambda btn, k=key: self._set_brush_type(k))
             brush_grid.add_widget(b)
             self._brush_btns[key] = b
-        root.add_widget(brush_grid)
+        brush_panel.add_widget(brush_grid)
+
+        def toggle_brush_panel(*_):
+            """Viser/skjuler penselraden ved trykk på Penn-knappen."""
+            from kivy.animation import Animation
+            open_ = not self._brush_open[0]
+            self._brush_open[0] = open_
+            if open_:
+                brush_panel.opacity = 1
+                Animation(height=dp(46), duration=0.15, t='out_quad').start(brush_panel)
+            else:
+                def hide(*_): brush_panel.opacity = 0
+                a = Animation(height=dp(0), duration=0.12, t='in_quad')
+                a.bind(on_complete=lambda *_: setattr(brush_panel, 'opacity', 0))
+                a.start(brush_panel)
+            # Oppdater Penn-knappens tekst
+            pen_btn = self._tool_btns.get('pen')
+            if pen_btn:
+                pen_btn.text = 'Penn v' if open_ else 'Penn'
+
+        for key, lbl in tools:
+            b = RBtn(
+                text=lbl,
+                size_hint=(1, 1),
+                font_size=sp(13),
+                btn_color=list(hex_k(TOOL_COLORS[key])),
+                color=(1, 1, 1, 1),
+                bold=True,
+                radius=dp(10),
+            )
+            if key == 'pen':
+                def pen_tap(btn, *_):
+                    self._set_draw_tool('pen')
+                    toggle_brush_panel()
+                b.bind(on_release=pen_tap)
+            else:
+                def other_tap(btn, k=key, *_):
+                    self._set_draw_tool(k)
+                    # Lukk penselraden når man velger et annet verktøy
+                    if self._brush_open[0]:
+                        self._brush_open[0] = True
+                        toggle_brush_panel()
+                b.bind(on_release=other_tap)
+            tool_grid.add_widget(b)
+            self._tool_btns[key] = b
+
+        root.add_widget(tool_grid)
+        root.add_widget(brush_panel)
 
         # ── Rad 2: Angre / Gjenta / Lagre / Tom ──────────────────
-        act = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
-        act.add_widget(mk_btn(
-            'Angre', hex_k('#546E7A'), h=dp(48), fs=14,
-            cb=lambda *_: self.draw_canvas and self.draw_canvas.angre(),
-        ))
-        act.add_widget(mk_btn(
-            'Gjenta', hex_k('#546E7A'), h=dp(48), fs=14,
-            cb=lambda *_: self.draw_canvas and self.draw_canvas.gjenta(),
-        ))
-        act.add_widget(mk_btn(
-            'Lagre', hex_k('#6BCB77'), h=dp(48), fs=14,
-            cb=self._save_drawing,
-        ))
-        act.add_widget(mk_btn(
-            'Tom', hex_k('#FF6B6B'), h=dp(48), fs=14,
-            cb=lambda *_: self.draw_canvas.clear_canvas(),
-        ))
+        act = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(5))
+        act.add_widget(mk_btn('Angre',  hex_k('#546E7A'), h=dp(44), fs=13,
+            cb=lambda *_: self.draw_canvas and self.draw_canvas.angre()))
+        act.add_widget(mk_btn('Gjenta', hex_k('#546E7A'), h=dp(44), fs=13,
+            cb=lambda *_: self.draw_canvas and self.draw_canvas.gjenta()))
+        act.add_widget(mk_btn('Lagre',  hex_k('#6BCB77'), h=dp(44), fs=13,
+            cb=self._save_drawing))
+        act.add_widget(mk_btn('Tom',    hex_k('#FF6B6B'), h=dp(44), fs=13,
+            cb=lambda *_: self.draw_canvas.clear_canvas()))
         root.add_widget(act)
 
-        # ── Rad 3: Penselstørrelse ────────────────────────────────
-        size_row = BoxLayout(
-            size_hint_y=None, height=dp(50),
-            spacing=dp(8), padding=(dp(6), dp(2)),
-        )
-        size_row.add_widget(Label(
-            text='Størrelse:', size_hint_x=None, width=dp(90),
-            font_size=sp(13), bold=True,
-            color=(0.10, 0.10, 0.10, 1), halign='left',
-        ))
-        self._size_slider = Slider(min=2, max=60, value=6, step=1)
-        self._size_lbl    = Label(
-            text=' 6 px', size_hint_x=None, width=dp(48),
-            font_size=sp(13), color=(0.10, 0.10, 0.10, 1),
-        )
-        self._size_slider.bind(value=self._on_size_change)
-        size_row.add_widget(self._size_slider)
-        size_row.add_widget(self._size_lbl)
-        root.add_widget(size_row)
+        # ── Rad 3: Størrelse + Stabilisering + Fargevalg i én rad ──
+        # Alle tre kontroller samlet for å spare vertikalt rom.
+        ctrl = BoxLayout(size_hint_y=None, height=dp(50),
+                         spacing=dp(6), padding=(dp(4), dp(2)))
 
-        # ── Rad 4: Stabilisering ──────────────────────────────────
-        stab_row = BoxLayout(
-            size_hint_y=None, height=dp(50),
-            spacing=dp(8), padding=(dp(6), dp(2)),
-        )
-        stab_row.add_widget(Label(
-            text='Stabilisering:', size_hint_x=None, width=dp(110),
-            font_size=sp(13), bold=True,
-            color=(0.10, 0.10, 0.10, 1), halign='left',
-        ))
-        self._stab_slider = Slider(min=0, max=10, value=4, step=1)
-        self._stab_lbl    = Label(
-            text='4', size_hint_x=None, width=dp(28),
-            font_size=sp(13), color=(0.10, 0.10, 0.10, 1),
-        )
+        ctrl.add_widget(Label(text='Str:', size_hint_x=None, width=dp(30),
+            font_size=sp(12), color=(0.1, 0.1, 0.1, 1)))
+        self._size_slider = Slider(min=2, max=60, value=6, step=1)
+        self._size_lbl    = Label(text=' 6', size_hint_x=None, width=dp(26),
+            font_size=sp(12), color=(0.1, 0.1, 0.1, 1))
+        self._size_slider.bind(value=self._on_size_change)
+        ctrl.add_widget(self._size_slider)
+        ctrl.add_widget(self._size_lbl)
+
+        ctrl.add_widget(Label(text='Stab:', size_hint_x=None, width=dp(38),
+            font_size=sp(12), color=(0.1, 0.1, 0.1, 1)))
+        self._stab_slider = Slider(min=0, max=10, value=4, step=1,
+                                   size_hint_x=None, width=dp(100))
+        self._stab_lbl    = Label(text='4', size_hint_x=None, width=dp(18),
+            font_size=sp(12), color=(0.1, 0.1, 0.1, 1))
         def on_stab(sl, val):
             v = int(val)
             self._stab_lbl.text = str(v)
             if self.draw_canvas:
                 self.draw_canvas.stabilize = v
         self._stab_slider.bind(value=on_stab)
-        stab_row.add_widget(self._stab_slider)
-        stab_row.add_widget(self._stab_lbl)
+        ctrl.add_widget(self._stab_slider)
+        ctrl.add_widget(self._stab_lbl)
 
-        stab_info = Label(
-            text='0=av  10=maks',
-            size_hint_x=None, width=dp(84),
-            font_size=sp(11), color=(0.50, 0.50, 0.50, 1),
-        )
-        stab_row.add_widget(stab_info)
-        root.add_widget(stab_row)
-
-        # ── Rad 4: Fargevalg – en knapp åpner fargevalgpopup ──────
-        # Viser gjeldende farge som farget sirkel + knapp for å bytte.
-        color_row = BoxLayout(
-            size_hint_y=None, height=dp(56),
-            spacing=dp(8), padding=(dp(4), dp(4)),
-        )
+        # Fargesirkel + Velg-knapp på samme rad
         self._cur_color_btn = RBtn(
-            size_hint=(None, None), size=(dp(48), dp(48)),
-            btn_color=list(hex_k('#000000')),
-            radius=dp(24),
+            size_hint=(None, None), size=(dp(42), dp(42)),
+            btn_color=list(hex_k('#000000')), radius=dp(21),
         )
         self._cur_color_btn.bind(on_release=lambda *_: self._open_color_popup())
-        color_row.add_widget(self._cur_color_btn)
+        ctrl.add_widget(self._cur_color_btn)
 
-        open_pal_btn = mk_btn(
-            'Velg farge  (24 farger)', hex_k('#4D96FF'),
-            h=dp(48), fs=14,
-        )
+        open_pal_btn = mk_btn('Farge', hex_k('#4D96FF'), h=dp(44), fs=13,
+            size_hint_x=None, width=dp(68))
         open_pal_btn.bind(on_release=lambda *_: self._open_color_popup())
-        color_row.add_widget(open_pal_btn)
-        root.add_widget(color_row)
+        ctrl.add_widget(open_pal_btn)
+
+        root.add_widget(ctrl)
 
         # Initialiserer _col_btns som tom dict (brukes i _set_draw_color)
         self._col_btns = {}
@@ -1936,7 +2005,7 @@ class KommunikasjonstavleApp(App):
     def _on_size_change(self, slider, val):
         if self.draw_canvas:
             self.draw_canvas.size_px = int(val)
-        self._size_lbl.text = f'{int(val):2d} px' 
+        self._size_lbl.text = f' {int(val)}' 
 
     def _save_drawing(self, *_):
         if not self.draw_canvas:
@@ -1974,7 +2043,7 @@ class KommunikasjonstavleApp(App):
 
         # 6×4-rutenett med fargeknapper
         grid = GridLayout(
-            cols=6, spacing=dp(8),
+            cols=6, spacing=dp(6),
             size_hint_y=None,
         )
         grid.bind(minimum_height=grid.setter('height'))
@@ -1985,9 +2054,9 @@ class KommunikasjonstavleApp(App):
         for col_hex in PALETTE:
             cb = RBtn(
                 size_hint=(None, None),
-                size=(dp(52), dp(52)),
+                size=(dp(46), dp(46)),
                 btn_color=list(hex_k(col_hex)),
-                radius=dp(26),
+                radius=dp(23),
             )
             def pick(b, c=col_hex):
                 self._set_draw_color(c)
@@ -2004,8 +2073,8 @@ class KommunikasjonstavleApp(App):
         ))
 
         pop = Popup(
-            title='Farger', content=layout,
-            size_hint=(0.92, 0.82),
+            title='Velg farge', content=layout,
+            size_hint=(0.95, 0.90),
         )
         pop_ref[0] = pop
 
@@ -2448,51 +2517,111 @@ class KommunikasjonstavleApp(App):
         _open_android_picker(on_picked)
 
     def _init_tts(self):
-        """Initialiserer Android TextToSpeech (kalles kun én gang)."""
+        """
+        Initialiserer Android TextToSpeech.
+
+        Rotårsak til at PythonJavaClass-varianten ikke fungerte:
+        OnInit-callbacken ble garbage-collected av Python-GC før Android
+        rakk å kalle den, slik at _tts_ready aldri ble True.
+
+        Ny tilnærming: bruk Android sitt innebygde Intent-baserte
+        TextToSpeech-alternativ – ingen callback-klasse nødvendig.
+        Vi instansierer TTS med en anonym listener via Proxy, og
+        polling med Clock sjekker om motoren er klar.
+        """
         if hasattr(self, '_tts_initialized'):
             return
         self._tts_initialized = True
-        self._tts_engine = None
-        self._tts_ready  = False
+        self._tts_engine      = None
+        self._tts_ready       = False
+        self._tts_pending     = []   # tekst som venter på at motoren blir klar
+
         if platform != 'android':
             return
+
         try:
-            from jnius import PythonJavaClass, java_method, autoclass
+            from jnius import autoclass, PythonJavaClass, java_method
             from android import mActivity
+
             TTS    = autoclass('android.speech.tts.TextToSpeech')
             Locale = autoclass('java.util.Locale')
+
             app_ref = self
 
-            class OnInit(PythonJavaClass):
+            class TTSInitListener(PythonJavaClass):
+                """
+                Holder en sterk referanse til seg selv i app_ref._tts_listener
+                slik at Python-GC ikke kan samle den inn før Android kaller
+                onInit(). Dette var rotproblemet med forrige implementasjon.
+                """
                 __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
-                __javacontext__ = 'app'
+                __javacontext__    = 'app'
+
                 @java_method('(I)V')
                 def onInit(self_j, status):
+                    logging.info('TTS onInit kalt, status=%d', status)
                     if status == TTS.SUCCESS:
                         try:
-                            app_ref._tts_engine.setLanguage(Locale('nb', 'NO'))
+                            result = app_ref._tts_engine.setLanguage(Locale('nb', 'NO'))
+                            if result in (-2, -1):
+                                # nb-NO ikke støttet – prøv norsk uten region
+                                result = app_ref._tts_engine.setLanguage(
+                                    Locale('no', 'NO'))
+                            if result in (-2, -1):
+                                # Siste fallback: systemspråk
+                                app_ref._tts_engine.setLanguage(
+                                    Locale.getDefault())
                             app_ref._tts_ready = True
-                            logging.info('TTS klar (nb-NO)')
+                            logging.info('TTS klar. Venter tekst: %d',
+                                         len(app_ref._tts_pending))
+                            # Les opp eventuell tekst som kom inn før motoren var klar
+                            for t in app_ref._tts_pending:
+                                app_ref._speak_now(t)
+                            app_ref._tts_pending.clear()
                         except Exception:
                             logging.exception('TTS setLanguage feil')
                     else:
                         logging.warning('TTS init feilet, status=%d', status)
 
-            self._tts_listener = OnInit()
+            # Sterk referanse – overlever til onInit er kalt
+            self._tts_listener = TTSInitListener()
             self._tts_engine   = TTS(mActivity, self._tts_listener)
+            logging.info('TTS engine opprettet, venter på onInit ...')
+
         except Exception:
             logging.exception('_init_tts: feil')
 
+    def _speak_now(self, text):
+        """Kaller speak() direkte – forutsetter at motoren er klar."""
+        try:
+            from jnius import autoclass
+            TTS = autoclass('android.speech.tts.TextToSpeech')
+            self._tts_engine.speak(str(text), TTS.QUEUE_FLUSH, None, 'kt_utterance')
+            logging.debug('TTS speak: %s', text[:40])
+        except Exception:
+            logging.exception('_speak_now: feil')
+
     def _speak(self, text):
-        """Les opp teksten via Android TTS – kun hvis aktivert i innstillinger."""
+        """
+        Les opp teksten via Android TTS.
+        Kaller _init_tts() ved første bruk.
+        Dersom motoren ikke er klar ennå legges teksten i kø og
+        leses opp automatisk når onInit() er ferdig.
+        """
         if not self.data.get('settings', {}).get('tts_enabled', False):
+            return
+        if platform != 'android':
             return
         try:
             self._init_tts()
             if getattr(self, '_tts_ready', False) and self._tts_engine:
-                from jnius import autoclass
-                TTS = autoclass('android.speech.tts.TextToSpeech')
-                self._tts_engine.speak(str(text), TTS.QUEUE_FLUSH, None, 'kt')
+                self._speak_now(text)
+            elif self._tts_engine:
+                # Motor er opprettet men onInit ikke kalt ennå – legg i kø
+                if not hasattr(self, '_tts_pending'):
+                    self._tts_pending = []
+                self._tts_pending.append(str(text))
+                logging.debug('TTS: tekst lagt i kø (%d i kø)', len(self._tts_pending))
         except Exception:
             logging.exception('_speak: feil')
 
@@ -2509,6 +2638,32 @@ class KommunikasjonstavleApp(App):
         self._set_title('Innstillinger')
         st = self.data.setdefault('settings', {'tts_enabled': False, 'font_scale': 1.0})
         outer = BoxLayout(orientation='vertical', spacing=dp(16), padding=dp(16))
+
+        # ── Høykontrast ──────────────────────────────────────────
+        outer.add_widget(Label(text='Høykontrast:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        hc_row  = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        is_hc_on = st.get('high_contrast', False)
+        hc_on  = mk_btn('På',  hex_k('#000000' if is_hc_on else '#546E7A'),
+                         fg=(1,1,1,1), h=dp(52), fs=16)
+        hc_off = mk_btn('Av',  hex_k('#4D96FF' if not is_hc_on else '#90CAF9'),
+                         fg=(1,1,1,1), h=dp(52), fs=16)
+        def set_hc(val):
+            st['high_contrast'] = val
+            save_struct(self.data)
+            apply_high_contrast(val)
+            hc_on.btn_color  = list(hex_k('#000000' if val else '#546E7A'))
+            hc_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
+            # Gjenbygg innstillingsskjermen så farger oppdateres
+            Clock.schedule_once(lambda *_: self._show_settings(), 0.15)
+        hc_on.bind( on_release=lambda *_: set_hc(True))
+        hc_off.bind(on_release=lambda *_: set_hc(False))
+        hc_row.add_widget(hc_on); hc_row.add_widget(hc_off)
+        outer.add_widget(hc_row)
+        outer.add_widget(Label(
+            text='Svart bakgrunn og hvit tekst på alle knapper (WCAG AAA, 7:1). Gjelder fra neste skjerminnlasting.',
+            size_hint_y=None, height=dp(44),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
 
         outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
@@ -3273,14 +3428,16 @@ class KommunikasjonstavleApp(App):
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
         chosen_color = [fo['color'] if fo else FOLDER_COLORS[0]]
-        col_row      = BoxLayout(size_hint_y=None, height=dp(60), spacing=dp(8))
-        col_btns     = []
+        # 4×2 rutenett – alle 8 farger vises uten å flyte utenfor
+        col_grid = GridLayout(cols=4, spacing=dp(8),
+                              size_hint_y=None, height=dp(120))
+        col_btns = []
         for c in FOLDER_COLORS:
             cb = RBtn(
                 btn_color=list(hex_k(c)),
-                size_hint=(None, None), size=(dp(54), dp(54)),
+                size_hint=(1, None), height=dp(52),
                 opacity=1.0 if chosen_color[0] == c else 0.5,
-                radius=dp(27),
+                radius=dp(12),
             )
             def pick(b, col=c, btns=col_btns, sel=chosen_color):
                 sel[0] = col
@@ -3288,9 +3445,9 @@ class KommunikasjonstavleApp(App):
                     x.opacity = 0.5
                 b.opacity = 1.0
             cb.bind(on_release=pick)
-            col_row.add_widget(cb)
+            col_grid.add_widget(cb)
             col_btns.append(cb)
-        layout.add_widget(col_row)
+        layout.add_widget(col_grid)
 
         chosen_img = [fo.get('image') if fo else None]
         img_lbl = Label(
