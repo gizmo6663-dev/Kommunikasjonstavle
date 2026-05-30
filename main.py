@@ -2215,7 +2215,11 @@ class KommunikasjonstavleApp(App):
             outer.add_widget(sub_section)
 
         # ── ASK-bilder ────────────────────────────────────────────
-        grid = GridLayout(cols=3, spacing=dp(8), padding=(dp(6), dp(6)), size_hint_y=None)
+        grid = GridLayout(
+            cols=3, spacing=dp(8), padding=(dp(6), dp(6)),
+            size_hint_y=None,
+            col_force_default=True, col_default_width=dp(108),
+        )
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
             grid.add_widget(self._make_item_tile(fo, it))
@@ -2302,7 +2306,10 @@ class KommunikasjonstavleApp(App):
             color=text_on(fo.get('color', '#4D96FF')),
             bold=True, font_size=fsp(13),
             radius=dp(10) if has_img else dp(14),
+            shorten=True, shorten_from='right',
+            halign='center', valign='middle',
         )
+        btn.bind(size=btn.setter('text_size'))
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
 
@@ -3238,10 +3245,13 @@ class KommunikasjonstavleApp(App):
         hc_off.bind(on_release=lambda *_: set_hc(False))
         hc_row.add_widget(hc_on); hc_row.add_widget(hc_off)
         outer.add_widget(hc_row)
-        outer.add_widget(Label(
+        _lbl_hc = Label(
             text='Svart bakgrunn og hvit tekst på alle knapper (WCAG AAA, 7:1). Gjelder fra neste skjerminnlasting.',
             size_hint_y=None, height=dp(44),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+            halign='left', valign='top')
+        _lbl_hc.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+        outer.add_widget(_lbl_hc)
 
         # ── Sveipenavigasjon ─────────────────────────────────────
         outer.add_widget(Label(text='Sveipenavigasjon:', size_hint_y=None, height=dp(32),
@@ -3259,10 +3269,13 @@ class KommunikasjonstavleApp(App):
         sw_off.bind(on_release=lambda *_: set_sw(False))
         sw_row.add_widget(sw_on); sw_row.add_widget(sw_off)
         outer.add_widget(sw_row)
-        outer.add_widget(Label(
+        _lbl_sw = Label(
             text='Sveip høyre for tilbake, venstre for neste. Kan forstyrre scrolling.',
             size_hint_y=None, height=dp(32),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+            halign='left', valign='middle')
+        _lbl_sw.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+        outer.add_widget(_lbl_sw)
 
         outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
@@ -3314,16 +3327,18 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True,
             color=(0.08, 0.10, 0.35, 1), halign='left'))
-        outer.add_widget(Label(
+        _lbl_img = Label(
             text=(
                 'Trykk "Last opp" i en mappe for å velge bilde.\n'
-                'Android-bildevelgeren apnes – ingen tillatelser trengs.\n\n'
-                'Bilder lagres i appens private mappe (user_data_dir/images).\n'
-                'Eksporter via "Last ned"-knappen for å kopiere til Nedlastinger.'
+                'Bildevelgeren åpnes – ingen tillatelser trengs.\n\n'
+                'Bilder lagres i appens private mappe.\n'
+                'Eksporter via "Last ned" for å kopiere til Nedlastinger.'
             ),
-            size_hint_y=None, height=dp(110),
+            size_hint_y=None, height=dp(100),
             font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
-            halign='left', valign='top'))
+            halign='left', valign='top')
+        _lbl_img.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+        outer.add_widget(_lbl_img)
 
 
         # ── Konfetti-knapp ───────────────────────────────────────
