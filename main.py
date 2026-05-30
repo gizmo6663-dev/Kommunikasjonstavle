@@ -98,6 +98,13 @@ _KV = """
         Line:
             rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
             width: 1.2
+        # 5. Subtil gradient – lys halvtransparent overlay øverst
+        Color:
+            rgba: 1, 1, 1, 0.13
+        RoundedRectangle:
+            pos: self.x, self.y + self.height * 0.5
+            size: self.width, self.height * 0.5
+            radius: [self.radius, self.radius, 0, 0]
 
 <RBox>:
     canvas.before:
@@ -124,32 +131,33 @@ _KV = """
 
 <NavBar>:
     canvas.before:
-        # Lys hvit bakgrunn for tydelig adskillelse fra innhold
+        # Mørk marineblå bunn-navbar (Material-stil)
         Color:
-            rgba: 0.99, 0.99, 1.0, 1.0
+            rgba: 0.10, 0.14, 0.24, 1.0
         Rectangle:
             pos: self.pos
             size: self.size
-        # Tynn separator-linje i bunn av navbaren
+        # Tynn lys separator øverst
         Color:
-            rgba: 0.72, 0.78, 0.92, 1.0
+            rgba: 1.0, 1.0, 1.0, 0.12
         Line:
-            points: self.x, self.y, self.right, self.y
-            width: 1.4
+            points: self.x, self.top, self.right, self.top
+            width: 1.2
 
 <BottomBar>:
     canvas.before:
+        # Lys tittellinje øverst
         Color:
-            rgba: 0.99, 0.99, 1.0, 1.0
+            rgba: 0.12, 0.16, 0.28, 1.0
         Rectangle:
             pos: self.pos
             size: self.size
-        # Tynn separator-linje i topp av bunnbaren
+        # Lys bunn-separator
         Color:
-            rgba: 0.72, 0.78, 0.92, 1.0
+            rgba: 1.0, 1.0, 1.0, 0.10
         Line:
-            points: self.x, self.top, self.right, self.top
-            width: 1.4
+            points: self.x, self.y, self.right, self.y
+            width: 1.0
 
 <Popup>:
     # Lys, nesten hvit bakgrunn – standard Kivy er mørk grå
@@ -386,6 +394,24 @@ def hex_p(h):
     """Hex-farge (#RRGGBB) → PIL RGB-tuple (0–255)."""
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+
+def text_on(bg_hex):
+    """
+    Returnerer enten mørk eller lys Kivy RGBA-farge for tekst
+    basert på bakgrunnens relative luminans (WCAG-formel).
+    Brukes for å sikre lesbar tekst på alle mappefarger.
+    """
+    h = bg_hex.lstrip('#')
+    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+    # sRGB linearisering
+    def lin(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    lum = 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
+    # Mørk tekst på lys bakgrunn, lys tekst på mørk bakgrunn
+    if lum > 0.35:
+        return (0.06, 0.07, 0.18, 1.0)   # nesten svart
+    return (1.0, 1.0, 1.0, 1.0)           # hvit
 
 def fsp(base_size):
     """
@@ -1317,12 +1343,15 @@ class KommunikasjonstavleApp(App):
         self._cur_scr    = 'home'
 
         root = BoxLayout(orientation='vertical')
-        self._navbar = self._build_navbar()
-        root.add_widget(self._navbar)
-        self._content = BoxLayout(orientation='vertical')
-        root.add_widget(self._content)
+        # Tittellinje øverst (slim, ikke-interaktiv, mørk)
         self._bottombar = self._build_bottombar()
         root.add_widget(self._bottombar)
+        # Innholdsflate i midten (tar all gjenværende plass)
+        self._content = BoxLayout(orientation='vertical')
+        root.add_widget(self._content)
+        # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
+        self._navbar = self._build_navbar()
+        root.add_widget(self._navbar)
 
         self._show_home()
         # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
@@ -1513,65 +1542,66 @@ class KommunikasjonstavleApp(App):
 
     def _build_navbar(self):
         """
-        Navigasjonsbar med tekstknapper (ingen emojier – Android
-        mangler emoji-fonter i Kivy-kontekst).
+        Navigasjonsbar plassert NEDERST for énhånds-bruk på store telefoner.
+        Mørk bakgrunn (via KV) med halvt-transparente pill-knapper.
+        Knappene er hvite/lyse for god kontrast mot mørk bunn.
         """
         bar = NavBar(
             orientation='horizontal',
-            size_hint_y=None, height=dp(66),
-            padding=(dp(6), dp(6)),
+            size_hint_y=None, height=dp(72),
+            padding=(dp(8), dp(8)),
             spacing=dp(6),
         )
 
-        # Ingen tittel-label her lenger – tittel er i bunnbaren.
-        # Knappene fordeles jevnt (size_hint_x=1, ikke fast bredde).
-        btn_kw = dict(
-            size_hint_y=None, height=dp(54),
-        )
+        # Halv-transparente pill-knapper mot mørk bakgrunn
+        # Farger er lysere/mer saturerte enn normalt siden de
+        # skal leses mot mørk (#1a2340) bakgrunn.
+        btn_kw = dict(size_hint_y=None, height=dp(56), radius=dp(14))
 
         self._btn_back = mk_btn(
-            '  Tilbake', hex_k('#4D96FF'), fs=13,
+            'Tilbake', hex_k('#2979FF'), fg=(1,1,1,1), fs=14,
             cb=self.go_back, **btn_kw,
         )
         self._btn_home = mk_btn(
-            'Hjem', hex_k('#6BCB77'), fs=13,
+            'Hjem', hex_k('#00C853'), fg=(1,1,1,1), fs=14,
             cb=self.go_home, **btn_kw,
         )
         self._btn_draw = mk_btn(
-            'Tegn', hex_k('#FF9F43'), fs=13,
+            'Tegn', hex_k('#FF6D00'), fg=(1,1,1,1), fs=14,
             cb=self.go_draw, **btn_kw,
         )
         self._btn_edit = mk_btn(
-            'Red.', hex_k('#C77DFF'), fs=13,
+            'Red.', hex_k('#AA00FF'), fg=(1,1,1,1), fs=14,
             cb=self.toggle_edit, **btn_kw,
         )
+        self._btn_settings_nav = mk_btn(
+            'Innst.', hex_k('#455A64'), fg=(1,1,1,1), fs=13,
+            cb=lambda *_: self._nav_settings(), **btn_kw,
+        )
 
-        for w in [self._btn_back, self._btn_home, self._btn_draw, self._btn_edit]:
+        for w in [self._btn_back, self._btn_home, self._btn_draw,
+                  self._btn_edit, self._btn_settings_nav]:
             bar.add_widget(w)
         return bar
 
     def _build_bottombar(self):
         """
-        Bunnbar: tittel til venstre, Innstillinger-knapp til høyre.
+        Slim mørk tittellinje øverst – viser kun skjermnavnet.
+        Innstillinger er flyttet til navbar-knappen.
+        Høyde: 46dp – kompakt men lesbar.
         """
         bar = BottomBar(
-            size_hint_y=None, height=dp(54),
-            padding=(dp(6), dp(4)),
-            spacing=dp(6),
+            size_hint_y=None, height=dp(46),
+            padding=(dp(14), dp(6)),
+            spacing=dp(0),
         )
         self._lbl_title = Label(
             text=APP_TITLE, bold=True, font_size=sp(15),
-            color=(0.08, 0.10, 0.35, 1),
-            halign='left', valign='middle',
+            color=(1.0, 1.0, 1.0, 0.92),   # hvit tekst mot mørk bakgrunn
+            halign='center', valign='middle',
         )
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
         bar.add_widget(self._lbl_title)
-        bar.add_widget(mk_btn(
-            'Innst.', hex_k('#78909C'),
-            h=dp(46), fs=13,
-            size_hint_x=None, width=dp(72),
-            cb=lambda *_: self._nav_settings(),
-        ))
         return bar
 
     def _set_title(self, t):
@@ -1707,7 +1737,7 @@ class KommunikasjonstavleApp(App):
             text=fo['name'],
             size_hint=(1, None), height=btn_h,
             btn_color=list(hex_k(fo['color'])),
-            color=(0.05, 0.05, 0.2, 1),
+            color=text_on(fo['color']),
             bold=True, font_size=fsp(16),
             radius=dp(16),
         )
@@ -1828,7 +1858,7 @@ class KommunikasjonstavleApp(App):
             img_box = RBox(
                 size_hint=(1, None), height=IMG_H,
                 box_color=(1.0, 1.0, 1.0, 0.0),
-                radius=dp(10),
+                radius=dp(14),
                 padding=0,
             )
             img_box.add_widget(TappableImage(
@@ -1843,7 +1873,7 @@ class KommunikasjonstavleApp(App):
             size_hint=(1, None), height=lbl_h,
             btn_color=list(hex_k(fo.get('color', '#4D96FF'))),
             color=(1, 1, 1, 1), bold=True, font_size=fsp(11),
-            radius=dp(10),
+            radius=dp(14),
         )
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
@@ -2028,7 +2058,7 @@ class KommunikasjonstavleApp(App):
                 btn_color=list(hex_k(TOOL_COLORS[key])),
                 color=(1, 1, 1, 1),
                 bold=True,
-                radius=dp(10),
+                radius=dp(14),
             )
             if key == 'pen':
                 def pen_tap(btn, *_):
@@ -2348,7 +2378,7 @@ class KommunikasjonstavleApp(App):
             btn_color=list(hex_k('#4ECDC4')),
             color=(0.02, 0.12, 0.18, 1),
             bold=True, font_size=sp(17),
-            radius=dp(12),
+            radius=dp(14),
         )
         main_btn.bind(on_release=lambda b, t=tap: t())
         tile.add_widget(main_btn)
@@ -2549,7 +2579,7 @@ class KommunikasjonstavleApp(App):
                 row = RBox(
                     size_hint_y=None, height=dp(52),
                     spacing=dp(6), padding=(dp(6), dp(4)),
-                    box_color=(0.96, 0.97, 1.0, 1.0), radius=dp(10),
+                    box_color=(0.96, 0.97, 1.0, 1.0), radius=dp(14),
                     orientation='horizontal',
                 )
                 # Miniatyr
@@ -2929,7 +2959,7 @@ class KommunikasjonstavleApp(App):
         warn_box = RBox(
             size_hint_y=None, height=dp(56),
             box_color=(1.0, 0.94, 0.92, 1.0),
-            radius=dp(10), padding=(dp(10), dp(8)),
+            radius=dp(14), padding=(dp(10), dp(8)),
         )
         warn_box.add_widget(Label(
             text='Advarsel: Last ikke opp bilder av barn',
@@ -3136,7 +3166,7 @@ class KommunikasjonstavleApp(App):
                 row = RBox(orientation='horizontal', size_hint_y=None, height=dp(52),
                     spacing=dp(6), padding=(dp(8), dp(4)),
                     box_color=(0.84, 0.96, 0.84, 1.0) if is_cur else (0.97, 0.97, 1.0, 1.0),
-                    radius=dp(10))
+                    radius=dp(14))
                 row.add_widget(Label(
                     text=f'  {e.get("start","?")} - {e.get("end","?")}  {e["name"]}',
                     font_size=fsp(14), bold=is_cur,
@@ -3433,7 +3463,7 @@ class KommunikasjonstavleApp(App):
             if state == 'matched':
                 cell = RBox(orientation='vertical', size_hint_y=None, height=h,
                     spacing=dp(2), padding=dp(3),
-                    box_color=(0.84, 0.96, 0.84, 1.0), radius=dp(12))
+                    box_color=(0.84, 0.96, 0.84, 1.0), radius=dp(14))
                 cell.add_widget(Image(source=card['path'], size_hint=(1, None), height=dp(82),
                     allow_stretch=True, keep_ratio=True))
                 cell.add_widget(Label(text=card['name'], font_size=fsp(11),
@@ -3442,7 +3472,7 @@ class KommunikasjonstavleApp(App):
             elif state == 'revealed':
                 cell = RBox(orientation='vertical', size_hint_y=None, height=h,
                     spacing=dp(2), padding=dp(3),
-                    box_color=(1.0, 0.95, 0.80, 1.0), radius=dp(12))
+                    box_color=(1.0, 0.95, 0.80, 1.0), radius=dp(14))
                 cell.add_widget(Image(source=card['path'], size_hint=(1, None), height=dp(82),
                     allow_stretch=True, keep_ratio=True))
                 cell.add_widget(Label(text=card['name'], font_size=fsp(11),
@@ -3450,9 +3480,9 @@ class KommunikasjonstavleApp(App):
                     color=(0.50, 0.35, 0.00, 1), halign='center'))
             else:
                 cell = RBox(size_hint_y=None, height=h,
-                    box_color=list(hex_k('#4D96FF')), radius=dp(12))
+                    box_color=list(hex_k('#4D96FF')), radius=dp(14))
                 btn  = RBtn(text='?', btn_color=list(hex_k('#4D96FF')),
-                    color=(1, 1, 1, 1), bold=True, font_size=fsp(32), radius=dp(12))
+                    color=(1, 1, 1, 1), bold=True, font_size=fsp(32), radius=dp(14))
                 btn.bind(on_release=lambda b, i=idx: self._bildepar_tap(i))
                 cell.add_widget(btn)
             self._bp_grid.add_widget(cell)
@@ -3564,7 +3594,7 @@ class KommunikasjonstavleApp(App):
                 cb = RBtn(btn_color=list(hex_k(c)),
                           size_hint=(1, None), height=dp(52),
                           opacity=1.0 if chosen_color[0] == c else 0.5,
-                          radius=dp(12))
+                          radius=dp(14))
                 def pick(b, col=c, btns=col_btns, sel=chosen_color):
                     sel[0] = col
                     for x in btns: x.opacity = 0.5
@@ -3778,7 +3808,7 @@ class KommunikasjonstavleApp(App):
             text=sub['name'],
             size_hint=(1, None), height=btn_h,
             btn_color=list(hex_k(sub.get('color', '#4ECDC4'))),
-            color=(0.05, 0.05, 0.2, 1),
+            color=text_on(sub.get('color', '#4ECDC4')),
             bold=True, font_size=fsp(16), radius=dp(16),
         )
         btn.bind(on_release=lambda b, t=tap: t())
@@ -3840,7 +3870,7 @@ class KommunikasjonstavleApp(App):
         col_btns = []
         for c in FOLDER_COLORS:
             cb = RBtn(btn_color=list(hex_k(c)), size_hint=(1,None), height=dp(52),
-                      opacity=1.0 if chosen[0]==c else 0.5, radius=dp(12))
+                      opacity=1.0 if chosen[0]==c else 0.5, radius=dp(14))
             def pick(b, col=c, btns=col_btns, sel=chosen):
                 sel[0]=col
                 for x in btns: x.opacity=0.5
