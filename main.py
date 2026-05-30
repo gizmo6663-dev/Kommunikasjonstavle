@@ -590,19 +590,24 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         r, g, bv, a = btn.btn_color
         btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
         Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
-        # Haptic
+        # Haptic – VibrationEffect for Android 8+ (API 26+)
         if platform == 'android':
             try:
-                from plyer import vibrator
-                vibrator.vibrate(30)
-            except Exception:
+                from jnius import autoclass
+                from android import mActivity
+                Vibrator = autoclass('android.os.Vibrator')
+                vib = mActivity.getSystemService(Vibrator.VIBRATOR_SERVICE)
                 try:
-                    from jnius import autoclass
-                    from android import mActivity
-                    vib = mActivity.getSystemService('vibrator')
-                    vib.vibrate(30)
+                    # Android 8+ (API 26+) – VibrationEffect
+                    VibrationEffect = autoclass('android.os.VibrationEffect')
+                    effect = VibrationEffect.createOneShot(
+                        40, VibrationEffect.DEFAULT_AMPLITUDE)
+                    vib.vibrate(effect)
                 except Exception:
-                    pass
+                    # Fallback for eldre Android
+                    vib.vibrate(40)
+            except Exception:
+                pass
 
     def _on_release_anim(btn, *_):
         btn.btn_color = list(orig_color)
@@ -1579,13 +1584,37 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
 
     def _show_splash_overlay(self):
-        """
-        Kivy-logoen vises av Android FØR Python starter, styrt av
-        android.presplash i buildozer.spec. Den kan ikke dekkes over
-        med Python-kode. Denne metoden gjør derfor ingenting – det er
-        buildozer.spec sin android.presplash som er splashscreenen.
-        """
+        """android.presplash i buildozer.spec håndterer splash."""
         pass
+
+    def _toggle_confetti_btn(self, enable):
+        """
+        Viser/skjuler vedvarende konfetti-knapp.
+        Bruker mk_btn direkte – den pålitelige løsningen i denne appen.
+        Knappen legges til Window og posisjoneres manuelt.
+        """
+        self._confetti_btn_visible = enable
+        if enable:
+            if self._confetti_btn_widget:
+                return
+            S  = dp(58)
+            M  = dp(12)
+            WW, WH = Window.size
+            btn = mk_btn(
+                'Konfetti',
+                hex_k('#FF6B6B'),
+                h=S, fs=12,
+                size_hint=(None, None),
+                width=S,
+            )
+            btn.pos = (WW - S - M, WH - S - M - dp(50))
+            btn.bind(on_release=lambda *_: launch_confetti(3.0))
+            Window.add_widget(btn)
+            self._confetti_btn_widget = btn
+        else:
+            if self._confetti_btn_widget:
+                Window.remove_widget(self._confetti_btn_widget)
+                self._confetti_btn_widget = None
 
     def build(self):
         setup_logging()
