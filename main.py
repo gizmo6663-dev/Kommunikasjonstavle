@@ -862,26 +862,16 @@ def _open_android_picker(callback):
         intent    = Intent(Intent.ACTION_OPEN_DOCUMENT)
         intent.addCategory(Intent.CATEGORY_OPENABLE)
         intent.setType('image/*')
+        # Flervalg: brukeren kan velge flere bilder samtidig
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, True)
 
-        def on_activity_result(request_code, result_code, data):
-            if request_code != _PICK_IMAGE_REQUEST:
-                return
-            activity_unbind(on_activity_result=on_activity_result)  # fjern binding
-            cb = _pick_image_callback[0]
-            _pick_image_callback[0] = None
-            if result_code != -1 or data is None:   # RESULT_OK = -1
-                _plog('Bildevelger: bruker avbrøt eller ingen data')
-                if cb:
-                    Clock.schedule_once(lambda *_: cb(None), 0)
-                return
-            uri = data.getData()
-            _plog(f'Bildevelger: URI mottatt: {uri}')
-            # Finn filnavn fra URI
+        def _uri_to_path(uri):
+            """Kopierer én URI til IMG_DIR og returnerer lokal sti."""
             try:
-                Cursor = autoclass('android.database.Cursor')
                 OpenableColumns = autoclass('android.provider.OpenableColumns')
                 from android import mActivity as act
-                cursor = act.getContentResolver().query(uri, None, None, None, None)
+                cursor = act.getContentResolver().query(
+                    uri, None, None, None, None)
                 fname = 'bilde_' + str(uuid.uuid4())[:8] + '.jpg'
                 if cursor and cursor.moveToFirst():
                     idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -892,13 +882,50 @@ def _open_android_picker(callback):
                 _plog(f'Filnavn-lookup feil: {e}')
                 fname = 'bilde_' + str(uuid.uuid4())[:8] + '.jpg'
             dst = os.path.join(IMG_DIR, fname)
-            ok  = _copy_content_uri(uri, dst)
+            return dst if _copy_content_uri(uri, dst) else None
+
+        def on_activity_result(request_code, result_code, data):
+            if request_code != _PICK_IMAGE_REQUEST:
+                return
+            activity_unbind(on_activity_result=on_activity_result)
+            cb = _pick_image_callback[0]
+            _pick_image_callback[0] = None
+            if result_code != -1 or data is None:
+                _plog('Bildevelger: bruker avbrøt eller ingen data')
+                if cb:
+                    Clock.schedule_once(lambda *_: cb(None), 0)
+                return
+
+            paths = []
+            # Flervalg: ClipData
+            clip = data.getClipData()
+            if clip and clip.getItemCount() > 0:
+                for i in range(clip.getItemCount()):
+                    uri = clip.getItemAt(i).getUri()
+                    p   = _uri_to_path(uri)
+                    if p:
+                        paths.append(p)
+                _plog(f'Flervalg: {len(paths)} bilder')
+            else:
+                # Enkeltvalg: getData()
+                uri = data.getData()
+                if uri:
+                    p = _uri_to_path(uri)
+                    if p:
+                        paths.append(p)
+
             if cb:
-                Clock.schedule_once(lambda *_: cb(dst if ok else None), 0)
+                if len(paths) == 1:
+                    Clock.schedule_once(lambda *_: cb(paths[0]), 0)
+                elif len(paths) > 1:
+                    # Send liste – callback som støtter flervalg
+                    Clock.schedule_once(lambda *_: cb(paths), 0)
+                else:
+                    Clock.schedule_once(lambda *_: cb(None), 0)
 
         activity_bind(on_activity_result=on_activity_result)
         mActivity.startActivityForResult(intent, _PICK_IMAGE_REQUEST)
-        _plog('ACTION_OPEN_DOCUMENT startet')
+        _plog('ACTION_OPEN_DOCUMENT startet (flervalg aktivert)')
     except Exception as e:
         _plog(f'_open_android_picker feil: {e}')
         logging.exception('_open_android_picker: feil')
@@ -2188,7 +2215,7 @@ class KommunikasjonstavleApp(App):
             outer.add_widget(sub_section)
 
         # ── ASK-bilder ────────────────────────────────────────────
-        grid = GridLayout(cols=2, spacing=dp(8), padding=(dp(6), dp(6)), size_hint_y=None)
+        grid = GridLayout(cols=3, spacing=dp(8), padding=(dp(6), dp(6)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
             grid.add_widget(self._make_item_tile(fo, it))
@@ -2218,7 +2245,7 @@ class KommunikasjonstavleApp(App):
         # Vi gjør bildet kvadratisk ved å sette IMG_H lik forventet bredde.
         # 4-kol grid, spacing dp(6), padding dp(4) → ca 82dp per kol på 360dp skjerm.
         # Setter IMG_H litt over dette for store skjermer, justeres med size_hint.
-        IMG_H  = dp(165)  # 2-kol: tilnærmet kolonne-bredde for kvadratisk bilde
+        IMG_H  = dp(110)  # 3-kol: fast høyde = kolonne-bredde ≈ 110dp
         LBL_H  = dp(36)
         ACT_H  = dp(36)
         TILE_H = (IMG_H + LBL_H + ACT_H + dp(6)) if edit else (IMG_H + LBL_H + dp(4))
@@ -4557,21 +4584,31 @@ class KommunikasjonstavleApp(App):
 
         def _do_upload():
             """Selve opplastingen – kjøres etter advarsel er godkjent."""
-            def on_picked(dst):
-                if not dst:
+            def on_picked(result):
+                if not result:
                     self._toast('Ingen bilde valgt.')
                     return
-                fname = os.path.basename(dst)
-                name_suggestion = os.path.splitext(fname)[0].replace('_', ' ')
-                fo['items'].append({
-                    'id':    str(uuid.uuid4()),
-                    'name':  name_suggestion,
-                    'image': dst,
-                })
-                save_struct(self.data)
-                self._toast(f'Lagt til: {fname}')
-                self._show_folder(fid=fo['id'])
-                logging.info('Bilde lastet opp til mappe: %s', fname)
+                # Støtter både enkeltbilde (str) og flervalg (list)
+                paths = result if isinstance(result, list) else [result]
+                added = 0
+                for dst in paths:
+                    if not dst or not os.path.exists(dst):
+                        continue
+                    fname = os.path.basename(dst)
+                    name  = os.path.splitext(fname)[0].replace('_', ' ')
+                    fo['items'].append({
+                        'id':    str(uuid.uuid4()),
+                        'name':  name,
+                        'image': dst,
+                    })
+                    added += 1
+                if added:
+                    save_struct(self.data)
+                    msg = (f'Lagt til: {added} bilder'
+                           if added > 1 else f'Lagt til: {os.path.basename(paths[0])}')
+                    self._toast(msg)
+                    self._show_folder(fid=fo['id'])
+                    logging.info('Lastet opp %d bilde(r) til mappe', added)
             _open_android_picker(on_picked)
     def _download_image(self, src_path):
         if not src_path or not os.path.exists(src_path):
