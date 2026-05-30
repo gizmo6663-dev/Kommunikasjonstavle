@@ -4480,7 +4480,7 @@ class KommunikasjonstavleApp(App):
             vbox.add_widget(mk_btn(
                 dest['name'],
                 hex_k(dest['color']),
-                color=(0.05, 0.05, 0.2, 1),
+                fg=text_on(dest['color']),  # bruk fg=, ikke color= (krasjer i mk_btn)
                 h=dp(62), fs=17,
                 cb=make_move(),
             ))
