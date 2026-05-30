@@ -61,8 +61,7 @@ orientation = portrait
 fullscreen = 0
 
 # ─── Ikoner og splash ─────────────────────────────────────────────
-android.icon        = icon.png
-# android.icon.adaptive_foreground = assets/icon.png
+icon.filename = %(source.dir)s/icon.png
 android.presplash       = assets/splash.png
 android.presplash_color = #12183A
 # (se over – satt fra splash)
