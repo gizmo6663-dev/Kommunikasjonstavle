@@ -1360,6 +1360,48 @@ class GradientColorPicker(Image):
         touch.ungrab(self); self._grabbed=None; return True
 
 
+def smart_input(text='', hint='', on_save=None, **kw):
+    """
+    Forbedret TextInput for navn-felt:
+    - Markerer all tekst ved fokus → skriv rett over uten å slette manuelt
+    - Stor forbokstav (capitalize) ved oppstart
+    - on_text_validate (Enter/OK på tastatur) kaller on_save
+    - Hintfarge for tom tilstand
+    """
+    kw.setdefault('multiline',    False)
+    kw.setdefault('size_hint_y',  None)
+    kw.setdefault('height',       dp(52))
+    kw.setdefault('font_size',    sp(16))
+    kw.setdefault('padding',      (dp(10), dp(12)))
+    kw.setdefault('hint_text',    hint)
+    kw.setdefault('hint_text_color', [0.55, 0.55, 0.60, 1])
+
+    # Stor forbokstav på Android
+    inp = TextInput(text=text, **kw)
+    inp.keyboard_suggestions = True
+
+    def on_focus(widget, focused):
+        if focused:
+            # Marker alt ved fokus – uansett om det er eksisterende tekst
+            Clock.schedule_once(lambda *_: widget.select_all(), 0.05)
+
+    def _capitalize_first(widget, val):
+        # Første bokstav stor mens brukeren skriver
+        if val and val[0].islower():
+            widget.text = val[0].upper() + val[1:]
+            # Flytt cursor til slutten
+            Clock.schedule_once(
+                lambda *_: setattr(widget, 'cursor', (len(widget.text), 0)), 0)
+
+    inp.bind(focus=on_focus)
+    inp.bind(text=_capitalize_first)
+
+    if on_save:
+        inp.bind(on_text_validate=lambda *_: on_save())
+
+    return inp
+
+
 # ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
@@ -1412,8 +1454,9 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._navbar)
 
         self._show_home()
+        # Bind tilbake-knapp (ESC / Android Back)
+        Window.bind(on_keyboard=self.on_keyboard)
         # Tillatelsesforespørsel fra build() – samme mønster som Eldritch Portal.
-        # Må ligge her (ikke on_start) for riktig timing på Android.
         Clock.schedule_once(lambda dt: request_android_permissions(), 0.5)
         return root
 
@@ -1429,6 +1472,23 @@ class KommunikasjonstavleApp(App):
     #  tilgang til bilder spesifikt – en langt mer passende
     #  dialog enn den inngripende MANAGE_EXTERNAL_STORAGE.
     # ══════════════════════════════════════════════════
+
+    def on_keyboard(self, window, key, scancode, codepoint, modifier):
+        """
+        Fanger Androids tilbake-knapp (keycode 27 = ESC = Android Back).
+        Navigerer tilbake i appen i stedet for å lukke den.
+        Dersom vi er på hjemskjermen og nav_stack er tom, lukkes appen normalt.
+        """
+        if key == 27:   # ESC / Android Back
+            if self.nav_stack:
+                self.go_back()
+                return True   # konsumér – hindrer app-lukking
+            elif self._cur_scr != 'home':
+                self.go_home()
+                return True
+            else:
+                return False  # hjemskjerm + tom stack → lukk appen
+        return False
 
     def on_start(self):
         """
@@ -1528,10 +1588,7 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(26),
             font_size=fsp(13), color=(0.3, 0.3, 0.4, 1), halign='left',
         ))
-        name_inp = TextInput(
-            text=name_suggestion,
-            multiline=False, size_hint_y=None, height=dp(50), font_size=sp(15),
-        )
+        name_inp = smart_input(text=name_suggestion, hint='Navn på symbol')
         layout.add_widget(name_inp)
 
         sv   = ScrollView(size_hint_y=None, height=dp(220))
@@ -2638,9 +2695,10 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
-        name_inp = TextInput(
+        name_inp = smart_input(
             text='' if new_seq else seq['name'],
-            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16),
+            hint='Navn på handlingsrekken',
+            on_save=lambda: on_save(),
         )
         layout.add_widget(name_inp)
 
@@ -3336,8 +3394,11 @@ class KommunikasjonstavleApp(App):
 
         layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
             font_size=fsp(15), color=(0, 0, 0, 1), halign='left'))
-        name_inp = TextInput(text='' if new else entry['name'],
-            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16))
+        name_inp = smart_input(
+            text='' if new else entry['name'],
+            hint='Navn på aktivitet',
+            on_save=on_save,
+        )
         layout.add_widget(name_inp)
 
         time_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
@@ -3760,9 +3821,10 @@ class KommunikasjonstavleApp(App):
             text='Mappenavn:', size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
-        name_inp = TextInput(
+        name_inp = smart_input(
             text='' if new else fo['name'],
-            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16),
+            hint='Mappenavn',
+            on_save=lambda: on_ok(),
         )
         layout.add_widget(name_inp)
 
@@ -3905,9 +3967,10 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0, 0, 0, 1), halign='left',
         ))
-        name_inp = TextInput(
+        name_inp = smart_input(
             text='' if new else it['name'],
-            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16),
+            hint='Symbolnavn',
+            on_save=lambda: on_ok(),
         )
         layout.add_widget(name_inp)
 
@@ -4059,8 +4122,11 @@ class KommunikasjonstavleApp(App):
 
         layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
             font_size=sp(15), color=(0,0,0,1), halign='left'))
-        name_inp = TextInput(text='' if new else sub['name'],
-            multiline=False, size_hint_y=None, height=dp(52), font_size=sp(16))
+        name_inp = smart_input(
+            text='' if new else sub['name'],
+            hint='Undermappenavn',
+            on_save=on_ok,
+        )
         layout.add_widget(name_inp)
 
         layout.add_widget(Label(text='Farge:', size_hint_y=None, height=dp(26),
