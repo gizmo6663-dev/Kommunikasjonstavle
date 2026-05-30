@@ -2188,7 +2188,7 @@ class KommunikasjonstavleApp(App):
             outer.add_widget(sub_section)
 
         # ── ASK-bilder ────────────────────────────────────────────
-        grid = GridLayout(cols=4, spacing=dp(6), padding=(dp(4), dp(4)), size_hint_y=None)
+        grid = GridLayout(cols=2, spacing=dp(8), padding=(dp(6), dp(6)), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in fo['items']:
             grid.add_widget(self._make_item_tile(fo, it))
@@ -2200,74 +2200,97 @@ class KommunikasjonstavleApp(App):
 
     def _make_item_tile(self, fo, it):
         """
-        ASK-bilde-kort: bilde klippet innenfor RBox-rammen + etikett.
-        4-kolonne grid betyr smalere fliser – tilpassede størrelser.
+        ASK-bilde-kort: kvadratisk bilde øverst + etikett-knapp under.
+
+        Designprinsipper:
+        - Kun ÉN ytre ramme (RBox på cell-nivå) – ingen nestet RBox for bildet
+        - Bildet er alltid kvadratisk (keep_ratio=False, allow_stretch=True)
+          fordi alle opplastede symbolbilder er kvadratiske
+        - Hvit bakgrunn bak bildet tegnes direkte i BoxLayout via canvas.before
+        - Ingen dobbel bakgrunn eller overflow
         """
         img_path = it.get('image') or ''
         has_img  = bool(img_path and os.path.exists(img_path))
         edit     = self.edit_mode
 
-        IMG_H  = dp(78)
-        LBL_H  = dp(34)
+        # Bilde nesten like bredt som etikett:
+        # cell har padding dp(4) på hver side → bilde-bredde = kolonne - dp(8)
+        # Vi gjør bildet kvadratisk ved å sette IMG_H lik forventet bredde.
+        # 4-kol grid, spacing dp(6), padding dp(4) → ca 82dp per kol på 360dp skjerm.
+        # Setter IMG_H litt over dette for store skjermer, justeres med size_hint.
+        IMG_H  = dp(165)  # 2-kol: tilnærmet kolonne-bredde for kvadratisk bilde
+        LBL_H  = dp(36)
         ACT_H  = dp(36)
-        TILE_H = (IMG_H + LBL_H + ACT_H + dp(14)) if edit else (IMG_H + LBL_H + dp(10))
+        TILE_H = (IMG_H + LBL_H + ACT_H + dp(6)) if edit else (IMG_H + LBL_H + dp(4))
 
         if edit:
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
             tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
 
-        # Kortcontainer med farget bakgrunn fra mappens farge (tonet)
+        # Én enkelt ytre ramme – tonet mappefarge
+        # padding=0 på sidene så bildet fyller full bredde
         r, g, b, _ = hex_k(fo.get('color', '#4D96FF'))
-        card_col   = (r * 0.15 + 0.85, g * 0.15 + 0.85, b * 0.15 + 0.85, 1.0)
-
+        card_col   = (r*0.12 + 0.88, g*0.12 + 0.88, b*0.12 + 0.88, 1.0)
         cell = RBox(
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
-            spacing=dp(2),
-            padding=(dp(3), dp(3)),
+            spacing=0,
+            padding=(0, 0, 0, dp(3)),  # ingen sidepadding – bilde fyller full bredde
             box_color=list(card_col),
             radius=dp(14),
         )
 
         if has_img:
-            # Bilde fyller RBox nøyaktig – ingen overflow
-            img_box = RBox(
+            img_wrap = BoxLayout(
                 size_hint=(1, None), height=IMG_H,
-                box_color=(1.0, 1.0, 1.0, 0.0),
-                radius=dp(14),
-                padding=0,
             )
-            img_box.add_widget(TappableImage(
-                tap, source=img_path,
-                allow_stretch=True, keep_ratio=True,
-            ))
-            cell.add_widget(img_box)
+            # Hvit bakgrunn bak bildet direkte i canvas
+            with img_wrap.canvas.before:
+                from kivy.graphics import Color as KC, RoundedRectangle as KRR
+                KC(1.0, 1.0, 1.0, 1.0)
+                self._last_img_rr = KRR(
+                    pos=img_wrap.pos,
+                    size=img_wrap.size,
+                    radius=[dp(10), dp(10), dp(2), dp(2)],
+                )
+            def _upd_rr(w, *_, rr=self._last_img_rr):
+                rr.pos  = w.pos
+                rr.size = w.size
+            img_wrap.bind(pos=_upd_rr, size=_upd_rr)
 
-        lbl_h = LBL_H if has_img else (dp(100) if not edit else dp(78))
+            img_wrap.add_widget(TappableImage(
+                tap, source=img_path,
+                allow_stretch=True,
+                keep_ratio=False,   # alltid kvadratisk – fyller hele sonen
+            ))
+            cell.add_widget(img_wrap)
+
+        # Etikett-knapp – fyller resten av kortet
+        lbl_h = LBL_H if has_img else (IMG_H + LBL_H)
         btn = RBtn(
             text=it['name'],
             size_hint=(1, None), height=lbl_h,
             btn_color=list(hex_k(fo.get('color', '#4D96FF'))),
             color=text_on(fo.get('color', '#4D96FF')),
             bold=True, font_size=fsp(13),
-            radius=dp(14),
+            radius=dp(10) if has_img else dp(14),
         )
         btn.bind(on_release=lambda b: tap())
         cell.add_widget(btn)
 
         if edit:
-            row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(2))
+            row = BoxLayout(size_hint_y=None, height=ACT_H, spacing=dp(3))
             row.add_widget(mk_btn(
-                'Flytt', hex_k('#FF9F43'), h=ACT_H - dp(2), fs=10,
+                'Flytt', hex_k('#FF9F43'), h=ACT_H-dp(2), fs=10,
                 cb=lambda *_, f=fo, i=it: self._move_item_popup(f, i),
             ))
             row.add_widget(mk_btn(
-                'Ned', hex_k('#6BCB77'), h=ACT_H - dp(2), fs=10,
+                'Ned', hex_k('#6BCB77'), h=ACT_H-dp(2), fs=10,
                 cb=lambda *_, p=img_path: self._download_image(p),
             ))
             row.add_widget(mk_btn(
-                'Slett', hex_k('#FF6B6B'), h=ACT_H - dp(2), fs=10,
+                'Slett', hex_k('#FF6B6B'), h=ACT_H-dp(2), fs=10,
                 cb=lambda *_, f=fo, i=it: self._del_item(f, i),
             ))
             cell.add_widget(row)
