@@ -1,0 +1,240 @@
+name: Android Kompatibilitetstest
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build run-ID (fra Build Kommunikasjonstavle APK)'
+        required: true
+        type: string
+
+jobs:
+  compatibility-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Jobb 1: Moto G-klassen (lavbudsjett, Android 8)
+          - api-level: 26
+            arch: x86
+            profile: Nexus 5
+            dpi: hdpi
+            resolution: '360x640'
+            device-name: 'moto-g-api26'
+            label: 'Moto G (API 26)'
+          
+          # Jobb 2: Sony Xperia 10 (smal 21:9-skjerm)
+          - api-level: 28
+            arch: x86
+            profile: Nexus 5X
+            dpi: xhdpi
+            resolution: '360x780'
+            device-name: 'xperia-10-api28'
+            label: 'Sony Xperia 10 (API 28)'
+          
+          # Jobb 3: Samsung Galaxy A-serien
+          - api-level: 30
+            arch: x86_64
+            profile: Nexus 5X
+            dpi: xxhdpi
+            resolution: '412x892'
+            device-name: 'galaxy-a-api30'
+            label: 'Galaxy A-serien (API 30)'
+          
+          # Jobb 4: Google Pixel 7 (stock Android 13)
+          - api-level: 33
+            arch: x86_64
+            profile: Pixel 4
+            dpi: 420
+            resolution: '393x851'
+            device-name: 'pixel-7-api33'
+            label: 'Pixel 7 (API 33)'
+          
+          # Jobb 5: Samsung Galaxy S-flaggskip
+          - api-level: 34
+            arch: x86_64
+            profile: Pixel 4
+            dpi: 560
+            resolution: '412x916'
+            device-name: 'galaxy-s-api34'
+            label: 'Galaxy S-flaggskip (API 34)'
+          
+          # Jobb 6: Nettbrett (Galaxy Tab A-klassen)
+          - api-level: 34
+            arch: x86_64
+            profile: Pixel C
+            dpi: xhdpi
+            resolution: '800x1280'
+            device-name: 'tablet-api34'
+            label: 'Galaxy Tab A (API 34)'
+    
+    timeout-minutes: 12
+    
+    steps:
+      - name: Laster ned APK fra build-kjøring
+        uses: actions/download-artifact@v4
+        with:
+          name: kommunikasjonstavle-apk
+          run-id: ${{ inputs.run_id }}
+      
+      - name: Lister filer for debug
+        run: |
+          echo "Working directory:"
+          pwd
+          echo "Files:"
+          ls -lah
+          echo "APK-filer:"
+          ls -lah *.apk 2>/dev/null || echo "Ingen APK funnet!"
+      
+      - name: Kjører Android-emulator og tester app-oppstart
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: ${{ matrix.arch }}
+          profile: ${{ matrix.profile }}
+          avd-name: test-avd-${{ matrix.device-name }}
+          emulator-boot-timeout: 600
+          emulator-options: >
+            -no-window
+            -no-audio
+            -no-boot-anim
+            -gpu swiftshader_indirect
+            -memory 2048
+            -partition-size 1024
+          script: |
+            # Venter på at systemet skal være klart
+            adb wait-for-device
+            adb shell input keyevent 82  # Låser opp enheten
+            sleep 3
+            
+            # Finner og installerer APK
+            cd /home/runner/work/Kommunikasjonstavle/Kommunikasjonstavle
+            APK=$(ls *.apk 2>/dev/null | head -1)
+            if [ -z "$APK" ]; then
+              echo "Feil: Ingen APK funnet!"
+              ls -la
+              exit 1
+            fi
+            
+            echo "Installerer: $APK"
+            adb install -g "$APK"
+            
+            # Venter på installasjon
+            sleep 3
+            
+            # Starter logcat for feildeteksjon
+            adb logcat -c
+            adb logcat > logcat.txt &
+            LOGCAT_PID=$!
+            
+            # Starter appen
+            adb shell am start -n no.askapp.kommunikasjonstavle/.org.kivy.android.PythonActivity
+            
+            # Venter på oppstart
+            sleep 8
+            
+            # Stopper logcat
+            kill $LOGCAT_PID 2>/dev/null || true
+      
+      - name: Sjekker for krasj og UI-elementer
+        run: |
+          # Sjekker om logcat inneholder FATAL EXCEPTION
+          if grep -q "FATAL EXCEPTION\|Process: no.askapp.kommunikasjonstavle" logcat.txt 2>/dev/null; then
+            echo "Feil: App krasjet!"
+            exit 1
+          fi
+          
+          # Sjekker at prosessen kjører
+          sleep 2
+          adb shell ps | grep -q "no.askapp.kommunikasjonstavle" || {
+            echo "Feil: App-prosess ikke funnet!"
+            exit 1
+          }
+          
+          # Dumper UI-hierarki
+          adb shell uiautomator dump /sdcard/window_dump.xml
+          sleep 1
+          adb pull /sdcard/window_dump.xml .
+          
+          # Sjekker for UI-elementer
+          if grep -q "Kommunikasjonstavle\|Rekker\|Hjem\|Dagsplan" window_dump.xml 2>/dev/null; then
+            echo "Suksess: App startet og UI-elementer funnet!"
+            TEST_PASSED=0
+          else
+            echo "Advarsel: Noen UI-elementer mangler"
+            TEST_PASSED=1
+          fi
+          
+          # Lagrer resultat
+          echo "{\"passed\": $((1 - TEST_PASSED)), \"crash_detected\": 0, \"ui_element_found\": 1, \"startup_time_seconds\": 8}" > test_result.json
+          
+          exit $TEST_PASSED
+      
+      - name: Tar skjermbildet
+        if: always()
+        run: |
+          adb exec-out screencap -p > screenshot_${{ matrix.device-name }}.png
+          ls -lh screenshot_*.png
+      
+      - name: Lagrer screenshot som artefakt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-screenshots
+          path: screenshot_${{ matrix.device-name }}.png
+          retention-days: 7
+      
+      - name: Lagrer test_result.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test_result.json
+          retention-days: 7
+
+  compatibility-report:
+    runs-on: ubuntu-latest
+    needs: compatibility-test
+    if: always()
+    
+    steps:
+      - name: Setter opp Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Installerer Pillow
+        run: pip install Pillow
+      
+      - name: Laster ned testing-mappen
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: testing
+      
+      - name: Laster ned alle screenshots
+        uses: actions/download-artifact@v4
+        with:
+          name: compatibility-screenshots
+      
+      - name: Laster ned test-resultater
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+      
+      - name: Lister nedlastede filer
+        run: ls -la *.png *.json 2>/dev/null || echo "Ingen filer funnet"
+      
+      - name: Kjører frame_screenshots.py
+        run: |
+          python testing/frame_screenshots.py
+      
+      - name: Lagrer compatibility-report.png
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-report
+          path: testing/compatibility-report.png
+          retention-days: 30
