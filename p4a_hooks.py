@@ -1,53 +1,48 @@
 """
 p4a_hooks.py – widget-støtte for Kommunikasjonstavle.
-
-p4a v2024.01.21 kaller disse hook-funksjonene:
-  before_apk_build, after_apk_build,
-  before_apk_assemble, after_apk_assemble
-
-Vi bruker before_apk_assemble – da er dists/src/main/ på plass
-og klar for å motta res/ og java/.
 """
 import os
 import glob
 import shutil
-import logging
-
-
-def before_apk_assemble(ctx, *args, **kwargs):
-    """Kalles rett før Gradle assembleDebug – riktig tidspunkt for res/java-kopiering."""
-    print("=== p4a_hooks: before_apk_assemble KALT ===")
-    _run_hook(ctx)
 
 
 def before_apk_build(ctx, *args, **kwargs):
-    """Fallback for andre p4a-versjoner."""
     print("=== p4a_hooks: before_apk_build KALT ===")
     _run_hook(ctx)
 
 
+def before_apk_assemble(ctx, *args, **kwargs):
+    print("=== p4a_hooks: before_apk_assemble KALT ===")
+    _run_hook(ctx)
+
+
 def _get_root(ctx):
-    """Henter rotmappen til prosjektet fra ctx."""
-    try:
-        return ctx.buildozer.root_dir
-    except AttributeError:
-        pass
-    try:
-        return ctx.root_dir
-    except AttributeError:
-        pass
-    # Fallback: finn via dist_dir
-    try:
-        dist = str(ctx.dist_dir)
-        # dist_dir er typisk .buildozer/android/platform/build-*/dists/<name>
-        # root er 5 nivåer opp
-        root = dist
-        for _ in range(5):
-            root = os.path.dirname(root)
-        if os.path.exists(os.path.join(root, 'main.py')):
-            return root
-    except Exception:
-        pass
+    print(f"p4a_hooks: ctx type = {type(ctx)}")
+    print(f"p4a_hooks: ctx attrs = {[a for a in dir(ctx) if not a.startswith('__')][:20]}")
+
+    # Prøv ctx-attributter
+    for attr in ('build_dir', 'dist_dir', 'storage_dir', 'root_dir'):
+        val = getattr(ctx, attr, None)
+        if val:
+            val = str(val)
+            candidate = val
+            for _ in range(8):
+                if os.path.exists(os.path.join(candidate, 'main.py')):
+                    return candidate
+                candidate = os.path.dirname(candidate)
+
+    # Hardkodet – GitHub Actions Docker-volum
+    print(f"p4a_hooks: getcwd = {os.getcwd()}")
+    for candidate in [
+        '/home/user/hostcwd',
+        '/hostcwd',
+        os.getcwd(),
+        os.path.dirname(os.getcwd()),
+    ]:
+        print(f"p4a_hooks: prøver {candidate}, main.py: {os.path.exists(os.path.join(candidate, 'main.py'))}")
+        if os.path.exists(os.path.join(candidate, 'main.py')):
+            return candidate
+
     return None
 
 
@@ -63,7 +58,6 @@ def _run_hook(ctx):
     print(f"p4a_hooks: res eksisterer: {os.path.exists(res_src)}")
     print(f"p4a_hooks: java eksisterer: {os.path.exists(java_src)}")
 
-    # Finn src/main/ via glob
     pattern = os.path.join(
         root, '.buildozer', 'android', 'platform',
         'build-*', 'dists', '*', 'src', 'main')
@@ -77,7 +71,6 @@ def _run_hook(ctx):
     for main_dir in matches:
         print(f"p4a_hooks: behandler {main_dir}")
 
-        # ── 1. Kopier res/ ────────────────────────────────────────
         if os.path.exists(res_src):
             res_dst = os.path.join(main_dir, 'res')
             os.makedirs(res_dst, exist_ok=True)
@@ -90,24 +83,19 @@ def _run_hook(ctx):
                     shutil.copytree(src_f, dst_f)
                     print(f"p4a_hooks: kopierte res/{folder} -> {dst_f}")
 
-        # ── 2. Kopier java/ til src/main/java/ ───────────────────
         if os.path.exists(java_src):
             java_dst = os.path.join(main_dir, 'java')
-            if os.path.exists(java_dst):
-                # Legg til i eksisterende, ikke slett
-                for root_j, dirs, files in os.walk(java_src):
-                    rel = os.path.relpath(root_j, java_src)
-                    dst_dir = os.path.join(java_dst, rel)
-                    os.makedirs(dst_dir, exist_ok=True)
-                    for f in files:
-                        shutil.copy2(
-                            os.path.join(root_j, f),
-                            os.path.join(dst_dir, f))
-            else:
-                shutil.copytree(java_src, java_dst)
+            os.makedirs(java_dst, exist_ok=True)
+            for root_j, dirs, files in os.walk(java_src):
+                rel     = os.path.relpath(root_j, java_src)
+                dst_dir = os.path.join(java_dst, rel)
+                os.makedirs(dst_dir, exist_ok=True)
+                for f in files:
+                    shutil.copy2(
+                        os.path.join(root_j, f),
+                        os.path.join(dst_dir, f))
             print(f"p4a_hooks: kopierte java/ -> {java_dst}")
 
-        # ── 3. Patch AndroidManifest.xml ──────────────────────────
         manifest = os.path.join(main_dir, 'AndroidManifest.xml')
         if not os.path.exists(manifest):
             print(f"p4a_hooks: manifest ikke funnet: {manifest}")
@@ -141,6 +129,6 @@ def _run_hook(ctx):
                 f.write(content)
             print("p4a_hooks: KtWidget lagt til i manifest")
         else:
-            print("p4a_hooks: </application> ikke funnet i manifest!")
+            print("p4a_hooks: </application> ikke funnet!")
 
-    print("p4a_hooks: ferdig")
+    print("p4a_hooks: _run_hook ferdig")
