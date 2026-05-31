@@ -4834,7 +4834,7 @@ class KommunikasjonstavleApp(App):
 if __name__ == '__main__':
     # Tidlig crash-log til hardkodet sti – fanger krasj før build() kjøres
     import traceback as _tb2
-    _early_log = '/data/data/no.askapp.kommunikasjonstavle/files/early_crash.log'
+    _early_log = '/sdcard/Download/kt_crash.log'
     try:
         os.makedirs(os.path.dirname(_early_log), exist_ok=True)
         with open(_early_log, 'a', encoding='utf-8') as _ef:
