@@ -1,0 +1,46 @@
+name: Buildozer Android Clean Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  buildozer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk python3-pip python3-setuptools python3-wheel \
+            libffi-dev libssl-dev autoconf automake \
+            build-essential cmake zlib1g-dev
+
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip setuptools cython virtualenv
+          pip install buildozer
+
+      - name: Clean build
+        run: |
+          buildozer android clean || true
+          rm -rf .buildozer
+
+      - name: Build APK
+        run: |
+          buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug.apk
+          path: ./bin/*.apk
