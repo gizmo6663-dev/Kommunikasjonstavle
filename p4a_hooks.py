@@ -9,26 +9,39 @@ import shutil
 import logging
 
 def before_gradle_build(ctx):
-    """
-    Kalles av python-for-android rett før gradle-bygg.
-    ctx har attributten buildozer.root_dir.
-    """
+    """Kalles av python-for-android rett før gradle-bygg (nyere p4a)."""
+    print("=== p4a_hooks: before_gradle_build KALT ===")
     root = ctx.buildozer.root_dir
+    print(f"p4a_hooks: root = {root}")
+    _run_hook(root)
+
+def prebuild_apk(build, *args, **kwargs):
+    """Kalles av eldre p4a-versjoner."""
+    print("=== p4a_hooks: prebuild_apk KALT ===")
+    root = build.buildozer.root_dir
+    print(f"p4a_hooks: root = {root}")
+    _run_hook(root)
+
+def _run_hook(root):
+    print("p4a_hooks: _run_hook starter")
     res_src = os.path.join(root, 'res')
     java_src = os.path.join(root, 'java')
+    print(f"p4a_hooks: res_src = {res_src}, eksisterer: {os.path.exists(res_src)}")
+    print(f"p4a_hooks: java_src = {java_src}, eksisterer: {os.path.exists(java_src)}")
 
-    # Finn den dynamiske stien til src/main/ i Gradle-prosjektet
     pattern = os.path.join(
         root, '.buildozer', 'android', 'platform',
         'build-*', 'dists', '*', 'src', 'main')
+    print(f"p4a_hooks: pattern = {pattern}")
     matches = glob.glob(pattern)
+    print(f"p4a_hooks: matches = {matches}")
 
     if not matches:
-        logging.warning('p4a_hooks: fant ikke src/main/')
+        print("p4a_hooks: fant ikke src/main/, avbryter")
         return
 
     for main_dir in matches:
-        logging.info('p4a_hooks: behandler %s', main_dir)
+        print(f"p4a_hooks: behandler {main_dir}")
 
         # 1. Kopier res/
         if os.path.exists(res_src):
@@ -41,7 +54,9 @@ def before_gradle_build(ctx):
                     if os.path.exists(dst_f):
                         shutil.rmtree(dst_f)
                     shutil.copytree(src_f, dst_f)
-                    logging.info('p4a_hooks: kopierte res/%s', folder)
+                    print(f"p4a_hooks: kopierte res/{folder}")
+        else:
+            print("p4a_hooks: res/ finnes ikke, hopper over")
 
         # 2. Kopier java/ til src/main/java/
         if os.path.exists(java_src):
@@ -49,19 +64,21 @@ def before_gradle_build(ctx):
             if os.path.exists(java_dst):
                 shutil.rmtree(java_dst)
             shutil.copytree(java_src, java_dst)
-            logging.info('p4a_hooks: kopierte java/')
+            print(f"p4a_hooks: kopierte java/ til {java_dst}")
+        else:
+            print("p4a_hooks: java/ finnes ikke, hopper over")
 
         # 3. Patch AndroidManifest.xml
         manifest = os.path.join(main_dir, 'AndroidManifest.xml')
         if not os.path.exists(manifest):
-            logging.warning('p4a_hooks: manifest ikke funnet')
+            print(f"p4a_hooks: manifest ikke funnet: {manifest}")
             continue
 
         with open(manifest, 'r', encoding='utf-8') as f:
             content = f.read()
 
         if 'KtWidget' in content:
-            logging.info('p4a_hooks: KtWidget allerede i manifest')
+            print("p4a_hooks: KtWidget allerede i manifest, hopper over patching")
             continue
 
         receiver_block = '''
@@ -83,15 +100,7 @@ def before_gradle_build(ctx):
                 receiver_block + '\n    </application>')
             with open(manifest, 'w', encoding='utf-8') as f:
                 f.write(content)
-            logging.info('p4a_hooks: KtWidget lagt til i manifest')
+            print("p4a_hooks: KtWidget lagt til i manifest")
         else:
-            logging.error('p4a_hooks: </application> ikke funnet')
-
-# For bakoverkompatibilitet med eldre p4a-versjoner (dersom before_gradle_build ikke kalles)
-def prebuild_apk(build, *args, **kwargs):
-    class Dummy:
-        pass
-    ctx = Dummy()
-    ctx.buildozer = Dummy()
-    ctx.buildozer.root_dir = build.buildozer.root_dir
-    before_gradle_build(ctx)
+            print("p4a_hooks: </application> ikke funnet i manifest")
+    print("p4a_hooks: _run_hook ferdig")
