@@ -1695,6 +1695,8 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._navbar)
 
         self._show_home()
+        # Oppdater widget ved oppstart
+        Clock.schedule_once(lambda *_: _update_widget(self.data), 2.0)
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
         # Vis splash-overlay i 2 sekunder etter oppstart
@@ -3717,6 +3719,7 @@ class KommunikasjonstavleApp(App):
             else:
                 entry.update({'name': nm, 'start': st, 'end': en, 'image': chosen_img[0]})
             save_struct(self.data)
+            Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
             pop_ref[0].dismiss()
             self._build_dagsrytme_ui()
         btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save))

@@ -6,6 +6,10 @@ package.name = kommunikasjonstavle
 package.domain = no.askapp
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
+
+# Widget: Java-kildefiler og Android-ressurser
+android.add_src = java
+android.add_res = res
 source.include_patterns = assets/*
 
 # ─── Versjon ──────────────────────────────────────────────────────
@@ -49,6 +53,7 @@ android.private_storage = True
 # Intent-filter: gjør appen til mottaker for bildedeling fra galleri/andre apper.
 # Brukeren kan åpne et bilde i Galleri, trykke Del, og velge Kommunikasjonstavle.
 android.manifest.intent_filters = intent_filters.xml
+android.manifest.receivers = widget_receiver.xml
 
 # singleTask: gjenbruk eksisterende Activity ved mottak av delt bilde
 android.manifest.activity_attributes = android:launchMode="singleTask"
