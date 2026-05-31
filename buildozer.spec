@@ -2,8 +2,8 @@
 
 # ─── Identifikasjon ───────────────────────────────────────────────
 title = Kommunikasjonstavle
-package.name = no.askapp.kommunikasjonstavle
-package.domain = no.askapp.kommunikasjonstavle
+package.name = kommunikasjonstavle
+package.domain = no.askapp
 source.dir = .
 source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
 
@@ -24,7 +24,7 @@ android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
 p4a.branch = v2024.01.21
-p4a.hook=p4a_hooks.py
+p4a.hook   = p4a_hooks.py
 
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
