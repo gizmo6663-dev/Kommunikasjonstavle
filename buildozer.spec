@@ -24,9 +24,17 @@ android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
 p4a.branch = v2024.01.21
-p4a.hook   = p4a_hooks.py
+# p4a.hook   = p4a_hooks.py  # midlertidig deaktivert
 
 # ─── Tillatelser ──────────────────────────────────────────────────
+#
+# READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE: Android <= 12
+# READ_MEDIA_IMAGES:  Android 13+ (API 33+) – vise bilder i filvelger.
+#                     Utløser en vanlig "Gi tilgang til bilder"-dialog.
+# WRITE_EXTERNAL_STORAGE: Android <= 12 – skrive til /sdcard/.
+# MANAGE_EXTERNAL_STORAGE er IKKE inkludert: den gir unødvendig bred
+# tilgang og utløser en skremmende "Tilgang til alle filer"-advarsel.
+#
 android.permissions = \
     android.permission.READ_EXTERNAL_STORAGE, \
     android.permission.WRITE_EXTERNAL_STORAGE, \
@@ -36,10 +44,16 @@ android.permissions = \
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
 
+# Bruk appens private lagringsmappe (user_data_dir) for all data.
+# Tilsvarer Eldritch Portals oppsett – garantert skrivbar uten
+# lagringstillatelser på Android 10+ (API 29+).
 android.private_storage = True
 
+# Intent-filter: gjør appen til mottaker for bildedeling fra galleri/andre apper.
+# Brukeren kan åpne et bilde i Galleri, trykke Del, og velge Kommunikasjonstavle.
 android.manifest.intent_filters = intent_filters.xml
 
+# singleTask: gjenbruk eksisterende Activity ved mottak av delt bilde
 android.manifest.activity_attributes = android:launchMode="singleTask"
 
 # ─── AndroidX ─────────────────────────────────────────────────────
@@ -53,6 +67,7 @@ fullscreen = 0
 icon.filename = %(source.dir)s/icon.png
 android.presplash       = assets/splash.png
 android.presplash_color = #12183A
+# (se over – satt fra splash)
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
