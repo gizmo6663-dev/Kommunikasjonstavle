@@ -6,95 +6,91 @@ import android.appwidget.AppWidgetProvider;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.view.Gravity;
+import android.widget.LinearLayout;
 import android.widget.RemoteViews;
+import android.widget.TextView;
 
 /**
  * KtWidget – hjemskjerm-widget for Kommunikasjonstavle.
  *
- * Viser:
- *   - Neste aktivitet i dagsrytmen (navn + tid)
- *   - Knapp for å åpne appen direkte til dagsrytmen
- *
- * Data leses fra SharedPreferences (nøkkel "kt_widget").
- * Kivy-appen skriver data via jnius etter hver dagsrytme-endring.
+ * Bruker android.R.layout.simple_list_item_2 som base RemoteViews
+ * slik at vi ikke trenger egne res-filer (som p4a ikke støtter via add_res).
+ * Data leses fra SharedPreferences "kt_widget".
  */
 public class KtWidget extends AppWidgetProvider {
 
-    static final String PREFS_NAME    = "kt_widget";
-    static final String KEY_ACTIVITY  = "next_activity";
-    static final String KEY_TIME      = "next_time";
-    static final String KEY_STATUS    = "status";  // "active", "upcoming", "done", "empty"
-    static final String KEY_CURRENT   = "current_activity";
+    static final String PREFS     = "kt_widget";
+    static final String K_STATUS  = "status";
+    static final String K_LABEL   = "next_activity";
+    static final String K_TIME    = "next_time";
+    static final String K_CURRENT = "current_activity";
 
     @Override
-    public void onUpdate(Context ctx,
-                         AppWidgetManager mgr,
-                         int[] ids) {
-        for (int id : ids) {
-            updateWidget(ctx, mgr, id);
-        }
+    public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+        for (int id : ids) updateWidget(ctx, mgr, id);
     }
 
     static void updateWidget(Context ctx, AppWidgetManager mgr, int id) {
-        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, 0);
-        String status   = prefs.getString(KEY_STATUS,   "empty");
-        String activity = prefs.getString(KEY_ACTIVITY, "Ingen aktiviteter");
-        String time     = prefs.getString(KEY_TIME,     "");
-        String current  = prefs.getString(KEY_CURRENT,  "");
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, 0);
+        String status  = p.getString(K_STATUS,  "empty");
+        String label   = p.getString(K_LABEL,   "Ingen aktiviteter");
+        String time    = p.getString(K_TIME,    "");
+        String current = p.getString(K_CURRENT, "");
 
+        // Bruk innebygd two-line list layout – ingen egne res-filer nødvendig
         RemoteViews views = new RemoteViews(
             ctx.getPackageName(),
-            R.layout.kt_widget
-        );
+            android.R.layout.simple_list_item_2);
 
-        // Sett appnavn
-        views.setTextViewText(R.id.widget_app_title, "Kommunikasjonstavle");
-
-        // Sett aktivitetsnavn og tid
+        // Linje 1: appnavn + status
+        String dot;
         switch (status) {
-            case "active":
-                views.setTextViewText(R.id.widget_activity_label, "Nå:");
-                views.setTextViewText(R.id.widget_activity_name,  current);
-                views.setTextViewText(R.id.widget_activity_time,  time);
-                views.setInt(R.id.widget_status_dot,
-                    "setBackgroundColor", 0xFF6BCB77);  // grønn
-                break;
-            case "upcoming":
-                views.setTextViewText(R.id.widget_activity_label, "Neste:");
-                views.setTextViewText(R.id.widget_activity_name,  activity);
-                views.setTextViewText(R.id.widget_activity_time,  time);
-                views.setInt(R.id.widget_status_dot,
-                    "setBackgroundColor", 0xFFFF9F43);  // oransje
-                break;
-            case "done":
-                views.setTextViewText(R.id.widget_activity_label, "Ferdig for i dag");
-                views.setTextViewText(R.id.widget_activity_name,  "");
-                views.setTextViewText(R.id.widget_activity_time,  "");
-                views.setInt(R.id.widget_status_dot,
-                    "setBackgroundColor", 0xFF9CA3AF);  // grå
-                break;
-            default:
-                views.setTextViewText(R.id.widget_activity_label, "Ingen plan lagt");
-                views.setTextViewText(R.id.widget_activity_name,  "");
-                views.setTextViewText(R.id.widget_activity_time,  "");
-                views.setInt(R.id.widget_status_dot,
-                    "setBackgroundColor", 0xFFCCCCCC);
+            case "active":   dot = "\u25CF"; break;  // grønn ●
+            case "upcoming": dot = "\u25CF"; break;  // oransje ●
+            case "done":     dot = "\u25CF"; break;  // grå ●
+            default:         dot = "\u25CB"; break;  // tom ○
         }
 
-        // Trykk på widget åpner appen
-        Intent launchIntent = new Intent(ctx,
-            org.kivy.android.PythonActivity.class);
-        launchIntent.setFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK |
-            Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        launchIntent.putExtra("widget_open", "dagsrytme");
+        // Sett farger via setInt (RemoteViews API)
+        int dotColor;
+        switch (status) {
+            case "active":   dotColor = Color.rgb(107, 203, 119); break;
+            case "upcoming": dotColor = Color.rgb(255, 159,  67); break;
+            case "done":     dotColor = Color.rgb(156, 163, 175); break;
+            default:         dotColor = Color.rgb(200, 200, 200); break;
+        }
 
+        // android.R.id.text1 = øvre linje, text2 = nedre linje
+        String line1 = "Kommunikasjonstavle  " + dot;
+        String line2;
+        switch (status) {
+            case "active":
+                line2 = "Na: " + current + (time.isEmpty() ? "" : "  " + time);
+                break;
+            case "upcoming":
+                line2 = "Neste: " + label + (time.isEmpty() ? "" : "  " + time);
+                break;
+            case "done":
+                line2 = "Ferdig for i dag";
+                break;
+            default:
+                line2 = "Ingen plan lagt til";
+        }
+
+        views.setTextViewText(android.R.id.text1, line1);
+        views.setTextViewText(android.R.id.text2, line2);
+        views.setTextColor(android.R.id.text1, Color.rgb(18, 24, 58));
+        views.setTextColor(android.R.id.text2, dotColor);
+
+        // Trykk åpner appen
+        Intent intent = new Intent(ctx, org.kivy.android.PythonActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi = PendingIntent.getActivity(
-            ctx, 0, launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT |
-            PendingIntent.FLAG_IMMUTABLE);
-
-        views.setOnClickPendingIntent(R.id.widget_root, pi);
+            ctx, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        views.setOnClickPendingIntent(android.R.id.content, pi);
 
         mgr.updateAppWidget(id, views);
     }
