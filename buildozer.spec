@@ -26,6 +26,7 @@ android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
 p4a.branch = v2024.01.21
+p4a.hook   = p4a_hooks.py
 
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
@@ -53,7 +54,6 @@ android.private_storage = True
 # Intent-filter: gjør appen til mottaker for bildedeling fra galleri/andre apper.
 # Brukeren kan åpne et bilde i Galleri, trykke Del, og velge Kommunikasjonstavle.
 android.manifest.intent_filters = intent_filters.xml
-android.manifest.receivers = widget_receiver.xml
 
 # singleTask: gjenbruk eksisterende Activity ved mottak av delt bilde
 android.manifest.activity_attributes = android:launchMode="singleTask"
