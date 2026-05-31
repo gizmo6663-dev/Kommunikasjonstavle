@@ -9,6 +9,7 @@ source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
 
 # Widget: Java-kildefiler og Android-ressurser
 android.add_src = java
+android.add_res = res
 source.include_patterns = assets/*
 
 # ─── Versjon ──────────────────────────────────────────────────────
@@ -25,7 +26,6 @@ android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
 p4a.branch = v2024.01.21
-p4a.hook   = p4a_hooks.py
 
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
