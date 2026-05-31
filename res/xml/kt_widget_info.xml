@@ -8,6 +8,6 @@
     android:targetCellWidth="3"
     android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
-    android:initialLayout="@android:layout/simple_list_item_2"
+    android:initialLayout="@layout/kt_widget_layout"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen" />
