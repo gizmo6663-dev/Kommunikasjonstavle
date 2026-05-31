@@ -1,11 +1,8 @@
 """
 p4a_hooks.py – widget-støtte for Kommunikasjonstavle.
 
-Gjør to ting rett før Gradle-bygget:
-1. Kopierer res/ inn i Gradle-prosjektets src/main/res/
-2. Patcher AndroidManifest.xml med KtWidget-receiver + meta-data
-
-Bruker glob for å finne stiene pålitelig uavhengig av dist-navn.
+Kopierer res/ og java/ til Gradle-prosjektets src/main/,
+og patcher AndroidManifest.xml med KtWidget-receiver.
 """
 import os
 import glob
@@ -14,23 +11,25 @@ import logging
 
 
 def prebuild_apk(build, *args, **kwargs):
-    root    = build.buildozer.root_dir
-    res_src = os.path.join(root, 'res')
+    root     = build.buildozer.root_dir
+    res_src  = os.path.join(root, 'res')
+    java_src = os.path.join(root, 'java')
 
-    # ── Finn Gradle-prosjektets src/main/ via glob ────────────────
     pattern = os.path.join(
         root, '.buildozer', 'android', 'platform',
         'build-*', 'dists', '*', 'src', 'main')
     matches = glob.glob(pattern)
 
     if not matches:
-        logging.warning('p4a_hooks: fant ikke src/main/, hopper over')
+        logging.warning('p4a_hooks: fant ikke src/main/, avbryter')
         return
 
     for main_dir in matches:
+        logging.info('p4a_hooks: behandler %s', main_dir)
+
         # ── 1. Kopier res/ ────────────────────────────────────────
-        res_dst = os.path.join(main_dir, 'res')
         if os.path.exists(res_src):
+            res_dst = os.path.join(main_dir, 'res')
             os.makedirs(res_dst, exist_ok=True)
             for folder in os.listdir(res_src):
                 src_f = os.path.join(res_src, folder)
@@ -41,10 +40,18 @@ def prebuild_apk(build, *args, **kwargs):
                     shutil.copytree(src_f, dst_f)
                     logging.info('p4a_hooks: kopierte res/%s', folder)
 
-        # ── 2. Patch AndroidManifest.xml ──────────────────────────
+        # ── 2. Kopier java/ til src/main/java/ ───────────────────
+        if os.path.exists(java_src):
+            java_dst = os.path.join(main_dir, 'java')
+            if os.path.exists(java_dst):
+                shutil.rmtree(java_dst)
+            shutil.copytree(java_src, java_dst)
+            logging.info('p4a_hooks: kopierte java/ til %s', java_dst)
+
+        # ── 3. Patch AndroidManifest.xml ──────────────────────────
         manifest = os.path.join(main_dir, 'AndroidManifest.xml')
         if not os.path.exists(manifest):
-            logging.warning('p4a_hooks: fant ikke %s', manifest)
+            logging.warning('p4a_hooks: fant ikke manifest')
             continue
 
         with open(manifest, 'r', encoding='utf-8') as f:
@@ -74,5 +81,3 @@ def prebuild_apk(build, *args, **kwargs):
             with open(manifest, 'w', encoding='utf-8') as f:
                 f.write(content)
             logging.info('p4a_hooks: KtWidget lagt til i manifest')
-        else:
-            logging.warning('p4a_hooks: fant ikke </application> i manifest')

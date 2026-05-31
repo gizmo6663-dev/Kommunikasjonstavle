@@ -8,8 +8,6 @@ source.dir = .
 source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
 
 # Widget: Java-kildefiler og Android-ressurser
-android.add_src = java
-android.add_res = res
 source.include_patterns = assets/*
 
 # ─── Versjon ──────────────────────────────────────────────────────
