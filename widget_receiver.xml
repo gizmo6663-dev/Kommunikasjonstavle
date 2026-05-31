@@ -1,0 +1,10 @@
+<!-- Widget-receiver for Kommunikasjonstavle hjemskjerm-widget.
+     Uten android:resource="@xml/..." siden res-mappa ikke støttes av p4a. -->
+<receiver
+    android:name="no.askapp.kommunikasjonstavle.KtWidget"
+    android:exported="true"
+    android:label="Kommunikasjonstavle">
+    <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+    </intent-filter>
+</receiver>
