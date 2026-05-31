@@ -77,13 +77,13 @@ _KV = """
         Rotate:
             angle: self.rotation
             origin: self.center
-        # 1. Skygge
+        # 1. Skygge – skrå ned mot høyre (offset +3dp X, -3dp Y)
         Color:
-            rgba: 0.04, 0.06, 0.18, 0.13
+            rgba: 0.04, 0.06, 0.18, 0.12
         RoundedRectangle:
-            pos: self.x + dp(1.5), self.y - dp(2.5)
-            size: self.width - dp(2), self.height * 0.88
-            radius: [self.radius + dp(1.5)]
+            pos: self.x + dp(3), self.y - dp(3)
+            size: self.width, self.height
+            radius: [self.radius + dp(2)]
         # 2. PIL-gradient som tekstur (genereres av _update_grad_texture)
         Color:
             rgba: 1, 1, 1, 1
@@ -117,12 +117,12 @@ _KV = """
 
 <RBox>:
     canvas.before:
-        # 1. Minimal skygge (halvvert)
+        # 1. Skygge – skrå ned mot høyre
         Color:
             rgba: 0.04, 0.06, 0.18, 0.10
         RoundedRectangle:
-            pos: self.x + dp(2), self.y - dp(3)
-            size: self.width - dp(3), self.height * 0.90
+            pos: self.x + dp(3), self.y - dp(3)
+            size: self.width, self.height
             radius: [self.radius + dp(1.5)]
         # 2. Bakgrunnsfarge
         Color:
@@ -229,16 +229,28 @@ class RBtn(Button):
     rotation er NumericProperty slik at Animation kan animere den
     via PushMatrix/Rotate/PopMatrix i KV-regelen.
     """
-    btn_color = ListProperty([0.30, 0.50, 1.0, 1.0])
-    radius    = NumericProperty(dp(14))
-    rotation  = NumericProperty(0.0)
+    btn_color  = ListProperty([0.30, 0.50, 1.0, 1.0])
+    radius     = NumericProperty(dp(14))
+    rotation   = NumericProperty(0.0)
+    _grad_cache = {}  # delt tekstur-cache for alle RBtn-instanser
 
     def on_btn_color(self, *_):
         self._update_grad_texture()
 
     def _update_grad_texture(self):
-        """Genererer en 1×64-px gradient-tekstur fra btn_color."""
+        """
+        Genererer en 1×64-px gradient-tekstur fra btn_color.
+        Cacher teksturer per hex-farge – unngår unødvendig PIL-arbeid
+        ved skjermbytte når samme farge brukes flere ganger.
+        """
         if not PIL_OK:
+            return
+        # Bruk cache hvis samme farge allerede er generert
+        r, g, b, a = self.btn_color
+        cache_key = f'{r:.3f}{g:.3f}{b:.3f}{a:.3f}'
+        cached = RBtn._grad_cache.get(cache_key)
+        if cached:
+            self._grad_tex = cached
             return
         try:
             r, g, b, a = self.btn_color
@@ -269,6 +281,7 @@ class RBtn(Button):
             tex.blit_buffer(bytes(buf), colorfmt='rgba', bufferfmt='ubyte')
             tex.wrap = 'repeat'   # tiles horisontalt til knappens fulle bredde
             self._grad_tex = tex
+            RBtn._grad_cache[cache_key] = tex  # cache for gjenbruk
         except Exception:
             pass
 
@@ -496,6 +509,89 @@ def text_on(bg_hex):
         return (0.06, 0.07, 0.18, 1.0)   # nesten svart
     return (1.0, 1.0, 1.0, 1.0)           # hvit
 
+def _update_widget(data):
+    """
+    Skriver dagsrytme-status til SharedPreferences for hjemskjerm-widgeten.
+    Sendes som broadcast slik at widgeten oppdateres umiddelbart.
+    Hele funksjonen er wrapped i try/except – krasj her skal aldri
+    påvirke resten av appen.
+    """
+    if platform != 'android':
+        return
+    try:
+        import datetime as _dt
+        from jnius import autoclass
+        from android import mActivity
+
+        prefs  = mActivity.getSharedPreferences('kt_widget', 0)
+        editor = prefs.edit()
+
+        entries = data.get('dagsrytme', [])
+        now = _dt.datetime.now()
+        now_total = now.hour * 60 + now.minute
+
+        def to_min(t):
+            try:
+                h, m = str(t).split(':')
+                return int(h) * 60 + int(m)
+            except Exception:
+                return -1
+
+        current = None
+        upcoming = None
+        for e in entries:
+            s = to_min(e.get('start', ''))
+            t = to_min(e.get('end',   ''))
+            if s < 0 or t < 0:
+                continue
+            if s <= now_total < t:
+                current = e
+                break
+            if s > now_total and upcoming is None:
+                upcoming = e
+
+        if current:
+            end_m = to_min(current.get('end', ''))
+            rem   = max(0, end_m - now_total)
+            editor.putString('status',           'active')
+            editor.putString('current_activity', current['name'])
+            editor.putString('next_activity',    current['name'])
+            editor.putString('next_time',
+                'Slutter om ' + str(rem) + ' min  (kl. ' + str(current.get('end','')) + ')')
+        elif upcoming:
+            wait = to_min(upcoming.get('start', '')) - now_total
+            editor.putString('status',           'upcoming')
+            editor.putString('current_activity', '')
+            editor.putString('next_activity',    upcoming['name'])
+            editor.putString('next_time',
+                'Om ' + str(wait) + ' min  (kl. ' + str(upcoming.get('start','')) + ')')
+        elif entries:
+            editor.putString('status',           'done')
+            editor.putString('current_activity', '')
+            editor.putString('next_activity',    '')
+            editor.putString('next_time',        '')
+        else:
+            editor.putString('status',           'empty')
+            editor.putString('current_activity', '')
+            editor.putString('next_activity',    '')
+            editor.putString('next_time',        '')
+
+        editor.apply()
+
+        # Broadcast til widget om oppdatering
+        Intent        = autoclass('android.content.Intent')
+        AppWidgetMgr  = autoclass('android.appwidget.AppWidgetManager')
+        ComponentName = autoclass('android.content.ComponentName')
+        broadcast = Intent(AppWidgetMgr.ACTION_APPWIDGET_UPDATE)
+        broadcast.setComponent(ComponentName(
+            mActivity.getPackageName(),
+            'no.askapp.kommunikasjonstavle.KtWidget'))
+        mActivity.sendBroadcast(broadcast)
+        logging.info('Widget oppdatert: %s', prefs.getString('status', '?'))
+    except Exception as e:
+        logging.debug('_update_widget feilet (ikke kritisk): %s', e)
+
+
 def haptic_feedback():
     """
     Haptisk feedback ved knappetrykk.
@@ -656,17 +752,38 @@ def load_struct():
     import copy
     return copy.deepcopy(DEFAULT_STRUCT)
 
-def save_struct(d):
+_save_event = [None]
+
+def save_struct(d, immediate=False):
+    """
+    Lagrer structure.json med 500ms debounce.
+    immediate=True brukes ved app-pause og kritiske endringer.
+    Reduserer I/O ved f.eks. opens-teller og sekvensielle endringer.
+    """
     if not STRUCT_FILE:
         logging.error('save_struct: STRUCT_FILE ikke satt ennå')
         return
-    os.makedirs(os.path.dirname(STRUCT_FILE), exist_ok=True)
-    try:
-        with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
-        logging.debug('structure.json lagret til %s', STRUCT_FILE)
-    except Exception as e:
-        logging.error('Feil ved lagring av structure.json: %s', e)
+
+    def _do_save(*_):
+        os.makedirs(os.path.dirname(STRUCT_FILE), exist_ok=True)
+        try:
+            with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+            logging.debug('structure.json lagret (%s)', STRUCT_FILE)
+        except Exception as e:
+            logging.error('Feil ved lagring: %s', e)
+        _save_event[0] = None
+
+    if immediate:
+        if _save_event[0]:
+            _save_event[0].cancel()
+            _save_event[0] = None
+        _do_save()
+        return
+
+    if _save_event[0]:
+        _save_event[0].cancel()
+    _save_event[0] = Clock.schedule_once(_do_save, 0.5)
 
 def get_folder(d, fid):
     """Finner mappe med gitt id – søker rekursivt i subfolders."""
@@ -834,6 +951,19 @@ def _copy_content_uri(uri, dst_path):
         with open(dst_path, 'wb') as dst_f:
             dst_f.write(data)
         _plog(f'_copy_content_uri OK: {dst_path} ({len(data)} bytes)')
+        # Skaler ned til maks 512×512 for å spare minne og lagringsplass.
+        # Symbolbilder trenger aldri høyere oppløsning enn dette i appen.
+        if PIL_OK:
+            try:
+                img = PILImage.open(dst_path)
+                W, H = img.size
+                if W > 512 or H > 512:
+                    img.thumbnail((512, 512), PILImage.LANCZOS)
+                    img.save(dst_path, quality=88, optimize=True)
+                    new_size = os.path.getsize(dst_path)
+                    _plog(f'Skalert: {W}x{H} → {img.size}, {new_size//1024}KB')
+            except Exception as _se:
+                _plog(f'Skalering feilet (bruker original): {_se}')
         return True
     except Exception as e:
         _plog(f'_copy_content_uri feil: {e}')
@@ -2223,8 +2353,15 @@ class KommunikasjonstavleApp(App):
             col_force_default=True, col_default_width=dp(108),
         )
         grid.bind(minimum_height=grid.setter('height'))
-        for it in fo['items']:
-            grid.add_widget(self._make_item_tile(fo, it))
+        # Lat innlasting – tilføyer fliser med 40ms forsinkelse mellom hver.
+        # Forhindrer UI-frysing ved mapper med mange bilder.
+        items = list(fo['items'])
+        def _add_tile(i, fo=fo, items=items):
+            if i >= len(items):
+                return
+            grid.add_widget(self._make_item_tile(fo, items[i]))
+            Clock.schedule_once(lambda *_: _add_tile(i + 1), 0.04)
+        _add_tile(0)
 
         sv = ScrollView()
         sv.add_widget(grid)
@@ -4028,13 +4165,41 @@ class KommunikasjonstavleApp(App):
                 cell.add_widget(btn)
             self._bp_grid.add_widget(cell)
 
+    def _bildepar_flip_cell(self, idx, on_done):
+        """
+        Flip-animasjon: scale_x 1→0 (forsvinner), bytt innhold, scale_x 0→1.
+        """
+        cells = list(self._bp_grid.children)
+        n = len(self._bp_cards)
+        ci = n - 1 - idx
+        if ci < 0 or ci >= len(cells):
+            self._bp_state[idx] = 'revealed'
+            self._bildepar_rebuild_grid()
+            on_done(); return
+        cell = cells[ci]
+        def _phase2(*_):
+            self._bp_state[idx] = 'revealed'
+            self._bildepar_rebuild_grid()
+            new_cells = list(self._bp_grid.children)
+            if ci < len(new_cells):
+                nc = new_cells[ci]
+                nc.size_hint_x = 0.01
+                a2 = Animation(size_hint_x=1, duration=0.11, t='out_quad')
+                a2.bind(on_complete=lambda *_: on_done())
+                a2.start(nc)
+            else:
+                on_done()
+        a1 = Animation(size_hint_x=0.01, duration=0.09, t='in_quad')
+        a1.bind(on_complete=_phase2)
+        a1.start(cell)
+
     def _bildepar_tap(self, idx):
         if self._bp_state[idx] != 'hidden' or len(self._bp_revealed) >= 2:
             return
-        self._bp_state[idx] = 'revealed'
         self._bp_revealed.append(idx)
-        self._bildepar_rebuild_grid()
-        if len(self._bp_revealed) == 2:
+        def after_flip():
+            if len(self._bp_revealed) < 2:
+                return
             self._bp_moves += 1
             i1, i2 = self._bp_revealed
             if self._bp_cards[i1]['pair_id'] == self._bp_cards[i2]['pair_id']:
@@ -4048,6 +4213,7 @@ class KommunikasjonstavleApp(App):
             else:
                 self._bildepar_update_status()
                 Clock.schedule_once(lambda *_: self._bildepar_flip_back(), 1.1)
+        self._bildepar_flip_cell(idx, after_flip)
 
     def _bildepar_flip_back(self):
         for i in self._bp_revealed:
