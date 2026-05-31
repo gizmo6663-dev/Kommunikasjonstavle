@@ -3809,10 +3809,11 @@ class KommunikasjonstavleApp(App):
 
         layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
             font_size=fsp(15), color=(0, 0, 0, 1), halign='left'))
+        # on_save defineres nedenfor – bruk lambda for å unngå NameError
         name_inp = smart_input(
             text='' if new else entry['name'],
             hint='Navn på aktivitet',
-            on_save=on_save,
+            on_save=lambda *_: on_save(),
         )
         layout.add_widget(name_inp)
 
