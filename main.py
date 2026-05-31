@@ -4832,16 +4832,28 @@ class KommunikasjonstavleApp(App):
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    # Tidlig crash-log til hardkodet sti – fanger krasj før build() kjøres
+    import traceback as _tb2
+    _early_log = '/data/data/no.askapp.kommunikasjonstavle/files/early_crash.log'
+    try:
+        os.makedirs(os.path.dirname(_early_log), exist_ok=True)
+        with open(_early_log, 'a', encoding='utf-8') as _ef:
+            _ef.write('\n=== APP START ===\n')
+    except Exception:
+        pass
+
     try:
         KommunikasjonstavleApp().run()
     except Exception:
-        # Siste utvei: skriv krasj til loggfil selv om appen aldri startet
         try:
+            with open(_early_log, 'a', encoding='utf-8') as _ef:
+                _ef.write('\n=== FATAL KRASJ ===\n')
+                _tb2.print_exc(file=_ef)
             if LOG_FILE:
                 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
                 with open(LOG_FILE, 'a', encoding='utf-8') as f:
                     f.write('\n=== FATAL KRASJ ===\n')
-                    _tb.print_exc(file=f)
+                    _tb2.print_exc(file=f)
         except Exception:
             pass
         raise
