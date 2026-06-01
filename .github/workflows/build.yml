@@ -79,6 +79,9 @@ jobs:
               rm -rf \$DIST/build/intermediates/manifest_merge_report
               rm -rf \$DIST/build/tmp/processDebugManifest
               rm -rf \$DIST/build/tmp/processDebugMainManifest
+              rm -rf \$DIST/build/intermediates/manifest_for_package
+              rm -rf \$DIST/build/intermediates/packaged_manifests
+              rm -rf \$DIST/build/tmp/processDebugManifestForPackage
               rm -rf \$DIST/build/intermediates/packaged_res
               rm -rf \$DIST/build/intermediates/processed_res
               rm -rf \$DIST/build/tmp/processDebugResources
@@ -86,7 +89,7 @@ jobs:
               rm -rf \$DIST/build/intermediates/classes
               rm -rf \$DIST/build/tmp/compileDebugJavaWithJavac
               rm -rf \$DIST/build/tmp/dexBuilderDebug
-              echo 'Alle Gradle-cacher slettet'
+              echo 'Alle Gradle-cacher slettet (inkl. ManifestForPackage)'
 
               echo '=== KALLER GRADLE DIREKTE ==='
               cd \$DIST
