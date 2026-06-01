@@ -24,17 +24,19 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
-              # Steg 1: Sett opp dists-struktur
+              # Steg 1: Sett opp mappestruktur
               buildozer android debug 2>&1 | tee build_step1.log || true
 
               BASE=.buildozer/android/platform/build-arm64-v8a
               DIST=\$BASE/dists/kommunikasjonstavle
 
-              # Kopier KtWidget.java direkte til Gradle src/main/java
+              echo '=== STEG 2: Injiserer KtWidget ==='
+
+              # Kopier KtWidget til src/main/java
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
               mkdir -p \$KTDST
               cp java/no/askapp/kommunikasjonstavle/KtWidget.java \$KTDST/
-              echo \"KtWidget.java -> \$KTDST\"
+              echo \"KtWidget.java -> \$KTDST : \$(ls \$KTDST)\"
 
               # kt_widget_info.xml
               mkdir -p \$DIST/src/main/res/xml
@@ -52,21 +54,22 @@ jobs:
                 '    android:resizeMode=\"horizontal|vertical\"' \
                 '    android:widgetCategory=\"home_screen\" />' \
                 > \$DIST/src/main/res/xml/kt_widget_info.xml
-              echo 'kt_widget_info.xml skrevet'
+              echo 'kt_widget_info.xml OK'
 
-              # Manifest-patch
+              # Manifest
               MANIFEST=\$DIST/src/main/AndroidManifest.xml
-              if [ -f \$MANIFEST ] && ! grep -q KtWidget \$MANIFEST; then
+              if grep -q KtWidget \$MANIFEST 2>/dev/null; then
+                echo 'KtWidget allerede i manifest'
+              else
                 sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
-                echo 'Manifest patchet'
+                echo 'Manifest patchet OK'
               fi
 
-              # KRITISK: Slett Gradle sin build-cache så den rekompilerer
-              rm -rf \$DIST/build
-              rm -rf \$DIST/.gradle
-              echo 'Gradle cache slettet – tvinger rekompilering'
+              # Slett Gradle build-cache
+              rm -rf \$DIST/build \$DIST/.gradle
+              echo 'Gradle cache slettet'
 
-              # Steg 2: Bygg på nytt – Gradle MÅ rekompilere nå
+              echo '=== STEG 3: Andre Buildozer-kall ==='
               buildozer android debug 2>&1 | tee build.log
               exit \${PIPESTATUS[0]}
             "
@@ -75,15 +78,15 @@ jobs:
         id: find_apk
         if: success()
         run: |
-          APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          APK=\$(find \${{ github.workspace }}/bin -name "*.apk" | head -1)
+          echo "apk_path=\$APK" >> \$GITHUB_OUTPUT
 
       - name: Last opp APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kommunikasjonstavle-apk
-          path: ${{ steps.find_apk.outputs.apk_path }}
+          path: \${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
 
       - name: Last opp bygglogg
@@ -91,5 +94,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: ${{ github.workspace }}/build.log
+          path: \${{ github.workspace }}/build.log
           retention-days: 14
