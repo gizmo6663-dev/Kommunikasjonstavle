@@ -509,6 +509,46 @@ def text_on(bg_hex):
         return (0.06, 0.07, 0.18, 1.0)   # nesten svart
     return (1.0, 1.0, 1.0, 1.0)           # hvit
 
+def _schedule_widget_alarm():
+    """
+    Registrerer en Android AlarmManager-alarm som kaller KtWidget
+    hvert 15. minutt selv om appen er lukket.
+    Krever ingen tillatelse siden vi bruker setInexactRepeating.
+    """
+    if platform != 'android':
+        return
+    try:
+        from jnius import autoclass
+        from android import mActivity
+        Context       = autoclass('android.content.Context')
+        Intent        = autoclass('android.content.Intent')
+        PendingIntent = autoclass('android.app.PendingIntent')
+        AlarmManager  = autoclass('android.app.AlarmManager')
+        AppWidgetMgr  = autoclass('android.appwidget.AppWidgetManager')
+        ComponentName = autoclass('android.content.ComponentName')
+
+        intent = Intent(AppWidgetMgr.ACTION_APPWIDGET_UPDATE)
+        intent.setComponent(ComponentName(
+            mActivity.getPackageName(),
+            'no.askapp.kommunikasjonstavle.KtWidget'))
+
+        pi = PendingIntent.getBroadcast(
+            mActivity, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT |
+            PendingIntent.FLAG_IMMUTABLE)
+
+        am = mActivity.getSystemService(Context.ALARM_SERVICE)
+        # Hvert 15. minutt (inexact for batterisparing)
+        am.setInexactRepeating(
+            AlarmManager.ELAPSED_REALTIME,
+            0,
+            15 * 60 * 1000,   # 15 min i ms
+            pi)
+        logging.info('AlarmManager widget-alarm registrert (15 min)')
+    except Exception as e:
+        logging.debug('AlarmManager feilet (ikke kritisk): %s', e)
+
+
 def _update_widget(data):
     """
     Skriver dagsrytme-status til SharedPreferences for hjemskjerm-widgeten.
@@ -590,6 +630,46 @@ def _update_widget(data):
         logging.info('Widget oppdatert: %s', prefs.getString('status', '?'))
     except Exception as e:
         logging.debug('_update_widget feilet (ikke kritisk): %s', e)
+
+
+# ── Thumbnail-cache ──────────────────────────────────────────────
+# Skalerte versjoner av symbolbilder cachet i minnet.
+# Nøkkel: (filsti, bredde, høyde)  →  Kivy Texture
+_thumb_cache = {}
+_THUMB_MAX   = 200   # maks antall thumbnails i minnet
+
+def get_thumbnail(path, w, h):
+    """
+    Returnerer en PIL-basert Kivy Texture skalert til (w×h).
+    Bruker _thumb_cache for å unngå gjentatt PIL-arbeid og minnebruk.
+    Eldre entries kastes automatisk når cachen vokser over _THUMB_MAX.
+    """
+    if not PIL_OK or not path or not os.path.exists(path):
+        return None
+    key = (path, int(w), int(h))
+    if key in _thumb_cache:
+        return _thumb_cache[key]
+    try:
+        img  = PILImage.open(path).convert('RGB')
+        img.thumbnail((int(w), int(h)), PILImage.LANCZOS)
+        # Pad til nøyaktig størrelse
+        out  = PILImage.new('RGB', (int(w), int(h)), (255, 255, 255))
+        ox   = (int(w) - img.width)  // 2
+        oy   = (int(h) - img.height) // 2
+        out.paste(img, (ox, oy))
+        raw  = out.tobytes()
+        tex  = Texture.create(size=(int(w), int(h)), colorfmt='rgb')
+        tex.blit_buffer(raw, colorfmt='rgb', bufferfmt='ubyte')
+        tex.flip_vertical()
+        # Begrens cache-størrelse
+        if len(_thumb_cache) >= _THUMB_MAX:
+            # Fjern eldste entry
+            oldest = next(iter(_thumb_cache))
+            del _thumb_cache[oldest]
+        _thumb_cache[key] = tex
+        return tex
+    except Exception:
+        return None
 
 
 def haptic_feedback():
@@ -1820,6 +1900,9 @@ class KommunikasjonstavleApp(App):
         # Innholdsflate i midten (tar all gjenværende plass)
         self._content = BoxLayout(orientation='vertical')
         root.add_widget(self._content)
+        # Hurtigrad permanent over navigasjonsbar
+        self._quickbar = self._build_quickbar()
+        root.add_widget(self._quickbar)
         # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
         self._navbar = self._build_navbar()
         root.add_widget(self._navbar)
@@ -1827,6 +1910,11 @@ class KommunikasjonstavleApp(App):
         self._show_home()
         # Oppdater widget ved oppstart
         Clock.schedule_once(lambda *_: _update_widget(self.data), 2.0)
+        # Oppdater widget hvert minutt mens appen er åpen
+        self._widget_tick = Clock.schedule_interval(
+            lambda *_: _update_widget(self.data), 60)
+        # Registrer AlarmManager for bakgrunnsoppdatering hvert 15. min
+        Clock.schedule_once(lambda *_: _schedule_widget_alarm(), 3.0)
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
         # Vis splash-overlay i 2 sekunder etter oppstart
@@ -1866,6 +1954,9 @@ class KommunikasjonstavleApp(App):
             else:
                 return False  # hjemskjerm + tom stack → lukk appen
         return False
+
+    def on_resume(self):
+        Clock.schedule_once(lambda *_: _update_widget(self.data), 0.5)
 
     def on_start(self):
         """
@@ -2032,6 +2123,33 @@ class KommunikasjonstavleApp(App):
     #  NAVIGASJONSBAR
     # ══════════════════════════════════════════════════
 
+    def _build_quickbar(self):
+        """
+        Permanent hurtigrad over navigasjonsbar – alltid synlig.
+        Rekker, Dagsplan, Tidsur, Spill – fire snarveier.
+        """
+        bar = BoxLayout(
+            size_hint_y=None, height=dp(52),
+            spacing=dp(4), padding=(dp(4), dp(3), dp(4), dp(2)),
+        )
+        with bar.canvas.before:
+            from kivy.graphics import Color as KC, Rectangle as KR
+            KC(0.84, 0.86, 0.92, 1.0)
+            self._qbar_bg = KR(pos=bar.pos, size=bar.size)
+        bar.bind(pos=lambda w, v: setattr(self._qbar_bg, 'pos', v),
+                 size=lambda w, v: setattr(self._qbar_bg, 'size', v))
+        _qcols = [
+            ('Rekker',   '#4ECDC4', self._nav_sequences),
+            ('Dagsplan', '#FF9F43', self._nav_dagsrytme),
+            ('Tidsur',   '#4D96FF', self._nav_tidsur),
+            ('Spill',    '#C77DFF', self._nav_bildepar),
+            ('Tegn',     '#FF9F43', self.go_draw),
+        ]
+        for lbl, col, fn in _qcols:
+            bar.add_widget(mk_btn(lbl, hex_k(col), h=dp(46), fs=12,
+                cb=lambda *_, f=fn: f()))
+        return bar
+
     def _build_navbar(self):
         """
         Navigasjonsbar plassert NEDERST for énhånds-bruk på store telefoner.
@@ -2058,9 +2176,9 @@ class KommunikasjonstavleApp(App):
             'Hjem', hex_k('#6BCB77'), fs=13,
             cb=self.go_home, **btn_kw,
         )
-        self._btn_draw = mk_btn(
-            'Tegn', hex_k('#FF9F43'), fs=13,
-            cb=self.go_draw, **btn_kw,
+        self._btn_search = mk_btn(
+            '🔍', hex_k('#9B59B6'), fs=18,
+            cb=lambda *_: self._global_search_popup(), **btn_kw,
         )
         self._btn_edit = mk_btn(
             'Red.', hex_k('#C77DFF'), fs=13,
@@ -2071,7 +2189,7 @@ class KommunikasjonstavleApp(App):
             cb=lambda *_: self._nav_settings(), **btn_kw,
         )
 
-        for w in [self._btn_back, self._btn_home, self._btn_draw,
+        for w in [self._btn_back, self._btn_home, self._btn_search,
                   self._btn_edit, self._btn_settings_nav]:
             bar.add_widget(w)
         return bar
@@ -2206,18 +2324,6 @@ class KommunikasjonstavleApp(App):
 
         outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6)))
 
-        # ── Fire hurtigknapper i én rad (nav-knapp-størrelse) ─────
-        qrow = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(6))
-        _qcols = [
-            ('Rekker',  '#4ECDC4', self._nav_sequences),
-            ('Dagsplan','#FF9F43', self._nav_dagsrytme),
-            ('Tidsur',  '#4D96FF', self._nav_tidsur),
-            ('Spill',   '#C77DFF', self._nav_bildepar),
-        ]
-        for lbl, col, fn in _qcols:
-            qrow.add_widget(mk_btn(lbl, hex_k(col), h=dp(50), fs=13,
-                cb=lambda *_, f=fn: f()))
-        outer.add_widget(qrow)
 
         # ── «Ny mappe»-knapp kun i redigeringsmodus ───────────────
         if self.edit_mode:
@@ -2320,6 +2426,10 @@ class KommunikasjonstavleApp(App):
             btn_bar.add_widget(mk_btn(
                 'Last opp', hex_k('#4D96FF'), h=dp(46), fs=13,
                 cb=lambda *_: self._upload_to_folder(fo),
+            ))
+            btn_bar.add_widget(mk_btn(
+                '🔍 Søk', hex_k('#9B59B6'), h=dp(46), fs=13,
+                cb=lambda *_: self._arasaac_search_popup(fo),
             ))
             btn_bar.add_widget(mk_btn(
                 '+  Ny mappe', hex_k('#FF9F43'), h=dp(46), fs=13,
@@ -2429,11 +2539,16 @@ class KommunikasjonstavleApp(App):
                 rr.size = w.size
             img_wrap.bind(pos=_upd_rr, size=_upd_rr)
 
-            img_wrap.add_widget(TappableImage(
-                tap, source=img_path,
-                allow_stretch=True,
-                keep_ratio=False,   # alltid kvadratisk – fyller hele sonen
-            ))
+            # Bruk thumbnail-cache for rask visning og lavt minnebruk
+            tile_sz = int(dp(110))
+            thumb_tex = get_thumbnail(img_path, tile_sz, tile_sz)
+            ti = TappableImage(
+                tap, source=img_path if thumb_tex is None else '',
+                allow_stretch=True, keep_ratio=False,
+            )
+            if thumb_tex:
+                ti.texture = thumb_tex
+            img_wrap.add_widget(ti)
             cell.add_widget(img_wrap)
 
         # Etikett-knapp – fyller resten av kortet
@@ -3683,6 +3798,8 @@ class KommunikasjonstavleApp(App):
         if self.edit_mode:
             outer.add_widget(mk_btn('+  Legg til aktivitet', hex_k('#6BCB77'), h=dp(50),
                 cb=lambda *_: self._dr_entry_popup(None)))
+            outer.add_widget(mk_btn('↗  Eksporter dagsplan', hex_k('#546E7A'), h=dp(48),
+                cb=lambda *_: self._export_popup('dagsrytme')))
 
         if current:
             e, s_m, t_m = current
@@ -3873,6 +3990,79 @@ class KommunikasjonstavleApp(App):
     #  TIDSUR
     # ══════════════════════════════════════════════════
 
+    def _export_popup(self, mode, seq=None):
+        """
+        Eksporter dagsplan eller handlingsrekke som PNG til Nedlastinger.
+        Kjøres i bakgrunnstråd for å ikke fryse UI.
+        """
+        if not PIL_OK:
+            self._toast('PIL ikke tilgjengelig.')
+            return
+        import datetime as _dt, threading
+
+        entries = (self.data.get('dagsrytme', []) if mode == 'dagsrytme'
+                   else (seq.get('items', []) if seq else []))
+        title   = ('Dagsplan' if mode == 'dagsrytme'
+                   else (seq.get('name', 'Rekke') if seq else 'Rekke'))
+        fname   = f'{title}_{_dt.date.today()}.png'
+
+        if not entries:
+            self._toast('Ingen innhold å eksportere.')
+            return
+
+        self._toast('Eksporterer…')
+
+        def _do():
+            try:
+                W, ROW, PAD = 800, 88, 20
+                H = PAD*2 + 60 + ROW * len(entries)
+                img = PILImage.new('RGB', (W, H), (250, 251, 255))
+                d   = ImageDraw.Draw(img)
+                try:
+                    fh = ImageFont.truetype(_FONT_PATH, 32)
+                    fr = ImageFont.truetype(_FONT_PATH, 22)
+                    fs = ImageFont.truetype(_FONT_PATH, 18)
+                except Exception:
+                    fh = fr = fs = ImageFont.load_default()
+
+                d.rectangle([0,0,W,58], fill=(21,28,68))
+                d.text((W//2, 29), title, font=fh,
+                       fill=(255,255,255), anchor='mm')
+
+                for i, e in enumerate(entries):
+                    y  = PAD + 60 + i * ROW
+                    bg = (240,242,252) if i%2==0 else (248,249,255)
+                    d.rectangle([0,y,W,y+ROW-2], fill=bg)
+                    nx = PAD
+                    if mode == 'dagsrytme':
+                        tid = f"{e.get('start','')}–{e.get('end','')}"
+                        d.text((PAD, y+ROW//2), tid, font=fs,
+                               fill=(80,90,120), anchor='lm')
+                        nx = 190
+                    ip = e.get('image','')
+                    if ip and os.path.exists(ip):
+                        try:
+                            sym = PILImage.open(ip).convert('RGBA')
+                            sym.thumbnail((ROW-8, ROW-8))
+                            img.paste(sym, (nx, y+4),
+                                      sym if sym.mode=='RGBA' else None)
+                            nx += ROW
+                        except Exception:
+                            pass
+                    d.text((nx+6, y+ROW//2), e.get('name',''),
+                           font=fr, fill=(20,24,60), anchor='lm')
+
+                dst = os.path.join(DOWNLOAD_DIR, fname)
+                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+                img.save(dst, quality=92)
+                Clock.schedule_once(
+                    lambda *_: self._toast(f'Lagret: {fname}'), 0)
+            except Exception as ex:
+                Clock.schedule_once(
+                    lambda *_: self._toast(f'Eksport feilet: {ex}'), 0)
+
+        threading.Thread(target=_do, daemon=True).start()
+
     def _nav_tidsur(self):
         self._push('home')
         self._show_tidsur()
@@ -3997,12 +4187,15 @@ class KommunikasjonstavleApp(App):
 
     def _draw_timer_disk(self, frac):
         """
-        Tegner en rund disk som gradvis fylles med hvitt.
-        frac=1.0 → full blå sirkel (full tid)
-        frac=0.0 → helt hvit disk (tom)
-        Fargen interpolerer fra blå (#1565C0) → lys (#90CAF9) → hvit.
+        Pai-animasjon: starter som hel rød sirkel, blir gradvis hvit.
+        frac=1.0 → full rød pai (full tid igjen)
+        frac=0.0 → helt hvit (tom – tid ute)
+
+        Visuelt: rød "pai" tegnes fra toppen og dekker frac*360 grader.
+        Resten er hvit. Ingen donut – full fyllt sirkel.
+        Fargen interpolerer: rød (#E53935) → oransje (#FF9800) → hvit
+        slik at siste 20% advarer med oransje.
         """
-        import math
         SIZE = 300
         cx = cy = SIZE // 2
         r  = SIZE // 2 - 8
@@ -4010,41 +4203,32 @@ class KommunikasjonstavleApp(App):
         pil_img = PILImage.new('RGBA', (SIZE, SIZE), (0, 0, 0, 0))
         d       = ImageDraw.Draw(pil_img)
 
-        # Bakgrunns-sirkel (lys grå)
-        d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(230, 233, 240, 255))
+        # Hvit bakgrunns-sirkel (vises når frac < 1.0)
+        d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(245, 245, 248, 255))
 
         if frac > 0.001:
-            # Beregn fargen: blå → lys blå → hvit
-            if frac > 0.5:
-                t = (frac - 0.5) * 2    # 0→1 fra midten til full
-                col = (
-                    int(144 + (21 - 144)   * t),   # R: 144→21
-                    int(202 + (101 - 202)  * t),   # G: 202→101
-                    int(249 + (192 - 249)  * t),   # B: 249→192
-                    255
-                )
+            # Farge: rød → oransje de siste 20%
+            if frac > 0.20:
+                col = (229, 57, 53, 255)    # rød #E53935
             else:
-                t = frac * 2             # 0→1 fra tom til midten
+                t = frac / 0.20             # 0→1 i siste 20%
                 col = (
-                    int(255 + (144 - 255) * t),    # R: 255→144
-                    int(255 + (202 - 255) * t),    # G: 255→202
-                    int(255 + (249 - 255) * t),    # B: 255→249
+                    int(255 + (229 - 255) * t),   # R: 255→229
+                    int(152 + (57  - 152) * t),   # G: 152→57
+                    int(0   + (53  - 0)   * t),   # B: 0→53
                     255
                 )
-            # Tegn fylt sektor (buet kake-stykke)
-            end_angle = -90 + frac * 360   # starter fra toppen
+            # Tegn rød pai fra toppen, dekker frac av sirkelen
+            end_angle = -90 + frac * 360
             d.pieslice(
                 [cx-r, cy-r, cx+r, cy+r],
                 start=-90, end=end_angle,
                 fill=col,
             )
 
-        # Hvit indre ring for "donut"-effekt
-        inner_r = int(r * 0.62)
-        d.ellipse(
-            [cx-inner_r, cy-inner_r, cx+inner_r, cy+inner_r],
-            fill=(248, 249, 252, 255),
-        )
+        # Tynn mørk kant
+        d.ellipse([cx-r, cy-r, cx+r, cy+r],
+                  outline=(180, 60, 50, 180), width=3)
 
         # Konvertér til Kivy-tekstur
         raw = pil_img.convert('RGBA').tobytes()
@@ -4728,6 +4912,265 @@ class KommunikasjonstavleApp(App):
             pop = Popup(title='Velg bilde', content=fc_layout, size_hint=(0.97, 0.93))
             fc_pop_ref[0] = pop
             pop.open()
+
+    def _global_search_popup(self):
+        """
+        Global søkepopup fra navbar: søk i symbolnavn på tvers av mapper
+        OG i ARASAAC. To faner: Lokalt og ARASAAC.
+        """
+        import threading, urllib.request as _ur, json as _js
+
+        pop_ref = [None]
+        layout  = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+
+        # Søkefelt
+        inp = TextInput(
+            hint_text='Søk i symboler og ARASAAC…',
+            multiline=False, size_hint_y=None, height=dp(48),
+            font_name='NotoSans', font_size=sp(15))
+        layout.add_widget(inp)
+
+        # Faner
+        tab_row = BoxLayout(size_hint_y=None, height=dp(42), spacing=dp(6))
+        btn_lok = mk_btn('Lokalt', hex_k('#4D96FF'), h=dp(38), fs=13)
+        btn_ara = mk_btn('ARASAAC', hex_k('#9B59B6'), h=dp(38), fs=13)
+        tab_row.add_widget(btn_lok)
+        tab_row.add_widget(btn_ara)
+        layout.add_widget(tab_row)
+
+        status = Label(text='Skriv og velg søketype.',
+                       size_hint_y=None, height=dp(26),
+                       font_size=fsp(12), color=(0.4,0.4,0.5,1))
+        layout.add_widget(status)
+
+        grid = GridLayout(cols=3, spacing=dp(6), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+        sv = ScrollView(); sv.add_widget(grid); layout.add_widget(sv)
+
+        def search_local(*_):
+            term = inp.text.strip().lower()
+            grid.clear_widgets()
+            if not term:
+                return
+            hits = [(fo, it)
+                    for fo in self.data.get('folders', [])
+                    for it in fo.get('items', [])
+                    if term in it.get('name','').lower()]
+            status.text = f'{len(hits)} lokale treff'
+            for fo, it in hits[:24]:
+                cell = BoxLayout(orientation='vertical',
+                                 size_hint_y=None, height=dp(112))
+                if it.get('image') and os.path.exists(it['image']):
+                    from kivy.uix.image import Image as KImg
+                    cell.add_widget(KImg(
+                        source=it['image'], allow_stretch=True,
+                        keep_ratio=True, size_hint_y=None, height=dp(82)))
+                lbl = Label(text=it['name'], font_size=sp(11),
+                            size_hint_y=None, height=dp(22),
+                            color=(0.1,0.1,0.2,1),
+                            shorten=True, shorten_from='right')
+                lbl.bind(size=lbl.setter('text_size'))
+                cell.add_widget(lbl)
+                def _tap(w, t, _fo=fo):
+                    if w.collide_point(*t.pos):
+                        pop_ref[0].dismiss()
+                        self._open_folder(_fo)
+                        return True
+                cell.bind(on_touch_down=_tap)
+                grid.add_widget(cell)
+
+        def search_arasaac(*_):
+            term = inp.text.strip()
+            if not term: return
+            status.text = 'Søker ARASAAC…'
+            grid.clear_widgets()
+            def fetch():
+                try:
+                    url = ('https://api.arasaac.org/api/pictograms/no/search/'
+                           + _ur.quote(term))
+                    data = _js.loads(_ur.urlopen(url, timeout=10).read())
+                    Clock.schedule_once(lambda *_: show_arasaac(data[:18]), 0)
+                except Exception as e:
+                    Clock.schedule_once(
+                        lambda *_: setattr(status, 'text', f'Feil: {e}'), 0)
+            threading.Thread(target=fetch, daemon=True).start()
+
+        def show_arasaac(data):
+            if not data:
+                status.text = 'Ingen ARASAAC-treff.'
+                return
+            status.text = f'{len(data)} ARASAAC-treff – velg mappe etter nedlasting'
+            for item in data:
+                pid  = item.get('_id') or item.get('id')
+                kw   = item.get('keywords', [{}])
+                name = kw[0].get('keyword', str(pid)) if kw else str(pid)
+                url  = (f'https://static.arasaac.org/pictograms/'
+                        f'{pid}/{pid}_300.png')
+                from kivy.uix.image import AsyncImage
+                cell = BoxLayout(orientation='vertical',
+                                 size_hint_y=None, height=dp(112))
+                ai = AsyncImage(source=url, allow_stretch=True,
+                                keep_ratio=True,
+                                size_hint_y=None, height=dp(82))
+                lbl = Label(text=name, font_size=sp(11),
+                            size_hint_y=None, height=dp(22),
+                            color=(0.1,0.1,0.2,1),
+                            shorten=True, shorten_from='right')
+                lbl.bind(size=lbl.setter('text_size'))
+                cell.add_widget(ai); cell.add_widget(lbl)
+                def _tap(w, t, _p=pid, _n=name, _u=url):
+                    if w.collide_point(*t.pos):
+                        self._arasaac_choose_folder(_p, _n, _u, pop_ref)
+                        return True
+                cell.bind(on_touch_down=_tap)
+                grid.add_widget(cell)
+
+        btn_lok.bind(on_release=search_local)
+        btn_ara.bind(on_release=search_arasaac)
+        inp.bind(on_text_validate=search_local)
+
+        pop = Popup(title='Søk', content=layout, size_hint=(0.96, 0.92))
+        pop_ref[0] = pop
+        pop.open()
+
+    def _arasaac_choose_folder(self, pid, name, img_url, pop_ref):
+        """Velg hvilken mappe ARASAAC-symbol skal legges i."""
+        folders = self.data.get('folders', [])
+        if not folders:
+            self._toast('Opprett en mappe først.')
+            return
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        layout.add_widget(Label(text='Velg mappe:',
+                                size_hint_y=None, height=dp(32),
+                                font_size=fsp(15), bold=True,
+                                color=(0.1,0.1,0.3,1)))
+        sv = ScrollView()
+        gl = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
+        gl.bind(minimum_height=gl.setter('height'))
+        fp = [None]
+        for fo in folders:
+            fo_ = fo
+            gl.add_widget(mk_btn(fo['name'], hex_k(fo['color']), h=dp(54),
+                cb=lambda *_, f=fo_: (
+                    fp.__setitem__(0, f),
+                    self._arasaac_download(pid, name, img_url, f, pop_ref),
+                    fp[0] and setattr(fp[0], '_chosen', True),
+                )))
+        sv.add_widget(gl)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(46),
+            cb=lambda *_: fp_pop.dismiss()))
+        fp_pop = Popup(title='Velg mappe', content=layout,
+                       size_hint=(0.82, 0.72))
+        fp_pop.open()
+
+    def _arasaac_search_popup(self, fo):
+        """
+        Søk i ARASAAC (13 000+ symboler, norsk, gratis).
+        Viser opptil 18 resultater som kan lastes ned direkte.
+        """
+        import threading, urllib.request as _ur, json as _js
+        pop_ref = [None]
+
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+
+        search_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        inp = TextInput(
+            hint_text='Søk på norsk eller engelsk…',
+            multiline=False, size_hint_x=0.76,
+            font_name='NotoSans', font_size=sp(15))
+        search_row.add_widget(inp)
+        search_row.add_widget(mk_btn('Søk', hex_k('#9B59B6'), h=dp(46), fs=14,
+            cb=lambda *_: do_search()))
+        layout.add_widget(search_row)
+
+        status = Label(text='Skriv et ord og trykk Søk.',
+                       size_hint_y=None, height=dp(28),
+                       font_size=fsp(13), color=(0.4, 0.4, 0.5, 1))
+        layout.add_widget(status)
+
+        grid = GridLayout(cols=3, spacing=dp(6), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+        sv = ScrollView()
+        sv.add_widget(grid)
+        layout.add_widget(sv)
+
+        def do_search(*_):
+            term = inp.text.strip()
+            if not term:
+                return
+            status.text = 'Søker…'
+            grid.clear_widgets()
+            def fetch():
+                try:
+                    url = ('https://api.arasaac.org/api/pictograms/no/search/'
+                           + _ur.quote(term))
+                    data = _js.loads(_ur.urlopen(url, timeout=10).read())
+                    Clock.schedule_once(lambda *_: show_results(data[:18]), 0)
+                except Exception as e:
+                    Clock.schedule_once(
+                        lambda *_: setattr(status, 'text', f'Feil: {e}'), 0)
+            threading.Thread(target=fetch, daemon=True).start()
+
+        def show_results(data):
+            if not data:
+                status.text = 'Ingen resultater.'
+                return
+            status.text = f'{len(data)} treff – trykk for å legge til'
+            for item in data:
+                pid  = item.get('_id') or item.get('id')
+                kw   = item.get('keywords', [{}])
+                name = kw[0].get('keyword', str(pid)) if kw else str(pid)
+                url  = (f'https://static.arasaac.org/pictograms/'
+                        f'{pid}/{pid}_300.png')
+                from kivy.uix.image import AsyncImage
+                cell = BoxLayout(orientation='vertical',
+                                 size_hint_y=None, height=dp(112))
+                ai = AsyncImage(source=url, allow_stretch=True,
+                                keep_ratio=True,
+                                size_hint_y=None, height=dp(82))
+                lbl = Label(text=name, font_size=sp(11),
+                            size_hint_y=None, height=dp(22),
+                            color=(0.1,0.1,0.2,1),
+                            shorten=True, shorten_from='right')
+                lbl.bind(size=lbl.setter('text_size'))
+                cell.add_widget(ai)
+                cell.add_widget(lbl)
+                _pid, _name, _url = pid, name, url
+                def _touch(w, t, _p=_pid, _n=_name, _u=_url):
+                    if w.collide_point(*t.pos):
+                        self._arasaac_download(_p, _n, _u, fo, pop_ref)
+                        return True
+                cell.bind(on_touch_down=_touch)
+                grid.add_widget(cell)
+
+        inp.bind(on_text_validate=lambda *_: do_search())
+        pop = Popup(title='ARASAAC symbolsøk',
+                    content=layout, size_hint=(0.96, 0.92))
+        pop_ref[0] = pop
+        pop.open()
+
+    def _arasaac_download(self, pid, name, img_url, fo, pop_ref):
+        """Laster ned symbol i bakgrunn og legger til i mappen."""
+        import threading, urllib.request as _ur
+        self._toast('Laster ned…')
+        def fetch():
+            try:
+                dst = os.path.join(IMG_DIR, f'arasaac_{pid}.png')
+                _ur.urlretrieve(img_url, dst)
+                fo['items'].append({
+                    'id': str(uuid.uuid4()), 'name': name, 'image': dst})
+                save_struct(self.data)
+                def _done(*_):
+                    self._toast(f'Lagt til: {name}')
+                    if pop_ref[0]:
+                        pop_ref[0].dismiss()
+                    self._show_folder(fid=fo['id'])
+                Clock.schedule_once(_done, 0)
+            except Exception as e:
+                Clock.schedule_once(
+                    lambda *_: self._toast(f'Nedlasting feilet: {e}'), 0)
+        threading.Thread(target=fetch, daemon=True).start()
 
     def _upload_to_folder(self, fo):
         """
