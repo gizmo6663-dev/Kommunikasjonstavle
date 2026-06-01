@@ -92,36 +92,8 @@ def _run_hook(ctx):
 ''')
         print(f"p4a_hooks: skrev kt_widget_info.xml -> {widget_info}")
 
-        # ── 2. Kopier java/ – både javaclasses og src/main/java ──
-        # javaclasses kopieres av p4a TIL src/main/java FØR Gradle.
-        # Vi skriver til begge for å være sikre.
-        if os.path.exists(java_src):
-            # Mål 1: src/main/java (direkte til Gradle-prosjektet)
-            java_dst = os.path.join(main_dir, 'java')
-            os.makedirs(java_dst, exist_ok=True)
-            for root_j, dirs, files in os.walk(java_src):
-                rel     = os.path.relpath(root_j, java_src)
-                dst_dir = os.path.join(java_dst, rel)
-                os.makedirs(dst_dir, exist_ok=True)
-                for f in files:
-                    shutil.copy2(os.path.join(root_j, f),
-                                 os.path.join(dst_dir, f))
-            print(f"p4a_hooks: kopierte java/ -> {java_dst}")
-
-            # Mål 2: javaclasses/kommunikasjonstavle (p4a sin staging-mappe)
-            javaclasses = os.path.join(
-                root, '.buildozer', 'android', 'platform',
-                'build-arm64-v8a', 'build', 'javaclasses',
-                'kommunikasjonstavle')
-            os.makedirs(javaclasses, exist_ok=True)
-            for root_j, dirs, files in os.walk(java_src):
-                rel     = os.path.relpath(root_j, java_src)
-                dst_dir = os.path.join(javaclasses, rel)
-                os.makedirs(dst_dir, exist_ok=True)
-                for f in files:
-                    shutil.copy2(os.path.join(root_j, f),
-                                 os.path.join(dst_dir, f))
-            print(f"p4a_hooks: kopierte java/ -> {javaclasses}")
+        # ── 2. Java – håndteres av android.add_src i buildozer.spec ─
+        print("p4a_hooks: java kopieres via android.add_src (ikke hooken)")
 
         # ── 3. Patch AndroidManifest.xml ──────────────────────────
         manifest = os.path.join(main_dir, 'AndroidManifest.xml')
