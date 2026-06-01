@@ -24,7 +24,6 @@ android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
 p4a.branch = v2024.01.21
-android.add_src = java
 p4a.hook   = p4a_hooks.py
 
 # ─── Tillatelser ──────────────────────────────────────────────────
