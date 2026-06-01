@@ -87,40 +87,9 @@ def _run_hook(ctx):
         # Tester om manifest-patch alene er nok (uten KtWidget.class)
         print("p4a_hooks: java-kopiering hoppet over (feilsøking)")
 
-        # ── 3. Patch AndroidManifest.xml ──────────────────────────
-        manifest = os.path.join(main_dir, 'AndroidManifest.xml')
-        if not os.path.exists(manifest):
-            print(f"p4a_hooks: manifest ikke funnet: {manifest}")
-            continue
-
-        with open(manifest, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        if 'KtWidget' in content:
-            print("p4a_hooks: KtWidget allerede i manifest")
-            continue
-
-        receiver_block = '''
-        <receiver
-            android:name="no.askapp.kommunikasjonstavle.KtWidget"
-            android:exported="true"
-            android:label="Dagsrytme">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/kt_widget_info" />
-        </receiver>'''
-
-        if '</application>' in content:
-            content = content.replace(
-                '</application>',
-                receiver_block + '\n    </application>')
-            with open(manifest, 'w', encoding='utf-8') as f:
-                f.write(content)
-            print("p4a_hooks: KtWidget lagt til i manifest")
-        else:
-            print("p4a_hooks: </application> ikke funnet!")
+        # ── 3. Manifest-patching DEAKTIVERT ──────────────────────
+        # KtWidget må kompileres inn i APK-en FØR manifestet patches.
+        # Begge deler aktiveres igjen når Java-kopiering er bekreftet OK.
+        print("p4a_hooks: manifest-patch hoppet over (widget deaktivert)")
 
     print("p4a_hooks: _run_hook ferdig")
