@@ -13,69 +13,62 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      - name: Steg 1 - Buildozer setup (stopper før Gradle)
+      - name: Bygg APK med Buildozer (Docker)
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            -c "pip install cmake==3.28.4 --quiet && \
-                buildozer android debug 2>&1 | tee /home/user/hostcwd/build_step1.log; \
-                true"
-        continue-on-error: true
+            -c "
+              pip install cmake==3.28.4 --quiet
 
-      - name: Steg 2 - Kopier KtWidget og ressurser
-        run: |
-          BASE=".buildozer/android/platform/build-arm64-v8a"
+              # Steg 1: Første bygg – setter opp mappestruktur
+              buildozer android debug 2>&1 | tee /home/user/hostcwd/build_step1.log || true
 
-          # KtWidget.java til javaclasses
-          JAVACLASSES="$BASE/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle"
-          mkdir -p "$JAVACLASSES"
-          cp java/no/askapp/kommunikasjonstavle/KtWidget.java "$JAVACLASSES/"
-          echo "KtWidget.java kopiert: $(ls $JAVACLASSES/)"
+              BASE=/home/user/hostcwd/.buildozer/android/platform/build-arm64-v8a
 
-          # kt_widget_info.xml til dists res/xml
-          RESXML="$BASE/dists/kommunikasjonstavle/src/main/res/xml"
-          mkdir -p "$RESXML"
-          printf '%s\n' \
-            '<?xml version="1.0" encoding="utf-8"?>' \
-            '<appwidget-provider' \
-            '    xmlns:android="http://schemas.android.com/apk/res/android"' \
-            '    android:minWidth="180dp"' \
-            '    android:minHeight="110dp"' \
-            '    android:minResizeWidth="120dp"' \
-            '    android:minResizeHeight="80dp"' \
-            '    android:targetCellWidth="3"' \
-            '    android:targetCellHeight="2"' \
-            '    android:updatePeriodMillis="1800000"' \
-            '    android:resizeMode="horizontal|vertical"' \
-            '    android:widgetCategory="home_screen" />' \
-            > "$RESXML/kt_widget_info.xml"
-          echo "kt_widget_info.xml kopiert: $(ls $RESXML/)"
+              # KtWidget.java til javaclasses
+              JAVACLASSES=\$BASE/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle
+              mkdir -p \$JAVACLASSES
+              cp /home/user/hostcwd/java/no/askapp/kommunikasjonstavle/KtWidget.java \$JAVACLASSES/
+              echo 'KtWidget.java kopiert OK'
 
-          # Patch AndroidManifest.xml
-          MANIFEST="$BASE/dists/kommunikasjonstavle/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            if grep -q "KtWidget" "$MANIFEST"; then
-              echo "KtWidget allerede i manifest"
-            else
-              sed -i 's|</application>|        <receiver android:name="no.askapp.kommunikasjonstavle.KtWidget" android:exported="true" android:label="Dagsrytme"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/kt_widget_info" /></receiver>\n    </application>|' "$MANIFEST"
-              echo "Manifest patchet - KtWidget lagt til"
-            fi
-          else
-            echo "FEIL: Manifest ikke funnet på $MANIFEST"
-            find .buildozer -name "AndroidManifest.xml" 2>/dev/null | head -5
-          fi
+              # kt_widget_info.xml til res/xml
+              RESXML=\$BASE/dists/kommunikasjonstavle/src/main/res/xml
+              mkdir -p \$RESXML
+              printf '%s\n' \
+                '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
+                '<appwidget-provider' \
+                '    xmlns:android=\"http://schemas.android.com/apk/res/android\"' \
+                '    android:minWidth=\"180dp\"' \
+                '    android:minHeight=\"110dp\"' \
+                '    android:minResizeWidth=\"120dp\"' \
+                '    android:minResizeHeight=\"80dp\"' \
+                '    android:targetCellWidth=\"3\"' \
+                '    android:targetCellHeight=\"2\"' \
+                '    android:updatePeriodMillis=\"1800000\"' \
+                '    android:resizeMode=\"horizontal|vertical\"' \
+                '    android:widgetCategory=\"home_screen\" />' \
+                > \$RESXML/kt_widget_info.xml
+              echo 'kt_widget_info.xml skrevet OK'
 
-      - name: Steg 3 - Bygg APK (Gradle)
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/home/user/hostcwd \
-            --entrypoint bash \
-            ghcr.io/kivy/buildozer:latest \
-            -c "pip install cmake==3.28.4 --quiet && \
-                buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log; \
-                exit \${PIPESTATUS[0]}"
+              # Patch AndroidManifest.xml
+              MANIFEST=\$BASE/dists/kommunikasjonstavle/src/main/AndroidManifest.xml
+              if [ -f \$MANIFEST ]; then
+                if grep -q KtWidget \$MANIFEST; then
+                  echo 'KtWidget allerede i manifest'
+                else
+                  sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
+                  echo 'Manifest patchet OK'
+                fi
+              else
+                echo 'ADVARSEL: Manifest ikke funnet'
+              fi
+
+              # Steg 2: Andre bygg – Gradle kompilerer med alle filer på plass
+              buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log
+              exit \${PIPESTATUS[0]}
+            "
 
       - name: Finn APK-fil
         id: find_apk
