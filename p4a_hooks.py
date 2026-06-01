@@ -70,8 +70,18 @@ def _run_hook(ctx):
     for main_dir in matches:
         print(f"p4a_hooks: behandler {main_dir}")
 
-        # ── 1. res-kopiering DEAKTIVERT – feilsøking ─────────────
-        print("p4a_hooks: res-kopiering hoppet over (feilsøking)")
+        # ── 1. Kopier res/ ────────────────────────────────────────
+        if os.path.exists(res_src):
+            res_dst = os.path.join(main_dir, 'res')
+            os.makedirs(res_dst, exist_ok=True)
+            for folder in os.listdir(res_src):
+                src_f = os.path.join(res_src, folder)
+                dst_f = os.path.join(res_dst, folder)
+                if os.path.isdir(src_f):
+                    if os.path.exists(dst_f):
+                        shutil.rmtree(dst_f)
+                    shutil.copytree(src_f, dst_f)
+                    print(f"p4a_hooks: kopierte res/{folder} -> {dst_f}")
 
         # ── 2. Java-kopiering DEAKTIVERT – feilsøking ────────────
         # Tester om manifest-patch alene er nok (uten KtWidget.class)
