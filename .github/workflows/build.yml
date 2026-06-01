@@ -13,26 +13,29 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      - name: Cache .buildozer (unntatt p4a-plattform)
-        uses: actions/cache@v4
-        with:
-          path: |
-            .buildozer/android/platform/build-arm64-v8a/build
-            .buildozer/android/platform/build-arm64-v8a/dists
-          key: buildozer-dists-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-dists-${{ runner.os }}-
-
-      - name: Forbered KtWidget FØR Buildozer
+      - name: Steg 1 - Buildozer setup (stopper før Gradle)
         run: |
-          # 1. KtWidget.java til javaclasses
-          JAVACLASSES=".buildozer/android/platform/build-arm64-v8a/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle"
+          docker run --rm \
+            -v ${{ github.workspace }}:/home/user/hostcwd \
+            --entrypoint bash \
+            ghcr.io/kivy/buildozer:latest \
+            -c "pip install cmake==3.28.4 --quiet && \
+                buildozer android debug 2>&1 | tee /home/user/hostcwd/build_step1.log; \
+                true"
+        continue-on-error: true
+
+      - name: Steg 2 - Kopier KtWidget og ressurser
+        run: |
+          BASE=".buildozer/android/platform/build-arm64-v8a"
+
+          # KtWidget.java til javaclasses
+          JAVACLASSES="$BASE/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle"
           mkdir -p "$JAVACLASSES"
           cp java/no/askapp/kommunikasjonstavle/KtWidget.java "$JAVACLASSES/"
-          echo "KtWidget.java -> $JAVACLASSES"
+          echo "KtWidget.java kopiert: $(ls $JAVACLASSES/)"
 
-          # 2. kt_widget_info.xml til Gradle res/xml/
-          RESXML=".buildozer/android/platform/build-arm64-v8a/dists/kommunikasjonstavle/src/main/res/xml"
+          # kt_widget_info.xml til dists res/xml
+          RESXML="$BASE/dists/kommunikasjonstavle/src/main/res/xml"
           mkdir -p "$RESXML"
           printf '%s\n' \
             '<?xml version="1.0" encoding="utf-8"?>' \
@@ -48,24 +51,31 @@ jobs:
             '    android:resizeMode="horizontal|vertical"' \
             '    android:widgetCategory="home_screen" />' \
             > "$RESXML/kt_widget_info.xml"
-          echo "kt_widget_info.xml -> $RESXML"
+          echo "kt_widget_info.xml kopiert: $(ls $RESXML/)"
 
-          # 3. Patch AndroidManifest.xml
-          MANIFEST=".buildozer/android/platform/build-arm64-v8a/dists/kommunikasjonstavle/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ] && ! grep -q "KtWidget" "$MANIFEST"; then
-            sed -i 's|</application>|        <receiver android:name="no.askapp.kommunikasjonstavle.KtWidget" android:exported="true" android:label="Dagsrytme"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/kt_widget_info" /></receiver>\n    </application>|' "$MANIFEST"
-            echo "Manifest patchet"
+          # Patch AndroidManifest.xml
+          MANIFEST="$BASE/dists/kommunikasjonstavle/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            if grep -q "KtWidget" "$MANIFEST"; then
+              echo "KtWidget allerede i manifest"
+            else
+              sed -i 's|</application>|        <receiver android:name="no.askapp.kommunikasjonstavle.KtWidget" android:exported="true" android:label="Dagsrytme"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/kt_widget_info" /></receiver>\n    </application>|' "$MANIFEST"
+              echo "Manifest patchet - KtWidget lagt til"
+            fi
           else
-            echo "Manifest ikke funnet eller KtWidget allerede der"
+            echo "FEIL: Manifest ikke funnet på $MANIFEST"
+            find .buildozer -name "AndroidManifest.xml" 2>/dev/null | head -5
           fi
 
-      - name: Bygg APK med Buildozer (Docker)
+      - name: Steg 3 - Bygg APK (Gradle)
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            -c "pip install cmake==3.28.4 --quiet && buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log; exit \${PIPESTATUS[0]}"
+            -c "pip install cmake==3.28.4 --quiet && \
+                buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log; \
+                exit \${PIPESTATUS[0]}"
 
       - name: Finn APK-fil
         id: find_apk
@@ -75,7 +85,7 @@ jobs:
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
           echo "Fant APK: $APK"
 
-      - name: Last opp APK som artefakt
+      - name: Last opp APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -83,7 +93,7 @@ jobs:
           path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
 
-      - name: Last opp bygglogg (alltid)
+      - name: Last opp bygglogg
         if: always()
         uses: actions/upload-artifact@v4
         with:
