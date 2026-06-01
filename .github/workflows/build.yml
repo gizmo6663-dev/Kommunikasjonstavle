@@ -13,6 +13,22 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
+      - name: Cache .buildozer
+        uses: actions/cache@v4
+        with:
+          path: .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Forbered KtWidget – kopier til javaclasses FØR Buildozer
+        run: |
+          JAVACLASSES=".buildozer/android/platform/build-arm64-v8a/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle"
+          mkdir -p "$JAVACLASSES"
+          cp java/no/askapp/kommunikasjonstavle/KtWidget.java "$JAVACLASSES/"
+          echo "KtWidget.java kopiert til: $JAVACLASSES"
+          ls -la "$JAVACLASSES/"
+
       - name: Bygg APK med Buildozer (Docker)
         run: |
           docker run --rm \
