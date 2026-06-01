@@ -13,52 +13,50 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      - name: Cache .buildozer
+      - name: Cache .buildozer (unntatt p4a-plattform)
         uses: actions/cache@v4
         with:
-          path: .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          path: |
+            .buildozer/android/platform/build-arm64-v8a/build
+            .buildozer/android/platform/build-arm64-v8a/dists
+          key: buildozer-dists-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            buildozer-dists-${{ runner.os }}-
 
-      - name: Forbered KtWidget og widget-ressurser FØR Buildozer
+      - name: Forbered KtWidget FØR Buildozer
         run: |
-          # 1. KtWidget.java til javaclasses (kompileres av p4a)
+          # 1. KtWidget.java til javaclasses
           JAVACLASSES=".buildozer/android/platform/build-arm64-v8a/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle"
           mkdir -p "$JAVACLASSES"
           cp java/no/askapp/kommunikasjonstavle/KtWidget.java "$JAVACLASSES/"
-          echo "KtWidget.java kopiert til: $JAVACLASSES"
+          echo "KtWidget.java -> $JAVACLASSES"
 
-          # 2. kt_widget_info.xml til Gradle-prosjektets res/xml/
+          # 2. kt_widget_info.xml til Gradle res/xml/
           RESXML=".buildozer/android/platform/build-arm64-v8a/dists/kommunikasjonstavle/src/main/res/xml"
           mkdir -p "$RESXML"
           cat > "$RESXML/kt_widget_info.xml" << 'XML'
-          <?xml version="1.0" encoding="utf-8"?>
-          <appwidget-provider
-              xmlns:android="http://schemas.android.com/apk/res/android"
-              android:minWidth="180dp"
-              android:minHeight="110dp"
-              android:minResizeWidth="120dp"
-              android:minResizeHeight="80dp"
-              android:targetCellWidth="3"
-              android:targetCellHeight="2"
-              android:updatePeriodMillis="1800000"
-              android:resizeMode="horizontal|vertical"
-              android:widgetCategory="home_screen" />
-          XML
-          echo "kt_widget_info.xml kopiert til: $RESXML"
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="120dp"
+    android:minResizeHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />
+XML
+          echo "kt_widget_info.xml -> $RESXML"
 
-          # 3. Patch AndroidManifest.xml med KtWidget receiver
+          # 3. Patch AndroidManifest.xml
           MANIFEST=".buildozer/android/platform/build-arm64-v8a/dists/kommunikasjonstavle/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST" ]; then
-            if ! grep -q "KtWidget" "$MANIFEST"; then
-              sed -i 's|</application>|        <receiver android:name="no.askapp.kommunikasjonstavle.KtWidget" android:exported="true" android:label="Dagsrytme"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/kt_widget_info" /></receiver>\n    </application>|' "$MANIFEST"
-              echo "Manifest patchet med KtWidget"
-            else
-              echo "KtWidget allerede i manifest"
-            fi
+          if [ -f "$MANIFEST" ] && ! grep -q "KtWidget" "$MANIFEST"; then
+            sed -i 's|</application>|        <receiver android:name="no.askapp.kommunikasjonstavle.KtWidget" android:exported="true" android:label="Dagsrytme"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/kt_widget_info" /></receiver>\n    </application>|' "$MANIFEST"
+            echo "Manifest patchet"
           else
-            echo "Manifest ikke funnet – hooken tar seg av det"
+            echo "Manifest ikke funnet eller KtWidget allerede der"
           fi
 
       - name: Bygg APK med Buildozer (Docker)
