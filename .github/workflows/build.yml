@@ -34,20 +34,20 @@ jobs:
           # 2. kt_widget_info.xml til Gradle res/xml/
           RESXML=".buildozer/android/platform/build-arm64-v8a/dists/kommunikasjonstavle/src/main/res/xml"
           mkdir -p "$RESXML"
-          cat > "$RESXML/kt_widget_info.xml" << 'XML'
-<?xml version="1.0" encoding="utf-8"?>
-<appwidget-provider
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="180dp"
-    android:minHeight="110dp"
-    android:minResizeWidth="120dp"
-    android:minResizeHeight="80dp"
-    android:targetCellWidth="3"
-    android:targetCellHeight="2"
-    android:updatePeriodMillis="1800000"
-    android:resizeMode="horizontal|vertical"
-    android:widgetCategory="home_screen" />
-XML
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="utf-8"?>' \
+            '<appwidget-provider' \
+            '    xmlns:android="http://schemas.android.com/apk/res/android"' \
+            '    android:minWidth="180dp"' \
+            '    android:minHeight="110dp"' \
+            '    android:minResizeWidth="120dp"' \
+            '    android:minResizeHeight="80dp"' \
+            '    android:targetCellWidth="3"' \
+            '    android:targetCellHeight="2"' \
+            '    android:updatePeriodMillis="1800000"' \
+            '    android:resizeMode="horizontal|vertical"' \
+            '    android:widgetCategory="home_screen" />' \
+            > "$RESXML/kt_widget_info.xml"
           echo "kt_widget_info.xml -> $RESXML"
 
           # 3. Patch AndroidManifest.xml
