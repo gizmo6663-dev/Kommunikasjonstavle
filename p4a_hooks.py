@@ -70,26 +70,76 @@ def _run_hook(ctx):
     for main_dir in matches:
         print(f"p4a_hooks: behandler {main_dir}")
 
-        # ── 1. Kopier res/ ────────────────────────────────────────
-        if os.path.exists(res_src):
-            res_dst = os.path.join(main_dir, 'res')
-            os.makedirs(res_dst, exist_ok=True)
-            for folder in os.listdir(res_src):
-                src_f = os.path.join(res_src, folder)
-                dst_f = os.path.join(res_dst, folder)
-                if os.path.isdir(src_f):
-                    if os.path.exists(dst_f):
-                        shutil.rmtree(dst_f)
-                    shutil.copytree(src_f, dst_f)
-                    print(f"p4a_hooks: kopierte res/{folder} -> {dst_f}")
+        # ── 1. res/xml/kt_widget_info.xml – skriv direkte ───────
+        # Kopierer IKKE hele res/-mappen – det krasjer AAPT2.
+        # Skriver kt_widget_info.xml direkte til riktig sti.
+        xml_dst = os.path.join(main_dir, 'res', 'xml')
+        os.makedirs(xml_dst, exist_ok=True)
+        widget_info = os.path.join(xml_dst, 'kt_widget_info.xml')
+        with open(widget_info, 'w', encoding='utf-8') as wf:
+            wf.write('''<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="120dp"
+    android:minResizeHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />
+''')
+        print(f"p4a_hooks: skrev kt_widget_info.xml -> {widget_info}")
 
-        # ── 2. Java-kopiering DEAKTIVERT – feilsøking ────────────
-        # Tester om manifest-patch alene er nok (uten KtWidget.class)
-        print("p4a_hooks: java-kopiering hoppet over (feilsøking)")
+        # ── 2. Kopier java/ inkrementelt ──────────────────────────
+        if os.path.exists(java_src):
+            java_dst = os.path.join(main_dir, 'java')
+            os.makedirs(java_dst, exist_ok=True)
+            for root_j, dirs, files in os.walk(java_src):
+                rel     = os.path.relpath(root_j, java_src)
+                dst_dir = os.path.join(java_dst, rel)
+                os.makedirs(dst_dir, exist_ok=True)
+                for f in files:
+                    shutil.copy2(
+                        os.path.join(root_j, f),
+                        os.path.join(dst_dir, f))
+            print(f"p4a_hooks: kopierte java/ -> {java_dst}")
 
-        # ── 3. Manifest-patching DEAKTIVERT ──────────────────────
-        # KtWidget må kompileres inn i APK-en FØR manifestet patches.
-        # Begge deler aktiveres igjen når Java-kopiering er bekreftet OK.
-        print("p4a_hooks: manifest-patch hoppet over (widget deaktivert)")
+        # ── 3. Patch AndroidManifest.xml ──────────────────────────
+        manifest = os.path.join(main_dir, 'AndroidManifest.xml')
+        if not os.path.exists(manifest):
+            print(f"p4a_hooks: manifest ikke funnet: {manifest}")
+            continue
+
+        with open(manifest, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        if 'KtWidget' in content:
+            print("p4a_hooks: KtWidget allerede i manifest")
+            continue
+
+        receiver_block = '''
+        <receiver
+            android:name="no.askapp.kommunikasjonstavle.KtWidget"
+            android:exported="true"
+            android:label="Dagsrytme">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/kt_widget_info" />
+        </receiver>'''
+
+        if '</application>' in content:
+            content = content.replace(
+                '</application>',
+                receiver_block + '\n    </application>')
+            with open(manifest, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print("p4a_hooks: KtWidget lagt til i manifest")
+        else:
+            print("p4a_hooks: </application> ikke funnet!")
 
     print("p4a_hooks: _run_hook ferdig")
