@@ -20,22 +20,24 @@ jobs:
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
+              set -e
               pip install cmake==3.28.4 --quiet
+              cd /home/user/hostcwd
 
-              # Steg 1: Første bygg – setter opp mappestruktur
-              buildozer android debug 2>&1 | tee /home/user/hostcwd/build_step1.log || true
+              # Steg 1: Sett opp dists-struktur
+              buildozer android debug 2>&1 | tee build_step1.log || true
 
-              BASE=/home/user/hostcwd/.buildozer/android/platform/build-arm64-v8a
+              BASE=.buildozer/android/platform/build-arm64-v8a
+              DIST=\$BASE/dists/kommunikasjonstavle
 
-              # KtWidget.java til javaclasses
-              JAVACLASSES=\$BASE/build/javaclasses/kommunikasjonstavle/no/askapp/kommunikasjonstavle
-              mkdir -p \$JAVACLASSES
-              cp /home/user/hostcwd/java/no/askapp/kommunikasjonstavle/KtWidget.java \$JAVACLASSES/
-              echo 'KtWidget.java kopiert OK'
+              # Kopier KtWidget.java direkte til Gradle src/main/java
+              KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
+              mkdir -p \$KTDST
+              cp java/no/askapp/kommunikasjonstavle/KtWidget.java \$KTDST/
+              echo \"KtWidget.java -> \$KTDST\"
 
-              # kt_widget_info.xml til res/xml
-              RESXML=\$BASE/dists/kommunikasjonstavle/src/main/res/xml
-              mkdir -p \$RESXML
+              # kt_widget_info.xml
+              mkdir -p \$DIST/src/main/res/xml
               printf '%s\n' \
                 '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
                 '<appwidget-provider' \
@@ -49,24 +51,23 @@ jobs:
                 '    android:updatePeriodMillis=\"1800000\"' \
                 '    android:resizeMode=\"horizontal|vertical\"' \
                 '    android:widgetCategory=\"home_screen\" />' \
-                > \$RESXML/kt_widget_info.xml
-              echo 'kt_widget_info.xml skrevet OK'
+                > \$DIST/src/main/res/xml/kt_widget_info.xml
+              echo 'kt_widget_info.xml skrevet'
 
-              # Patch AndroidManifest.xml
-              MANIFEST=\$BASE/dists/kommunikasjonstavle/src/main/AndroidManifest.xml
-              if [ -f \$MANIFEST ]; then
-                if grep -q KtWidget \$MANIFEST; then
-                  echo 'KtWidget allerede i manifest'
-                else
-                  sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
-                  echo 'Manifest patchet OK'
-                fi
-              else
-                echo 'ADVARSEL: Manifest ikke funnet'
+              # Manifest-patch
+              MANIFEST=\$DIST/src/main/AndroidManifest.xml
+              if [ -f \$MANIFEST ] && ! grep -q KtWidget \$MANIFEST; then
+                sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
+                echo 'Manifest patchet'
               fi
 
-              # Steg 2: Andre bygg – Gradle kompilerer med alle filer på plass
-              buildozer android debug 2>&1 | tee /home/user/hostcwd/build.log
+              # KRITISK: Slett Gradle sin build-cache så den rekompilerer
+              rm -rf \$DIST/build
+              rm -rf \$DIST/.gradle
+              echo 'Gradle cache slettet – tvinger rekompilering'
+
+              # Steg 2: Bygg på nytt – Gradle MÅ rekompilere nå
+              buildozer android debug 2>&1 | tee build.log
               exit \${PIPESTATUS[0]}
             "
 
@@ -76,7 +77,6 @@ jobs:
         run: |
           APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
-          echo "Fant APK: $APK"
 
       - name: Last opp APK
         if: success()
