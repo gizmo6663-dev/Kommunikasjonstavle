@@ -32,6 +32,13 @@ jobs:
 
               echo '=== INJISERER KTWIDGET ==='
 
+              # Sjekk at dists-mappen eksisterer
+              if [ ! -d \$DIST ]; then
+                echo 'FEIL: dists-mappen finnes ikke – steg 1 feilet for tidlig'
+                cat build_step1.log > build.log
+                exit 1
+              fi
+
               # KtWidget.java til src/main/java
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
               mkdir -p \$KTDST
@@ -62,6 +69,24 @@ jobs:
                 sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
                 echo 'Manifest patchet'
               fi
+
+              echo '=== MANIFEST SJEKK ==='
+              grep -c KtWidget \$MANIFEST && echo 'KtWidget i manifest: JA' || echo 'KtWidget i manifest: NEI'
+
+              # Slett alle Gradle-cacher som kan blokkere oppdatering
+              rm -rf \$DIST/build/intermediates/merged_manifests
+              rm -rf \$DIST/build/intermediates/merged_manifest
+              rm -rf \$DIST/build/intermediates/manifest_merge_report
+              rm -rf \$DIST/build/tmp/processDebugManifest
+              rm -rf \$DIST/build/tmp/processDebugMainManifest
+              rm -rf \$DIST/build/intermediates/packaged_res
+              rm -rf \$DIST/build/intermediates/processed_res
+              rm -rf \$DIST/build/tmp/processDebugResources
+              rm -rf \$DIST/build/intermediates/dex
+              rm -rf \$DIST/build/intermediates/classes
+              rm -rf \$DIST/build/tmp/compileDebugJavaWithJavac
+              rm -rf \$DIST/build/tmp/dexBuilderDebug
+              echo 'Alle Gradle-cacher slettet'
 
               echo '=== KALLER GRADLE DIREKTE ==='
               cd \$DIST
