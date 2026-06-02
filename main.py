@@ -551,33 +551,45 @@ def _schedule_widget_alarm():
 
 def _update_widget(data):
     """
-    Skriver dagsrytme-status til SharedPreferences for hjemskjerm-widgeten.
-    Sendes som broadcast slik at widgeten oppdateres umiddelbart.
-    Hele funksjonen er wrapped i try/except – krasj her skal aldri
-    påvirke resten av appen.
+    Skriver dagsrytme-status + bildedata til SharedPreferences.
+    KtWidget leser dette og viser bilde av aktiv/neste aktivitet.
     """
     if platform != 'android':
         return
     try:
-        import datetime as _dt
+        import datetime as _dt, base64 as _b64
         from jnius import autoclass
         from android import mActivity
 
         prefs  = mActivity.getSharedPreferences('kt_widget', 0)
         editor = prefs.edit()
 
-        entries = data.get('dagsrytme', [])
-        now = _dt.datetime.now()
+        entries   = data.get('dagsrytme', [])
+        now       = _dt.datetime.now()
         now_total = now.hour * 60 + now.minute
 
         def to_min(t):
             try:
                 h, m = str(t).split(':')
-                return int(h) * 60 + int(m)
+                return int(h)*60 + int(m)
             except Exception:
                 return -1
 
-        current = None
+        def encode_image(path, size=80):
+            """Skalerer bilde og returnerer base64-streng for SharedPreferences."""
+            if not PIL_OK or not path or not os.path.exists(path):
+                return ''
+            try:
+                img = PILImage.open(path).convert('RGB')
+                img.thumbnail((size, size), PILImage.LANCZOS)
+                import io
+                buf = io.BytesIO()
+                img.save(buf, format='PNG')
+                return _b64.b64encode(buf.getvalue()).decode('utf-8')
+            except Exception:
+                return ''
+
+        current  = None
         upcoming = None
         for e in entries:
             s = to_min(e.get('start', ''))
@@ -597,28 +609,38 @@ def _update_widget(data):
             editor.putString('current_activity', current['name'])
             editor.putString('next_activity',    current['name'])
             editor.putString('next_time',
-                'Slutter om ' + str(rem) + ' min  (kl. ' + str(current.get('end','')) + ')')
+                'Slutter om ' + str(rem) + ' min')
+            editor.putString('current_image',
+                encode_image(current.get('image', '')))
+            editor.putString('next_image',
+                encode_image(upcoming.get('image','') if upcoming else ''))
         elif upcoming:
-            wait = to_min(upcoming.get('start', '')) - now_total
+            wait = to_min(upcoming.get('start','')) - now_total
             editor.putString('status',           'upcoming')
             editor.putString('current_activity', '')
             editor.putString('next_activity',    upcoming['name'])
             editor.putString('next_time',
-                'Om ' + str(wait) + ' min  (kl. ' + str(upcoming.get('start','')) + ')')
+                'Om ' + str(wait) + ' min (kl. ' + str(upcoming.get('start','')) + ')')
+            editor.putString('current_image',    '')
+            editor.putString('next_image',
+                encode_image(upcoming.get('image', '')))
         elif entries:
             editor.putString('status',           'done')
             editor.putString('current_activity', '')
             editor.putString('next_activity',    '')
             editor.putString('next_time',        '')
+            editor.putString('current_image',    '')
+            editor.putString('next_image',       '')
         else:
             editor.putString('status',           'empty')
             editor.putString('current_activity', '')
             editor.putString('next_activity',    '')
             editor.putString('next_time',        '')
+            editor.putString('current_image',    '')
+            editor.putString('next_image',       '')
 
         editor.apply()
 
-        # Broadcast til widget om oppdatering
         Intent        = autoclass('android.content.Intent')
         AppWidgetMgr  = autoclass('android.appwidget.AppWidgetManager')
         ComponentName = autoclass('android.content.ComponentName')
@@ -627,16 +649,10 @@ def _update_widget(data):
             mActivity.getPackageName(),
             'no.askapp.kommunikasjonstavle.KtWidget'))
         mActivity.sendBroadcast(broadcast)
-        logging.info('Widget oppdatert: %s', prefs.getString('status', '?'))
+        logging.info('Widget oppdatert: %s', prefs.getString('status','?'))
     except Exception as e:
-        logging.debug('_update_widget feilet (ikke kritisk): %s', e)
+        logging.debug('_update_widget feilet: %s', e)
 
-
-# ── Thumbnail-cache ──────────────────────────────────────────────
-# Skalerte versjoner av symbolbilder cachet i minnet.
-# Nøkkel: (filsti, bredde, høyde)  →  Kivy Texture
-_thumb_cache = {}
-_THUMB_MAX   = 200   # maks antall thumbnails i minnet
 
 def get_thumbnail(path, w, h):
     """
@@ -1897,12 +1913,12 @@ class KommunikasjonstavleApp(App):
         # Tittellinje øverst (slim, ikke-interaktiv, mørk)
         self._bottombar = self._build_bottombar()
         root.add_widget(self._bottombar)
+        # Hurtigrad rett under tittellinje
+        self._quickbar = self._build_quickbar()
+        root.add_widget(self._quickbar)
         # Innholdsflate i midten (tar all gjenværende plass)
         self._content = BoxLayout(orientation='vertical')
         root.add_widget(self._content)
-        # Hurtigrad permanent over navigasjonsbar
-        self._quickbar = self._build_quickbar()
-        root.add_widget(self._quickbar)
         # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
         self._navbar = self._build_navbar()
         root.add_widget(self._navbar)
@@ -1954,6 +1970,15 @@ class KommunikasjonstavleApp(App):
             else:
                 return False  # hjemskjerm + tom stack → lukk appen
         return False
+
+    def on_pause(self):
+        # Lukk eventuelle åpne popup-er ved bakgrunn
+        from kivy.uix.popup import Popup as KPopup
+        for w in list(Window.children):
+            if isinstance(w, KPopup):
+                w.dismiss()
+        save_struct(self.data, immediate=True)
+        return True
 
     def on_resume(self):
         Clock.schedule_once(lambda *_: _update_widget(self.data), 0.5)
@@ -2177,7 +2202,7 @@ class KommunikasjonstavleApp(App):
             cb=self.go_home, **btn_kw,
         )
         self._btn_search = mk_btn(
-            '🔍', hex_k('#9B59B6'), fs=18,
+            'Søk', hex_k('#9B59B6'), fs=13,
             cb=lambda *_: self._global_search_popup(), **btn_kw,
         )
         self._btn_edit = mk_btn(
@@ -3611,6 +3636,12 @@ class KommunikasjonstavleApp(App):
         kb_row.add_widget(kb_on); kb_row.add_widget(kb_off)
         outer.add_widget(kb_row)
 
+        # ── Hjelp ────────────────────────────────────────────────────
+        outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08,0.10,0.35,1), halign='left'))
+        outer.add_widget(mk_btn('Les brukerveiledning', hex_k('#4D96FF'), h=dp(54), fs=15,
+            cb=lambda *_: self._show_help_popup()))
+
         # ── Personvern ───────────────────────────────────────────────
         outer.add_widget(Label(
             text='Personvern:',
@@ -3637,6 +3668,75 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════
     #  PERSONVERNERKLÆRING
     # ══════════════════════════════════════════════════
+
+    def _show_help_popup(self):
+        """Brukerveiledning som beskriver alle funksjoner."""
+        HELP = """KOMMUNIKASJONSTAVLE – BRUKERVEILEDNING
+
+HURTIGRAD (under tittellinjen)
+• Rekker – Handlingsrekker: visuelle sekvenser av bilder i rekkefølge
+• Dagsplan – Dagsrytme: tidsbasert plan for dagen med klokkeslett
+• Tidsur – Visuell nedtelling med rød pai som tømmes
+• Spill – Bildepar-minnespill med symbolene dine
+• Tegn – Fri tegning med ulike penseltyper og farger
+
+NAVIGASJONSBAR (bunnen)
+• Tilbake – Gå ett steg tilbake
+• Hjem – Gå til startskjermen
+• Søk – Søk lokalt i alle symboler ELLER hent fra ARASAAC (13 000+ norske symboler)
+• Red. – Slå redigering av/på. I redigeringsmodus kan du legge til, flytte og slette
+• Innst. – Innstillinger og denne veiledningen
+
+MAPPER OG SYMBOLER
+• Opprett mapper fra startskjermen i redigeringsmodus
+• Trykk på en mappe for å åpne den
+• I en mappe: legg til bilder via kamera, filvelger, tegning eller ARASAAC-søk
+• Last ned symboler til Nedlastinger via «Ned»-knappen
+• Flytt symboler mellom mapper via «Flytt»-knappen
+
+ARASAAC-SØKET
+• Skriv et norsk eller engelsk ord i søkefeltet
+• Velg mellom «Lokalt» (egne bilder) og «ARASAAC» (nettbasert bibliotek)
+• Trykk på et symbol for å laste det ned til en mappe
+
+DAGSPLAN
+• Legg til aktiviteter med start- og sluttid og valgfritt bilde
+• Dagsplanen vises automatisk på hjemskjerm-widgeten
+• Eksporter dagsplanen som bilde til Nedlastinger
+
+HANDLINGSREKKER
+• Opprett rekker med bilder i rekkefølge (f.eks. påkledningsrutine)
+• Trykk på bildet for å spille av rekken bilde for bilde
+• Konfetti vises automatisk når rekken er fullført
+• Eksporter rekken som bilde
+
+TIDSUR
+• Velg tid fra forhåndsinnstillinger (1–10 min) eller slider
+• Rød pai tømmes gradvis – lett å forstå for barn
+• Konfetti og lydmelding når tiden er ute
+
+INNSTILLINGER
+• Høykontrast – svart/hvitt for bedre synlighet
+• Tekststørrelse – fire nivåer
+• Les opp – trykk på et symbol for å høre navnet
+• Konfetti-knapp – alltid synlig på skjermen
+"""
+        from kivy.uix.scrollview import ScrollView
+        layout = BoxLayout(orientation='vertical', padding=dp(10))
+        sv = ScrollView()
+        lbl = Label(
+            text=HELP,
+            font_name='NotoSans', font_size=fsp(13),
+            color=(0.1,0.1,0.3,1),
+            halign='left', valign='top',
+            size_hint_y=None,
+        )
+        lbl.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+        lbl.bind(texture_size=lambda w,v: setattr(w,'height',v[1]))
+        sv.add_widget(lbl)
+        layout.add_widget(sv)
+        Popup(title='Brukerveiledning', content=layout,
+              size_hint=(0.95, 0.92)).open()
 
     def _show_privacy_popup(self):
         """
@@ -4044,8 +4144,10 @@ class KommunikasjonstavleApp(App):
                         try:
                             sym = PILImage.open(ip).convert('RGBA')
                             sym.thumbnail((ROW-8, ROW-8))
-                            img.paste(sym, (nx, y+4),
-                                      sym if sym.mode=='RGBA' else None)
+                            # Bruk alfa-kanal som maske, eller konverter til RGB
+                            r, g, b, a = sym.split()
+                            sym_rgb = PILImage.merge('RGB', (r, g, b))
+                            img.paste(sym_rgb, (nx, y+4), mask=a)
                             nx += ROW
                         except Exception:
                             pass
@@ -4054,7 +4156,7 @@ class KommunikasjonstavleApp(App):
 
                 dst = os.path.join(DOWNLOAD_DIR, fname)
                 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-                img.save(dst, quality=92)
+                img.save(dst)  # PNG – ingen quality-parameter
                 Clock.schedule_once(
                     lambda *_: self._toast(f'Lagret: {fname}'), 0)
             except Exception as ex:
