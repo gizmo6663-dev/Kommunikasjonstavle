@@ -1962,11 +1962,8 @@ class KommunikasjonstavleApp(App):
         return False
 
     def on_pause(self):
-        # Lukk eventuelle åpne popup-er ved bakgrunn
-        from kivy.uix.popup import Popup as KPopup
-        for w in list(Window.children):
-            if isinstance(w, KPopup):
-                w.dismiss()
+        # IKKE lukk popup-er – bildevelgeren sender appen til bakgrunn
+        # og da ville aktivitets-popup-en forsvinne
         save_struct(self.data, immediate=True)
         return True
 
