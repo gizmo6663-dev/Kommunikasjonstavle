@@ -3,49 +3,29 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="horizontal"
+    android:orientation="vertical"
     android:gravity="center_vertical"
-    android:padding="8dp"
+    android:padding="12dp"
     android:background="#F4F5FA">
 
-    <ImageView
-        android:id="@+id/kt_img_current"
-        android:layout_width="72dp"
-        android:layout_height="72dp"
-        android:scaleType="centerCrop" />
-
-    <LinearLayout
-        android:layout_width="0dp"
+    <TextView
+        android:id="@+id/kt_line1"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp">
-        <TextView
-            android:id="@+id/kt_line1"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:textColor="#12183A"
-            android:maxLines="1"
-            android:ellipsize="end" />
-        <TextView
-            android:id="@+id/kt_line2"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textSize="12sp"
-            android:textColor="#667788"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:layout_marginTop="3dp" />
-    </LinearLayout>
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:textColor="#12183A"
+        android:maxLines="1"
+        android:ellipsize="end" />
 
-    <ImageView
-        android:id="@+id/kt_img_next"
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:scaleType="centerCrop"
-        android:alpha="0.5" />
+    <TextView
+        android:id="@+id/kt_line2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="#4D96FF"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:layout_marginTop="4dp" />
 
 </LinearLayout>
