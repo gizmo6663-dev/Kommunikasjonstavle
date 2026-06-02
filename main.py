@@ -979,57 +979,33 @@ def _handle_share_intent(intent):
 def _copy_content_uri(uri, dst_path):
     """
     Kopierer en Android content-URI til lokal fil.
-    Bruker openFileDescriptor + detachFd som gir POSIX fd Python kan lese.
-    Fallback: Channels.newChannel + ByteBuffer hvis detachFd feiler.
+    Bruker openInputStream() som returnerer et Java InputStream-objekt,
+    og leser det chunk for chunk via read(bytearray).
+    Dette er den mest pålitelige metoden med jnius.
     """
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-
-    # Metode 1: detachFd → os.fdopen (raskest)
-    try:
-        from android import mActivity
-        cr  = mActivity.getContentResolver()
-        pfd = cr.openFileDescriptor(uri, 'r')
-        fd  = pfd.detachFd()
-        with os.fdopen(fd, 'rb') as f:
-            data = f.read()
-        with open(dst_path, 'wb') as f:
-            f.write(data)
-        _plog(f'_copy_content_uri (fd) OK: {len(data)} bytes')
-        _scale_image(dst_path)
-        return True
-    except Exception as e1:
-        _plog(f'_copy_content_uri metode 1 feilet: {e1}')
-
-    # Metode 2: openInputStream via Channels + ByteBuffer
     try:
         from jnius import autoclass
         from android import mActivity
-        Channels   = autoclass('java.nio.channels.Channels')
-        ByteBuffer = autoclass('java.nio.ByteBuffer')
         cr  = mActivity.getContentResolver()
         ins = cr.openInputStream(uri)
-        ch  = Channels.newChannel(ins)
-        buf = ByteBuffer.allocate(8 * 1024 * 1024)  # 8MB buffer
+        # Les i 64KB chunks via Python bytearray
         chunks = []
+        buf    = bytearray(65536)
         while True:
-            buf.clear()
-            n = ch.read(buf)
-            if n <= 0:
+            n = ins.read(buf, 0, len(buf))
+            if n < 0:
                 break
-            buf.flip()
-            arr = bytearray(n)
-            for i in range(n):
-                arr[i] = buf.get() & 0xFF
-            chunks.append(bytes(arr))
-        ch.close(); ins.close()
+            chunks.append(bytes(buf[:n]))
+        ins.close()
         data = b''.join(chunks)
         with open(dst_path, 'wb') as f:
             f.write(data)
-        _plog(f'_copy_content_uri (channel) OK: {len(data)} bytes')
+        _plog(f'_copy_content_uri OK: {len(data)} bytes')
         _scale_image(dst_path)
         return True
-    except Exception as e2:
-        _plog(f'_copy_content_uri metode 2 feilet: {e2}')
+    except Exception as e:
+        _plog(f'_copy_content_uri feil: {e}')
         logging.exception('_copy_content_uri: feil')
         return False
 
