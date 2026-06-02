@@ -4024,7 +4024,7 @@ INNSTILLINGER
             size_hint_y=None, height=dp(26), font_size=fsp(13), color=(0.3, 0.3, 0.3, 1))
         layout.add_widget(img_lbl)
         layout.add_widget(mk_btn('Velg bilde', hex_k('#4D96FF'), h=dp(48),
-            cb=lambda *_: self._pick_image(chosen_img, img_lbl, pop_ref[0])))
+            cb=lambda *_: self._pick_from_folders(chosen_img, img_lbl)))
 
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
         def on_save(*_):
@@ -4940,6 +4940,83 @@ INNSTILLINGER
     # ══════════════════════════════════════════════════
     #  BILDE – LAST OPP / LAST NED
     # ══════════════════════════════════════════════════
+
+    def _pick_from_folders(self, chosen_img_ref, label_widget):
+        """
+        Lar brukeren velge et allerede opplastet bilde fra mappene.
+        Viser alle mapper og bildene i dem – ingen filvelger nødvendig.
+        """
+        pop_ref = [None]
+        layout  = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+
+        layout.add_widget(Label(
+            text='Velg bilde fra en mappe:',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(15), bold=True, color=(0.1,0.1,0.3,1)))
+
+        sv = ScrollView()
+        gl = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
+        gl.bind(minimum_height=gl.setter('height'))
+
+        folders = self.data.get('folders', [])
+        if not folders:
+            gl.add_widget(Label(
+                text='Ingen mapper ennå.\nOpprett mapper og last opp bilder først.',
+                size_hint_y=None, height=dp(80),
+                font_size=fsp(14), color=(0.5,0.5,0.5,1),
+                halign='center'))
+        else:
+            for fo in folders:
+                items = fo.get('items', [])
+                if not items:
+                    continue
+                # Mappetittel
+                gl.add_widget(Label(
+                    text=fo['name'],
+                    size_hint_y=None, height=dp(28),
+                    font_size=fsp(13), bold=True,
+                    color=hex_k(fo.get('color','#4D96FF'))[:3] + [1],
+                    halign='left'))
+                # Bilder i 4-kolonne grid
+                img_grid = GridLayout(
+                    cols=4, spacing=dp(4), size_hint_y=None)
+                img_grid.bind(minimum_height=img_grid.setter('height'))
+                for it in items:
+                    ip = it.get('image','')
+                    if not ip or not os.path.exists(ip):
+                        continue
+                    from kivy.uix.image import Image as KImg
+                    cell = BoxLayout(orientation='vertical',
+                                     size_hint_y=None, height=dp(90))
+                    img_w = KImg(source=ip, allow_stretch=True,
+                                 keep_ratio=True,
+                                 size_hint_y=None, height=dp(72))
+                    lbl = Label(text=it['name'], font_size=sp(10),
+                                size_hint_y=None, height=dp(16),
+                                color=(0.2,0.2,0.3,1),
+                                shorten=True, shorten_from='right')
+                    lbl.bind(size=lbl.setter('text_size'))
+                    cell.add_widget(img_w)
+                    cell.add_widget(lbl)
+                    def _tap(w, t, _ip=ip, _name=it['name']):
+                        if w.collide_point(*t.pos):
+                            chosen_img_ref[0] = _ip
+                            label_widget.text = 'Bilde: ' + _name
+                            pop_ref[0].dismiss()
+                            return True
+                    cell.bind(on_touch_down=_tap)
+                    img_grid.add_widget(cell)
+                gl.add_widget(img_grid)
+
+        sv.add_widget(gl)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(46),
+            cb=lambda *_: pop_ref[0].dismiss()))
+
+        pop = Popup(title='Velg bilde', content=layout,
+                    size_hint=(0.96, 0.90))
+        pop_ref[0] = pop
+        pop.open()
 
     def _pick_image(self, chosen_img_ref, label_widget, parent_popup=None):
         """
