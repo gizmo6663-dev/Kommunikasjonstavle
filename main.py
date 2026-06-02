@@ -511,9 +511,8 @@ def text_on(bg_hex):
 
 def _schedule_widget_alarm():
     """
-    Registrerer en Android AlarmManager-alarm som kaller KtWidget
-    hvert 15. minutt selv om appen er lukket.
-    Krever ingen tillatelse siden vi bruker setInexactRepeating.
+    Registrerer AlarmManager-alarm for widget-oppdatering hvert 15. min.
+    Hele funksjonen er try/except – feiler den stille uten krasj.
     """
     if platform != 'android':
         return
@@ -524,10 +523,9 @@ def _schedule_widget_alarm():
         Intent        = autoclass('android.content.Intent')
         PendingIntent = autoclass('android.app.PendingIntent')
         AlarmManager  = autoclass('android.app.AlarmManager')
-        AppWidgetMgr  = autoclass('android.appwidget.AppWidgetManager')
         ComponentName = autoclass('android.content.ComponentName')
 
-        intent = Intent(AppWidgetMgr.ACTION_APPWIDGET_UPDATE)
+        intent = Intent('android.appwidget.action.APPWIDGET_UPDATE')
         intent.setComponent(ComponentName(
             mActivity.getPackageName(),
             'no.askapp.kommunikasjonstavle.KtWidget'))
@@ -538,13 +536,12 @@ def _schedule_widget_alarm():
             PendingIntent.FLAG_IMMUTABLE)
 
         am = mActivity.getSystemService(Context.ALARM_SERVICE)
-        # Hvert 15. minutt (inexact for batterisparing)
         am.setInexactRepeating(
-            AlarmManager.ELAPSED_REALTIME,
+            0,           # ELAPSED_REALTIME = 0
             0,
-            15 * 60 * 1000,   # 15 min i ms
+            900000,      # 15 min i ms
             pi)
-        logging.info('AlarmManager widget-alarm registrert (15 min)')
+        logging.info('AlarmManager OK')
     except Exception as e:
         logging.debug('AlarmManager feilet (ikke kritisk): %s', e)
 
@@ -1024,47 +1021,75 @@ def _handle_share_intent(intent):
 
 def _copy_content_uri(uri, dst_path):
     """
-    Kopierer en Android content-URI til en lokal filsti.
-
-    Bruker openFileDescriptor() i stedet for openInputStream() +
-    Java byte-array fordi jnius ikke kan instansiere primitive
-    Java-arrays ([B) via autoclass() – dette var rotaarsaken til
-    "No constructor available"-feilen.
-
-    openFileDescriptor() returnerer en ekte POSIX file descriptor
-    som Python kan lese direkte med os.fdopen() uten Java-arrays.
+    Kopierer en Android content-URI til lokal fil.
+    Bruker openFileDescriptor + detachFd som gir POSIX fd Python kan lese.
+    Fallback: Channels.newChannel + ByteBuffer hvis detachFd feiler.
     """
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+
+    # Metode 1: detachFd → os.fdopen (raskest)
     try:
-        from jnius import autoclass
         from android import mActivity
         cr  = mActivity.getContentResolver()
         pfd = cr.openFileDescriptor(uri, 'r')
-        fd  = pfd.detachFd()           # Python-lesbar int fd
-        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-        with os.fdopen(fd, 'rb') as src_f:
-            data = src_f.read()
-        pfd.close()
-        with open(dst_path, 'wb') as dst_f:
-            dst_f.write(data)
-        _plog(f'_copy_content_uri OK: {dst_path} ({len(data)} bytes)')
-        # Skaler ned til maks 512×512 for å spare minne og lagringsplass.
-        # Symbolbilder trenger aldri høyere oppløsning enn dette i appen.
-        if PIL_OK:
-            try:
-                img = PILImage.open(dst_path)
-                W, H = img.size
-                if W > 512 or H > 512:
-                    img.thumbnail((512, 512), PILImage.LANCZOS)
-                    img.save(dst_path, quality=88, optimize=True)
-                    new_size = os.path.getsize(dst_path)
-                    _plog(f'Skalert: {W}x{H} → {img.size}, {new_size//1024}KB')
-            except Exception as _se:
-                _plog(f'Skalering feilet (bruker original): {_se}')
+        fd  = pfd.detachFd()
+        with os.fdopen(fd, 'rb') as f:
+            data = f.read()
+        with open(dst_path, 'wb') as f:
+            f.write(data)
+        _plog(f'_copy_content_uri (fd) OK: {len(data)} bytes')
+        _scale_image(dst_path)
         return True
-    except Exception as e:
-        _plog(f'_copy_content_uri feil: {e}')
+    except Exception as e1:
+        _plog(f'_copy_content_uri metode 1 feilet: {e1}')
+
+    # Metode 2: openInputStream via Channels + ByteBuffer
+    try:
+        from jnius import autoclass
+        from android import mActivity
+        Channels   = autoclass('java.nio.channels.Channels')
+        ByteBuffer = autoclass('java.nio.ByteBuffer')
+        cr  = mActivity.getContentResolver()
+        ins = cr.openInputStream(uri)
+        ch  = Channels.newChannel(ins)
+        buf = ByteBuffer.allocate(8 * 1024 * 1024)  # 8MB buffer
+        chunks = []
+        while True:
+            buf.clear()
+            n = ch.read(buf)
+            if n <= 0:
+                break
+            buf.flip()
+            arr = bytearray(n)
+            for i in range(n):
+                arr[i] = buf.get() & 0xFF
+            chunks.append(bytes(arr))
+        ch.close(); ins.close()
+        data = b''.join(chunks)
+        with open(dst_path, 'wb') as f:
+            f.write(data)
+        _plog(f'_copy_content_uri (channel) OK: {len(data)} bytes')
+        _scale_image(dst_path)
+        return True
+    except Exception as e2:
+        _plog(f'_copy_content_uri metode 2 feilet: {e2}')
         logging.exception('_copy_content_uri: feil')
         return False
+
+
+def _scale_image(path):
+    """Skalerer bilde til maks 512×512 ved import."""
+    if not PIL_OK:
+        return
+    try:
+        img = PILImage.open(path)
+        W, H = img.size
+        if W > 512 or H > 512:
+            img.thumbnail((512, 512), PILImage.LANCZOS)
+            img.save(path)
+            _plog(f'Skalert: {W}x{H} → {img.size}')
+    except Exception as e:
+        _plog(f'Skalering feilet: {e}')
 
 
 def _open_android_picker(callback):
@@ -1924,13 +1949,21 @@ class KommunikasjonstavleApp(App):
         root.add_widget(self._navbar)
 
         self._show_home()
-        # Oppdater widget ved oppstart
-        Clock.schedule_once(lambda *_: _update_widget(self.data), 2.0)
-        # Oppdater widget hvert minutt mens appen er åpen
+        # Widget-oppdatering – pakket inn i try/except
+        def _safe_widget_start(*_):
+            try:
+                _update_widget(self.data)
+            except Exception as e:
+                logging.warning('widget start feilet: %s', e)
+        def _safe_alarm(*_):
+            try:
+                _schedule_widget_alarm()
+            except Exception as e:
+                logging.warning('alarm feilet: %s', e)
+        Clock.schedule_once(_safe_widget_start, 2.0)
         self._widget_tick = Clock.schedule_interval(
-            lambda *_: _update_widget(self.data), 60)
-        # Registrer AlarmManager for bakgrunnsoppdatering hvert 15. min
-        Clock.schedule_once(lambda *_: _schedule_widget_alarm(), 3.0)
+            lambda *_: Clock.schedule_once(_safe_widget_start, 0), 60)
+        Clock.schedule_once(_safe_alarm, 3.0)
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
         # Vis splash-overlay i 2 sekunder etter oppstart
@@ -1981,7 +2014,10 @@ class KommunikasjonstavleApp(App):
         return True
 
     def on_resume(self):
-        Clock.schedule_once(lambda *_: _update_widget(self.data), 0.5)
+        def _safe(*_):
+            try: _update_widget(self.data)
+            except Exception as e: logging.warning('resume widget: %s', e)
+        Clock.schedule_once(_safe, 0.5)
 
     def on_start(self):
         """
