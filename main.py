@@ -548,13 +548,13 @@ def _schedule_widget_alarm():
 
 def _update_widget(data):
     """
-    Skriver dagsrytme-status + bildedata til SharedPreferences.
-    KtWidget leser dette og viser bilde av aktiv/neste aktivitet.
+    Skriver dagsrytme-status til SharedPreferences for widget.
+    Kun tekst – ingen bildeoverføring for stabilitet.
     """
     if platform != 'android':
         return
     try:
-        import datetime as _dt, base64 as _b64
+        import datetime as _dt
         from jnius import autoclass
         from android import mActivity
 
@@ -572,20 +572,6 @@ def _update_widget(data):
             except Exception:
                 return -1
 
-        def encode_image(path, size=80):
-            """Skalerer bilde og returnerer base64-streng for SharedPreferences."""
-            if not PIL_OK or not path or not os.path.exists(path):
-                return ''
-            try:
-                img = PILImage.open(path).convert('RGB')
-                img.thumbnail((size, size), PILImage.LANCZOS)
-                import io
-                buf = io.BytesIO()
-                img.save(buf, format='PNG')
-                return _b64.b64encode(buf.getvalue()).decode('utf-8')
-            except Exception:
-                return ''
-
         current  = None
         upcoming = None
         for e in entries:
@@ -600,41 +586,12 @@ def _update_widget(data):
                 upcoming = e
 
         if current:
-            end_m = to_min(current.get('end', ''))
-            rem   = max(0, end_m - now_total)
-            editor.putString('status',           'active')
-            editor.putString('current_activity', current['name'])
-            editor.putString('next_activity',    current['name'])
-            editor.putString('next_time',
-                'Slutter om ' + str(rem) + ' min')
-            editor.putString('current_image',
-                encode_image(current.get('image', '')))
-            editor.putString('next_image',
-                encode_image(upcoming.get('image','') if upcoming else ''))
-        elif upcoming:
-            wait = to_min(upcoming.get('start','')) - now_total
-            editor.putString('status',           'upcoming')
-            editor.putString('current_activity', '')
-            editor.putString('next_activity',    upcoming['name'])
-            editor.putString('next_time',
-                'Om ' + str(wait) + ' min (kl. ' + str(upcoming.get('start','')) + ')')
-            editor.putString('current_image',    '')
-            editor.putString('next_image',
-                encode_image(upcoming.get('image', '')))
-        elif entries:
-            editor.putString('status',           'done')
-            editor.putString('current_activity', '')
-            editor.putString('next_activity',    '')
-            editor.putString('next_time',        '')
-            editor.putString('current_image',    '')
-            editor.putString('next_image',       '')
+            editor.putString('line1', current['name'])
+            editor.putString('line2',
+                current.get('start','') + ' – ' + current.get('end',''))
         else:
-            editor.putString('status',           'empty')
-            editor.putString('current_activity', '')
-            editor.putString('next_activity',    '')
-            editor.putString('next_time',        '')
-            editor.putString('current_image',    '')
-            editor.putString('next_image',       '')
+            editor.putString('line1', 'Ingen aktivitet nå')
+            editor.putString('line2', '')
 
         editor.apply()
 
@@ -646,7 +603,7 @@ def _update_widget(data):
             mActivity.getPackageName(),
             'no.askapp.kommunikasjonstavle.KtWidget'))
         mActivity.sendBroadcast(broadcast)
-        logging.info('Widget oppdatert: %s', prefs.getString('status','?'))
+        logging.info('Widget oppdatert OK')
     except Exception as e:
         logging.debug('_update_widget feilet: %s', e)
 
