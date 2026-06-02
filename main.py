@@ -979,29 +979,53 @@ def _handle_share_intent(intent):
 def _copy_content_uri(uri, dst_path):
     """
     Kopierer en Android content-URI til lokal fil.
-    Bruker openInputStream() som returnerer et Java InputStream-objekt,
-    og leser det chunk for chunk via read(bytearray).
-    Dette er den mest pålitelige metoden med jnius.
+
+    Problemet med jnius: Java byte[] (primitiv array) kan ikke sendes
+    direkte fra Python. ins.read(bytearray) feiler med "No constructor available".
+
+    Løsning: Bruk Java FileOutputStream + Androids openFileDescriptor()
+    slik at Java håndterer all I/O uten Python-buffer-overføring.
+    Python trenger bare å lese den allerede-skrevne filen.
     """
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     try:
         from jnius import autoclass
         from android import mActivity
+
+        # Java-klasser
+        ParcelFileDescriptor = autoclass('android.os.ParcelFileDescriptor')
+        FileInputStream      = autoclass('java.io.FileInputStream')
+        FileOutputStream     = autoclass('java.io.FileOutputStream')
+
         cr  = mActivity.getContentResolver()
-        ins = cr.openInputStream(uri)
-        # Les i 64KB chunks via Python bytearray
-        chunks = []
-        buf    = bytearray(65536)
-        while True:
-            n = ins.read(buf, 0, len(buf))
-            if n < 0:
-                break
-            chunks.append(bytes(buf[:n]))
-        ins.close()
-        data = b''.join(chunks)
-        with open(dst_path, 'wb') as f:
-            f.write(data)
-        _plog(f'_copy_content_uri OK: {len(data)} bytes')
+        pfd = cr.openFileDescriptor(uri, 'r')
+
+        # Les via Java FileInputStream → skriv via Java FileOutputStream
+        # Ingen Python-buffer involveres
+        fis = FileInputStream(pfd.getFileDescriptor())
+        fos = FileOutputStream(dst_path)
+
+        # Bruk Java IOUtils-lignende loop: readAllBytes finnes i API 33+
+        # Safer: les ett og ett byte via read() uten argumenter
+        # Men det er tregt – bruk i stedet Java sin transferTo (API 29+) / loop
+        try:
+            # API 29+: transferTo
+            InputStream = autoclass('java.io.InputStream')
+            fis.transferTo(fos)
+        except Exception:
+            # Fallback: les ett byte om gangen (ingen buffer-argument)
+            while True:
+                b = fis.read()
+                if b == -1:
+                    break
+                fos.write(b)
+
+        fis.close()
+        fos.close()
+        pfd.close()
+
+        size = os.path.getsize(dst_path)
+        _plog(f'_copy_content_uri OK: {size} bytes')
         _scale_image(dst_path)
         return True
     except Exception as e:
