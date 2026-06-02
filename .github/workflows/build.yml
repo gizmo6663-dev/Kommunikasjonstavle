@@ -48,6 +48,12 @@ jobs:
               # kt_widget_info.xml
               # kt_widget_info.xml
               mkdir -p \$DIST/src/main/res/xml
+
+              # kt_widget_layout.xml (kopieres fra repo)
+              mkdir -p \$DIST/src/main/res/layout
+              cp java/../res/layout/kt_widget_layout.xml \
+                 \$DIST/src/main/res/layout/kt_widget_layout.xml
+              echo 'kt_widget_layout.xml kopiert'
               printf '%s\n' \
                 '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
                 '<appwidget-provider' \
