@@ -2157,10 +2157,11 @@ class KommunikasjonstavleApp(App):
             size_hint_y=None, height=dp(52),
             spacing=dp(4), padding=(dp(4), dp(3), dp(4), dp(2)),
         )
+        # Bakgrunnsfarge via canvas – import utenfor with-blokken
+        from kivy.graphics import Color as _KC, Rectangle as _KR
         with bar.canvas.before:
-            from kivy.graphics import Color as KC, Rectangle as KR
-            KC(0.84, 0.86, 0.92, 1.0)
-            self._qbar_bg = KR(pos=bar.pos, size=bar.size)
+            _KC(0.84, 0.86, 0.92, 1.0)
+            self._qbar_bg = _KR(pos=bar.pos, size=bar.size)
         bar.bind(pos=lambda w, v: setattr(self._qbar_bg, 'pos', v),
                  size=lambda w, v: setattr(self._qbar_bg, 'size', v))
         _qcols = [
