@@ -19,7 +19,7 @@ requirements = python3,kivy==2.3.0,pillow,android,qrcode,plyer
 # ─── Android-mål ──────────────────────────────────────────────────
 android.api = 34
 android.minapi = 26
-android.ndk = 26b
+android.ndk = 25b
 android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
