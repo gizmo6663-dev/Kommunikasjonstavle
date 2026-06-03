@@ -42,8 +42,8 @@ jobs:
               # KtWidget.java til src/main/java
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
               mkdir -p \$KTDST
-              cp java/no/askapp/kommunikasjonstavle/KtWidget.java \$KTDST/
-              echo \"KtWidget.java kopiert: \$(ls \$KTDST)\"
+              cp java/no/askapp/kommunikasjonstavle/*.java \$KTDST/
+              echo \"Java-filer kopiert: \$(ls \$KTDST)\"
 
               # kt_widget_info.xml
               # kt_widget_info.xml
