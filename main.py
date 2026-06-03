@@ -851,6 +851,11 @@ def save_struct(d, immediate=False):
         except Exception as e:
             logging.error('Feil ved lagring: %s', e)
         _save_event[0] = None
+        # Oppdater widget etter hver lagring
+        try:
+            _update_widget(d)
+        except Exception as _we:
+            logging.debug('widget etter lagring feilet: %s', _we)
 
     if immediate:
         if _save_event[0]:
