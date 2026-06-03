@@ -5,7 +5,7 @@ title = Kommunikasjonstavle
 package.name = kommunikasjonstavle
 package.domain = no.askapp
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,xml,md
+source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf
 
 # Widget: Java-kildefiler og Android-ressurser
 source.include_patterns = assets/*
@@ -19,7 +19,7 @@ requirements = python3,kivy==2.3.0,pillow,android,qrcode,plyer
 # ─── Android-mål ──────────────────────────────────────────────────
 android.api = 34
 android.minapi = 26
-android.ndk = 25b
+android.ndk = 26b
 android.archs = arm64-v8a
 
 # ─── Python for Android ───────────────────────────────────────────
@@ -54,7 +54,7 @@ android.private_storage = True
 android.manifest.intent_filters = intent_filters.xml
 
 # singleTask: gjenbruk eksisterende Activity ved mottak av delt bilde
-android.manifest.activity_attributes = android:launchMode="singleTask"
+android.manifest.activity_attributes = android:launchMode="singleTask" android:screenOrientation="portrait"
 
 # ─── AndroidX ─────────────────────────────────────────────────────
 android.enable_androidx = True
@@ -71,5 +71,5 @@ android.presplash_color = #12183A
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
-log_level = 2
+log_level = 1
 warn_on_root = 0
