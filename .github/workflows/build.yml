@@ -14,15 +14,13 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      - name: Cache Buildozer-avhengigheter
+      - name: Cache Gradle-avhengigheter
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.buildozer
-            ~/.gradle
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          path: ~/.gradle
+          key: gradle-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            gradle-${{ runner.os }}-
 
       - name: Sett versjonsnummer fra git
         id: version
@@ -35,7 +33,6 @@ jobs:
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
-            -v ~/.buildozer:/root/.buildozer \
             -v ~/.gradle:/root/.gradle \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
