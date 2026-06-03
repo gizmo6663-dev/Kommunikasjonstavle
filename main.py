@@ -546,10 +546,33 @@ def _schedule_widget_alarm():
         logging.debug('AlarmManager feilet (ikke kritisk): %s', e)
 
 
+def _encode_img_b64(path, size=72):
+    """
+    Skalerer bilde til size×size og returnerer base64 JPEG-streng.
+    Kalles FØR jnius-konteksten åpnes – PIL og io er rene Python.
+    """
+    import io as _io, base64 as _b64
+    if not PIL_OK or not path or not os.path.exists(path):
+        return ''
+    try:
+        img = PILImage.open(path).convert('RGBA')
+        img.thumbnail((size, size), PILImage.LANCZOS)
+        bg  = PILImage.new('RGB', (size, size), (244, 245, 250))
+        ox  = (size - img.width)  // 2
+        oy  = (size - img.height) // 2
+        bg.paste(img.convert('RGB'), (ox, oy))
+        buf = _io.BytesIO()
+        bg.save(buf, format='JPEG', quality=70)
+        return _b64.b64encode(buf.getvalue()).decode('utf-8')
+    except Exception as e:
+        logging.debug('_encode_img_b64 feilet: %s', e)
+        return ''
+
+
 def _update_widget(data):
     """
-    Skriver dagsrytme-status til SharedPreferences for widget.
-    Kun tekst – ingen bildeoverføring for stabilitet.
+    Skriver aktivitetsnavn, tid og bilde (base64 JPEG) til SharedPreferences.
+    Bildet enkodes i ren Python FØR jnius åpnes for stabilitet.
     """
     if platform != 'android':
         return
@@ -557,9 +580,6 @@ def _update_widget(data):
         import datetime as _dt
         from jnius import autoclass
         from android import mActivity
-
-        prefs  = mActivity.getSharedPreferences('kt_widget', 0)
-        editor = prefs.edit()
 
         entries   = data.get('dagsrytme', [])
         now       = _dt.datetime.now()
@@ -573,7 +593,6 @@ def _update_widget(data):
                 return -1
 
         current  = None
-        upcoming = None
         for e in entries:
             s = to_min(e.get('start', ''))
             t = to_min(e.get('end',   ''))
@@ -582,17 +601,22 @@ def _update_widget(data):
             if s <= now_total < t:
                 current = e
                 break
-            if s > now_total and upcoming is None:
-                upcoming = e
+
+        # Enkod bilde i ren Python FØR jnius
+        img_b64 = _encode_img_b64(current.get('image', '') if current else '')
 
         if current:
-            editor.putString('line1', current['name'])
-            editor.putString('line2',
-                current.get('start','') + ' – ' + current.get('end',''))
+            line1 = current['name']
+            line2 = current.get('start','') + ' – ' + current.get('end','')
         else:
-            editor.putString('line1', 'Ingen aktivitet nå')
-            editor.putString('line2', '')
+            line1 = 'Ingen aktivitet nå'
+            line2 = ''
 
+        prefs  = mActivity.getSharedPreferences('kt_widget', 0)
+        editor = prefs.edit()
+        editor.putString('line1',   line1)
+        editor.putString('line2',   line2)
+        editor.putString('img_b64', img_b64)
         editor.apply()
 
         Intent        = autoclass('android.content.Intent')
