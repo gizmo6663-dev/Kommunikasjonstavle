@@ -75,7 +75,7 @@ jobs:
               # Manifest
               MANIFEST=\$DIST/src/main/AndroidManifest.xml
               if ! grep -q KtWidget \$MANIFEST 2>/dev/null; then
-                sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
+                sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /><action android:name=\"no.askapp.kommunikasjonstavle.WIDGET_REFRESH\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
                 echo 'Manifest patchet'
               fi
 
