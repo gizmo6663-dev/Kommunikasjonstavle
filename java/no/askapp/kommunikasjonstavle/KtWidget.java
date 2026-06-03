@@ -20,11 +20,8 @@ public class KtWidget extends AppWidgetProvider {
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
         for (int id : ids) {
-            try {
-                updateWidget(ctx, mgr, id);
-            } catch (Exception e) {
-                Log.e(TAG, "onUpdate feilet: " + e.getMessage());
-            }
+            try { updateWidget(ctx, mgr, id); }
+            catch (Exception e) { Log.e(TAG, "onUpdate feil: " + e.getMessage()); }
         }
     }
 
@@ -41,26 +38,24 @@ public class KtWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.kt_line1, line1);
             views.setTextViewText(R.id.kt_line2, line2);
 
-            // Bilde – pakket i try/catch så manglende R.id ikke krasjer
-            try {
-                if (imgB64 != null && !imgB64.isEmpty()) {
+            boolean hasImage = false;
+            if (imgB64 != null && !imgB64.isEmpty()) {
+                try {
                     byte[] bytes = Base64.decode(imgB64, Base64.DEFAULT);
                     Bitmap bmp   = BitmapFactory.decodeByteArray(
                                        bytes, 0, bytes.length);
                     if (bmp != null) {
                         views.setImageViewBitmap(R.id.kt_img, bmp);
                         views.setViewVisibility(R.id.kt_img, View.VISIBLE);
-                    } else {
-                        views.setViewVisibility(R.id.kt_img, View.GONE);
+                        hasImage = true;
                     }
-                } else {
-                    views.setViewVisibility(R.id.kt_img, View.GONE);
+                } catch (Exception e) {
+                    Log.w(TAG, "Bilde feilet: " + e.getMessage());
                 }
-            } catch (Exception imgEx) {
-                Log.w(TAG, "Bildevisning feilet (ikke kritisk): " + imgEx.getMessage());
-                try {
-                    views.setViewVisibility(R.id.kt_img, View.GONE);
-                } catch (Exception ignore) {}
+            }
+
+            if (!hasImage) {
+                views.setViewVisibility(R.id.kt_img, View.GONE);
             }
 
             // Trykk åpner appen
@@ -77,7 +72,7 @@ public class KtWidget extends AppWidgetProvider {
             mgr.updateAppWidget(id, views);
 
         } catch (Exception e) {
-            Log.e(TAG, "updateWidget feilet: " + e.getMessage());
+            Log.e(TAG, "updateWidget feil: " + e.getMessage());
         }
     }
 }
