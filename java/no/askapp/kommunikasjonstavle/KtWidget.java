@@ -3,6 +3,7 @@ package no.askapp.kommunikasjonstavle;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -15,13 +16,27 @@ import android.widget.RemoteViews;
 
 public class KtWidget extends AppWidgetProvider {
 
-    private static final String TAG = "KtWidget";
+    private static final String TAG    = "KtWidget";
+    static final String ACTION_REFRESH =
+        "no.askapp.kommunikasjonstavle.WIDGET_REFRESH";
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
         for (int id : ids) {
             try { updateWidget(ctx, mgr, id); }
-            catch (Exception e) { Log.e(TAG, "onUpdate feil: " + e.getMessage()); }
+            catch (Exception e) { Log.e(TAG, "onUpdate feil: " + e); }
+        }
+    }
+
+    @Override
+    public void onReceive(Context ctx, Intent intent) {
+        super.onReceive(ctx, intent);
+        // Håndter manuell oppdatering fra ↻-knapp
+        if (ACTION_REFRESH.equals(intent.getAction())) {
+            AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
+            int[] ids = mgr.getAppWidgetIds(
+                new ComponentName(ctx, KtWidget.class));
+            onUpdate(ctx, mgr, ids);
         }
     }
 
@@ -38,6 +53,7 @@ public class KtWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.kt_line1, line1);
             views.setTextViewText(R.id.kt_line2, line2);
 
+            // Bilde
             boolean hasImage = false;
             if (imgB64 != null && !imgB64.isEmpty()) {
                 try {
@@ -50,29 +66,38 @@ public class KtWidget extends AppWidgetProvider {
                         hasImage = true;
                     }
                 } catch (Exception e) {
-                    Log.w(TAG, "Bilde feilet: " + e.getMessage());
+                    Log.w(TAG, "Bilde feil: " + e);
                 }
             }
-
             if (!hasImage) {
                 views.setViewVisibility(R.id.kt_img, View.GONE);
             }
 
-            // Trykk åpner appen
-            Intent intent = new Intent(ctx, org.kivy.android.PythonActivity.class);
-            intent.setFlags(
+            // Trykk på tekst/bilde → åpner appen (som oppdaterer via on_resume)
+            Intent openApp = new Intent(ctx, org.kivy.android.PythonActivity.class);
+            openApp.setFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK |
                 Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            PendingIntent pi = PendingIntent.getActivity(
-                ctx, 0, intent,
+            PendingIntent piOpen = PendingIntent.getActivity(
+                ctx, 0, openApp,
                 PendingIntent.FLAG_UPDATE_CURRENT |
                 PendingIntent.FLAG_IMMUTABLE);
-            views.setOnClickPendingIntent(R.id.kt_line1, pi);
+            views.setOnClickPendingIntent(R.id.kt_line1, piOpen);
+            views.setOnClickPendingIntent(R.id.kt_img,   piOpen);
+
+            // Trykk på ↻ → oppdater widget direkte fra SharedPreferences
+            Intent refresh = new Intent(ctx, KtWidget.class);
+            refresh.setAction(ACTION_REFRESH);
+            PendingIntent piRefresh = PendingIntent.getBroadcast(
+                ctx, 1, refresh,
+                PendingIntent.FLAG_UPDATE_CURRENT |
+                PendingIntent.FLAG_IMMUTABLE);
+            views.setOnClickPendingIntent(R.id.kt_refresh, piRefresh);
 
             mgr.updateAppWidget(id, views);
 
         } catch (Exception e) {
-            Log.e(TAG, "updateWidget feil: " + e.getMessage());
+            Log.e(TAG, "updateWidget feil: " + e);
         }
     }
 }
