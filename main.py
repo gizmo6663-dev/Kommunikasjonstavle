@@ -573,9 +573,12 @@ def _update_widget(data):
     """
     Skriver aktivitetsnavn, tid og bilde (base64 JPEG) til SharedPreferences.
     Bildet enkodes i ren Python FØR jnius åpnes for stabilitet.
+    Sjekker at data er gyldig dict før jnius-konteksten åpnes.
     """
     if platform != 'android':
         return
+    if not isinstance(data, dict):
+        return  # Kalt for tidlig – data ikke klar ennå
     try:
         import datetime as _dt
         from jnius import autoclass
@@ -1910,7 +1913,8 @@ class KommunikasjonstavleApp(App):
         # Widget-oppdatering – pakket inn i try/except
         def _safe_widget_start(*_):
             try:
-                _update_widget(self.data)
+                if hasattr(self, 'data') and isinstance(self.data, dict):
+                    _update_widget(self.data)
             except Exception as e:
                 logging.warning('widget start feilet: %s', e)
         def _safe_alarm(*_):
@@ -1918,10 +1922,13 @@ class KommunikasjonstavleApp(App):
                 _schedule_widget_alarm()
             except Exception as e:
                 logging.warning('alarm feilet: %s', e)
-        Clock.schedule_once(_safe_widget_start, 2.0)
+        # Forsink til etter splash (5 sek) så data er garantert lastet
+        Clock.schedule_once(_safe_widget_start, 5.0)
         self._widget_tick = Clock.schedule_interval(
             lambda *_: Clock.schedule_once(_safe_widget_start, 0), 60)
-        Clock.schedule_once(_safe_alarm, 3.0)
+        # AlarmManager setter seg selv opp via KtWidget.onEnabled –
+        # kaller _schedule_widget_alarm kun som backup
+        Clock.schedule_once(_safe_alarm, 6.0)
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
         # Vis splash-overlay i 2 sekunder etter oppstart
@@ -1970,8 +1977,11 @@ class KommunikasjonstavleApp(App):
 
     def on_resume(self):
         def _safe(*_):
-            try: _update_widget(self.data)
-            except Exception as e: logging.warning('resume widget: %s', e)
+            try:
+                if hasattr(self, 'data') and isinstance(self.data, dict):
+                    _update_widget(self.data)
+            except Exception as e:
+                logging.warning('resume widget: %s', e)
         Clock.schedule_once(_safe, 0.5)
 
     def on_start(self):
@@ -4152,8 +4162,9 @@ INNSTILLINGER
                 Clock.schedule_once(
                     lambda *_: self._toast(f'Lagret: {fname}'), 0)
             except Exception as ex:
+                _msg = str(ex)
                 Clock.schedule_once(
-                    lambda *_: self._toast(f'Eksport feilet: {ex}'), 0)
+                    lambda *_, m=_msg: self._toast(f'Eksport feilet: {m}'), 0)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -4768,7 +4779,16 @@ INNSTILLINGER
         pop.open()
 
     def _del_item(self, fo, it):
+        img = it.get('image', '')
         fo['items'] = [i for i in fo['items'] if i['id'] != it['id']]
+        # Slett bildefilen og invalider thumbnail-cache
+        if img and os.path.exists(img):
+            try:
+                os.remove(img)
+                for k in [k for k in _thumb_cache if k[0] == img]:
+                    del _thumb_cache[k]
+            except Exception:
+                pass
         save_struct(self.data)
         self._show_folder(fid=fo['id'])
 
