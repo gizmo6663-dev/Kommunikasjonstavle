@@ -983,24 +983,25 @@ def _handle_share_intent(intent):
 def _copy_content_uri(uri, dst_path):
     """
     Kopierer en Android content-URI til lokal fil via FileHelper.java.
-
     FileHelper.copyUriToFile() gjør all I/O i Java med ekte byte[]-array.
-    Python trenger ikke håndtere Java-primitiver – kun strenger og long.
     """
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     try:
         from jnius import autoclass
         from android import mActivity
+        _plog(f'_copy_content_uri: laster FileHelper...')
         FileHelper = autoclass('no.askapp.kommunikasjonstavle.FileHelper')
+        _plog(f'_copy_content_uri: FileHelper lastet OK, kaller copyUriToFile')
         n = FileHelper.copyUriToFile(mActivity, uri, dst_path)
+        _plog(f'_copy_content_uri: copyUriToFile returnerte {n}')
         if n < 0:
-            _plog('_copy_content_uri: FileHelper returnerte -1')
+            _plog('_copy_content_uri: FileHelper returnerte -1 – sjekk logcat')
             return False
-        _plog(f'_copy_content_uri OK: {n} bytes')
+        _plog(f'_copy_content_uri OK: {n} bytes -> {dst_path}')
         _scale_image(dst_path)
         return True
     except Exception as e:
-        _plog(f'_copy_content_uri feil: {e}')
+        _plog(f'_copy_content_uri UNNTAK: {type(e).__name__}: {e}')
         logging.exception('_copy_content_uri: feil')
         return False
 
@@ -4970,7 +4971,7 @@ INNSTILLINGER
                     text=fo['name'],
                     size_hint_y=None, height=dp(28),
                     font_size=fsp(13), bold=True,
-                    color=hex_k(fo.get('color','#4D96FF'))[:3] + [1],
+                    color=hex_k(fo.get('color','#4D96FF'))[:3] + (1,),
                     halign='left'))
                 # Bilder i 4-kolonne grid
                 img_grid = GridLayout(
