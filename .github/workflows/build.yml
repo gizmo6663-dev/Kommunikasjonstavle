@@ -71,32 +71,6 @@ jobs:
                 > \$DIST/src/main/res/xml/kt_widget_info.xml
               echo 'kt_widget_info.xml OK'
 
-              # kt_widget_layout.xml – egen layout med egne R.id-er
-              mkdir -p \$DIST/src/main/res/layout
-              printf '%s\n' \
-                '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
-                '<LinearLayout xmlns:android=\"http://schemas.android.com/apk/res/android\"' \
-                '    android:layout_width=\"match_parent\"' \
-                '    android:layout_height=\"match_parent\"' \
-                '    android:orientation=\"vertical\"' \
-                '    android:gravity=\"center_vertical\"' \
-                '    android:padding=\"12dp\"' \
-                '    android:background=\"#F4F5FA\">' \
-                '  <TextView android:id=\"@+id/kt_line1\"' \
-                '      android:layout_width=\"match_parent\"' \
-                '      android:layout_height=\"wrap_content\"' \
-                '      android:textSize=\"13sp\" android:textStyle=\"bold\"' \
-                '      android:textColor=\"#12183A\" android:maxLines=\"1\"' \
-                '      android:ellipsize=\"end\" />' \
-                '  <TextView android:id=\"@+id/kt_line2\"' \
-                '      android:layout_width=\"match_parent\"' \
-                '      android:layout_height=\"wrap_content\"' \
-                '      android:textSize=\"15sp\" android:textColor=\"#4D96FF\"' \
-                '      android:maxLines=\"1\" android:ellipsize=\"end\"' \
-                '      android:layout_marginTop=\"4dp\" />' \
-                '</LinearLayout>' \
-                > \$DIST/src/main/res/layout/kt_widget_layout.xml
-              echo 'kt_widget_layout.xml OK'
 
               # Manifest
               MANIFEST=\$DIST/src/main/AndroidManifest.xml
@@ -119,7 +93,13 @@ jobs:
               rm -rf \$DIST/build/tmp/processDebugManifestForPackage
               rm -rf \$DIST/build/intermediates/packaged_res
               rm -rf \$DIST/build/intermediates/processed_res
+              rm -rf \$DIST/build/intermediates/compiled_local_resources
+              rm -rf \$DIST/build/intermediates/res
+              rm -rf \$DIST/build/intermediates/generated_res
+              rm -rf \$DIST/build/intermediates/symbol_list
+              rm -rf \$DIST/build/intermediates/symbol_list_with_package_name
               rm -rf \$DIST/build/tmp/processDebugResources
+              rm -rf \$DIST/build/tmp/compileDebugRenderscript
               rm -rf \$DIST/build/intermediates/dex
               rm -rf \$DIST/build/intermediates/classes
               rm -rf \$DIST/build/tmp/compileDebugJavaWithJavac
