@@ -1,4 +1,4 @@
-name: Build Kommunikasjonstavle APK
+name: Bygg Kommunikasjonstavle APK
 
 on:
   push:
@@ -8,15 +8,35 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      - name: Bygg APK med Buildozer (Docker)
+      - name: Cache Buildozer-avhengigheter
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.gradle
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Sett versjonsnummer fra git
+        id: version
+        run: |
+          COUNT=$(git rev-list --count HEAD)
+          echo "code=$COUNT" >> $GITHUB_OUTPUT
+          echo "Versjonskode: $COUNT"
+
+      - name: Bygg APK med Buildozer + Gradle (Docker)
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
+            -v ~/.buildozer:/root/.buildozer \
+            -v ~/.gradle:/root/.gradle \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
@@ -24,36 +44,31 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
-              # Steg 1: Full Buildozer-bygg – setter opp alt
+              # Oppdater versjonskode i spec
+              sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
+
               buildozer android debug 2>&1 | tee build_step1.log || true
 
               BASE=.buildozer/android/platform/build-arm64-v8a
               DIST=\$BASE/dists/kommunikasjonstavle
 
-              echo '=== INJISERER KTWIDGET ==='
-
-              # Sjekk at dists-mappen eksisterer
               if [ ! -d \$DIST ]; then
-                echo 'FEIL: dists-mappen finnes ikke – steg 1 feilet for tidlig'
+                echo 'FEIL: dists-mappen ble ikke opprettet'
                 cat build_step1.log > build.log
                 exit 1
               fi
 
-              # KtWidget.java til src/main/java
+              echo '=== Injiserer widget-filer ==='
+
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
               mkdir -p \$KTDST
               cp java/no/askapp/kommunikasjonstavle/*.java \$KTDST/
-              echo \"Java-filer kopiert: \$(ls \$KTDST)\"
+              echo \"Java: \$(ls \$KTDST)\"
 
-              # kt_widget_info.xml
-              # kt_widget_info.xml
               mkdir -p \$DIST/src/main/res/xml
-
-              # kt_widget_layout.xml (kopieres fra repo)
               mkdir -p \$DIST/src/main/res/layout
-              cp java/../res/layout/kt_widget_layout.xml \
-                 \$DIST/src/main/res/layout/kt_widget_layout.xml
-              echo 'kt_widget_layout.xml kopiert'
+              cp res/layout/kt_widget_layout.xml \$DIST/src/main/res/layout/
+
               printf '%s\n' \
                 '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
                 '<appwidget-provider' \
@@ -69,62 +84,31 @@ jobs:
                 '    android:resizeMode=\"horizontal|vertical\"' \
                 '    android:widgetCategory=\"home_screen\" />' \
                 > \$DIST/src/main/res/xml/kt_widget_info.xml
-              echo 'kt_widget_info.xml OK'
 
-
-              # Manifest
               MANIFEST=\$DIST/src/main/AndroidManifest.xml
               if ! grep -q KtWidget \$MANIFEST 2>/dev/null; then
-                sed -i 's|</application>|        <receiver android:name=\"no.askapp.kommunikasjonstavle.KtWidget\" android:exported=\"true\" android:label=\"Dagsrytme\"><intent-filter><action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\" /><action android:name=\"no.askapp.kommunikasjonstavle.WIDGET_REFRESH\" /></intent-filter><meta-data android:name=\"android.appwidget.provider\" android:resource=\"@xml/kt_widget_info\" /></receiver>\n    </application>|' \$MANIFEST
-                echo 'Manifest patchet'
+                python3 patch_manifest.py \$MANIFEST
               fi
 
-              echo '=== MANIFEST SJEKK ==='
-              grep -c KtWidget \$MANIFEST && echo 'KtWidget i manifest: JA' || echo 'KtWidget i manifest: NEI'
+              find \$DIST/build/intermediates -maxdepth 1 -type d 2>/dev/null | grep -E 'merged_manifest|manifest_|packaged_manifest|_res$|^.*/res$|symbol_list|^.*/dex$|^.*/classes$' | xargs rm -rf 2>/dev/null || true
+              find \$DIST/build/tmp -maxdepth 1 -type d 2>/dev/null | grep -E 'processDebug|compileDebug|dexBuilder' | xargs rm -rf 2>/dev/null || true
 
-              # Slett alle Gradle-cacher som kan blokkere oppdatering
-              rm -rf \$DIST/build/intermediates/merged_manifests
-              rm -rf \$DIST/build/intermediates/merged_manifest
-              rm -rf \$DIST/build/intermediates/manifest_merge_report
-              rm -rf \$DIST/build/tmp/processDebugManifest
-              rm -rf \$DIST/build/tmp/processDebugMainManifest
-              rm -rf \$DIST/build/intermediates/manifest_for_package
-              rm -rf \$DIST/build/intermediates/packaged_manifests
-              rm -rf \$DIST/build/tmp/processDebugManifestForPackage
-              rm -rf \$DIST/build/intermediates/packaged_res
-              rm -rf \$DIST/build/intermediates/processed_res
-              rm -rf \$DIST/build/intermediates/compiled_local_resources
-              rm -rf \$DIST/build/intermediates/res
-              rm -rf \$DIST/build/intermediates/generated_res
-              rm -rf \$DIST/build/intermediates/symbol_list
-              rm -rf \$DIST/build/intermediates/symbol_list_with_package_name
-              rm -rf \$DIST/build/tmp/processDebugResources
-              rm -rf \$DIST/build/tmp/compileDebugRenderscript
-              rm -rf \$DIST/build/intermediates/dex
-              rm -rf \$DIST/build/intermediates/classes
-              rm -rf \$DIST/build/tmp/compileDebugJavaWithJavac
-              rm -rf \$DIST/build/tmp/dexBuilderDebug
-              echo 'Alle Gradle-cacher slettet (inkl. ManifestForPackage)'
-
-              echo '=== KALLER GRADLE DIREKTE ==='
+              echo '=== Kaller Gradle ==='
               cd \$DIST
               chmod +x gradlew
-              ./gradlew assembleDebug 2>&1 | tee /home/user/hostcwd/gradle.log
+              ./gradlew assembleDebug --build-cache 2>&1 | tee /home/user/hostcwd/gradle.log
               GRADLE_EXIT=\$?
-              echo \"Gradle exit: \$GRADLE_EXIT\"
 
               cd /home/user/hostcwd
-
-              # Kopier APK til bin/
-              APK=\$(find \$DIST/build/outputs/apk/debug -name '*.apk' | head -1)
+              APK=\$(find \$DIST/build/outputs/apk/debug -name '*.apk' 2>/dev/null | head -1)
               if [ -n \"\$APK\" ] && [ \$GRADLE_EXIT -eq 0 ]; then
                 mkdir -p bin
-                cp \"\$APK\" bin/kommunikasjonstavle-1.2-arm64-v8a-debug.apk
-                echo \"APK kopiert: \$(ls bin/)\"
-                cat /home/user/hostcwd/gradle.log > build.log
+                cp \"\$APK\" bin/
+                echo \"APK: \$(ls bin/)\"
+                cat gradle.log > build.log
               else
-                cat build_step1.log > build.log
-                cat /home/user/hostcwd/gradle.log >> build.log
+                cat build_step1.log  > build.log
+                cat gradle.log      >> build.log
                 exit 1
               fi
             "
@@ -141,11 +125,11 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kommunikasjonstavle-apk
+          name: kommunikasjonstavle-v1.${{ steps.version.outputs.code }}
           path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
 
-      - name: Last opp bygglogg
+      - name: Last opp bygglogg (alltid)
         if: always()
         uses: actions/upload-artifact@v4
         with:
