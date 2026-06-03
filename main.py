@@ -4448,6 +4448,7 @@ INNSTILLINGER
         """
         Flip-animasjon: scale_x 1→0 (forsvinner), bytt innhold, scale_x 0→1.
         """
+        from kivy.animation import Animation
         cells = list(self._bp_grid.children)
         n = len(self._bp_cards)
         ci = n - 1 - idx
