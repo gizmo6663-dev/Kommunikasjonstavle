@@ -546,7 +546,7 @@ def _schedule_widget_alarm():
         logging.debug('AlarmManager feilet (ikke kritisk): %s', e)
 
 
-def _encode_img_b64(path, size=200):
+def _encode_img_b64(path, size=400):
     """
     Skalerer bilde til size×size og returnerer base64 JPEG-streng.
     Kalles FØR jnius-konteksten åpnes – PIL og io er rene Python.
