@@ -59,11 +59,25 @@ public class KtWidget extends AppWidgetProvider {
     @Override
     public void onReceive(Context ctx, Intent intent) {
         super.onReceive(ctx, intent);
-        if (ACTION_REFRESH.equals(intent.getAction())) {
+        String action = intent.getAction();
+
+        if (ACTION_REFRESH.equals(action)) {
+            // Manuell ↻ eller AlarmManager-trigger
             AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
             int[] ids = mgr.getAppWidgetIds(
                 new ComponentName(ctx, KtWidget.class));
             onUpdate(ctx, mgr, ids);
+
+        } else if (Intent.ACTION_BOOT_COMPLETED.equals(action)
+                || "android.intent.action.QUICKBOOT_POWERON".equals(action)) {
+            // Telefon startet på nytt – gjenopprett alarm-kjeden
+            AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
+            int[] ids = mgr.getAppWidgetIds(
+                new ComponentName(ctx, KtWidget.class));
+            if (ids.length > 0) {
+                Log.i(TAG, "Boot: gjenoppretter widget-alarm");
+                onUpdate(ctx, mgr, ids);  // scheduleNextFromData kalles inne her
+            }
         }
     }
 
@@ -91,6 +105,70 @@ public class KtWidget extends AppWidgetProvider {
         } catch (Exception e) {
             Log.e(TAG, "scheduleNext feil: " + e);
         }
+    }
+
+    /**
+     * Beregner tidspunkt for neste oppdatering basert på data:
+     * - Aktiv aktivitet: oppdater når den slutter
+     * - Neste aktivitet: oppdater når den starter
+     * - Ingenting: oppdater om 15 minutter
+     */
+    static void scheduleNextFromData(Context ctx, WidgetData data) {
+        long delayMs = 15 * 60 * 1000L; // fallback: 15 min
+
+        try {
+            File f = new File(ctx.getFilesDir(), "structure.json");
+            if (f.exists()) {
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br =
+                         new BufferedReader(new FileReader(f))) {
+                    String line;
+                    while ((line = br.readLine()) != null)
+                        sb.append(line);
+                }
+                JSONObject root = new JSONObject(sb.toString());
+                JSONArray  dr   = root.optJSONArray("dagsrytme");
+
+                if (dr != null && dr.length() > 0) {
+                    Calendar cal    = Calendar.getInstance();
+                    int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
+                                    + cal.get(Calendar.MINUTE);
+                    int      nowSec = cal.get(Calendar.SECOND);
+
+                    for (int i = 0; i < dr.length(); i++) {
+                        JSONObject e = dr.getJSONObject(i);
+                        int s = toMin(e.optString("start", ""));
+                        int t = toMin(e.optString("end",   ""));
+
+                        if (s >= 0 && t >= 0 && s <= nowMin && nowMin < t) {
+                            // Aktiv aktivitet – oppdater når den slutter
+                            int remSec = (t - nowMin) * 60 - nowSec + 5;
+                            delayMs = remSec * 1000L;
+                            Log.i(TAG, "Neste oppdatering om "
+                                  + remSec + " sek (aktivitet slutter kl."
+                                  + e.optString("end") + ")");
+                            break;
+                        }
+
+                        if (s > nowMin) {
+                            // Neste aktivitet – oppdater når den starter
+                            int waitSec = (s - nowMin) * 60 - nowSec + 5;
+                            delayMs = waitSec * 1000L;
+                            Log.i(TAG, "Neste oppdatering om "
+                                  + waitSec + " sek (neste aktivitet kl."
+                                  + e.optString("start") + ")");
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "scheduleNextFromData feil: " + e);
+        }
+
+        // Minimum 30 sekunder, maksimum 15 minutter
+        delayMs = Math.max(30_000, Math.min(delayMs, 15 * 60 * 1000L));
+        scheduleNext(ctx, delayMs);
     }
 
     static void cancelAlarm(Context ctx) {
@@ -172,8 +250,8 @@ public class KtWidget extends AppWidgetProvider {
 
             mgr.updateAppWidget(id, views);
 
-            // Planlegg neste automatiske oppdatering om 1 minutt
-            scheduleNext(ctx, 60_000);
+            // Planlegg neste oppdatering til akkurat når aktiviteten slutter
+            scheduleNextFromData(ctx, data);
 
         } catch (Exception e) {
             Log.e(TAG, "updateWidget feil: " + e);
