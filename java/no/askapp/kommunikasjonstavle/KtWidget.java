@@ -70,19 +70,26 @@ public class KtWidget extends AppWidgetProvider {
     // ── AlarmManager ──────────────────────────────────────────────
 
     static void scheduleAlarm(Context ctx) {
+        scheduleNext(ctx, 60_000); // første oppdatering om 1 min
+    }
+
+    /**
+     * Planlegger neste WIDGET_REFRESH om delayMs millisekunder.
+     * Bruker setExact som Android tillater fra AppWidget-kontekst,
+     * og unngår inexact-forsinkelser fra batterisparing.
+     */
+    static void scheduleNext(Context ctx, long delayMs) {
         try {
             AlarmManager am = (AlarmManager)
                 ctx.getSystemService(Context.ALARM_SERVICE);
             PendingIntent pi = getAlarmIntent(ctx);
-            // Hvert 15. minutt, inexact for batterisparing
-            am.setInexactRepeating(
+            am.setExact(
                 AlarmManager.RTC,
-                System.currentTimeMillis() + 60_000,
-                15 * 60 * 1000L,
+                System.currentTimeMillis() + delayMs,
                 pi);
-            Log.i(TAG, "AlarmManager satt (15 min)");
+            Log.i(TAG, "Neste oppdatering om " + (delayMs/1000) + " sek");
         } catch (Exception e) {
-            Log.e(TAG, "scheduleAlarm feil: " + e);
+            Log.e(TAG, "scheduleNext feil: " + e);
         }
     }
 
@@ -164,6 +171,9 @@ public class KtWidget extends AppWidgetProvider {
             views.setOnClickPendingIntent(R.id.kt_refresh, piRef);
 
             mgr.updateAppWidget(id, views);
+
+            // Planlegg neste automatiske oppdatering om 1 minutt
+            scheduleNext(ctx, 60_000);
 
         } catch (Exception e) {
             Log.e(TAG, "updateWidget feil: " + e);
