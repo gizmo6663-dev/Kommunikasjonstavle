@@ -21,6 +21,8 @@ receiver = '''
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="no.askapp.kommunikasjonstavle.WIDGET_REFRESH" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -37,4 +39,4 @@ content = content.replace('</application>',
 with open(manifest_path, 'w', encoding='utf-8') as f:
     f.write(content)
 
-print('Manifest: KtWidget + WIDGET_REFRESH lagt til')
+print('Manifest: KtWidget + BOOT_COMPLETED lagt til')

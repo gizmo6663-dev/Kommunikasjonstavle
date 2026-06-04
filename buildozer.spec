@@ -39,7 +39,8 @@ android.permissions = \
     android.permission.READ_EXTERNAL_STORAGE, \
     android.permission.WRITE_EXTERNAL_STORAGE, \
     android.permission.READ_MEDIA_IMAGES, \
-    android.permission.VIBRATE
+    android.permission.VIBRATE, \
+    android.permission.RECEIVE_BOOT_COMPLETED
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
