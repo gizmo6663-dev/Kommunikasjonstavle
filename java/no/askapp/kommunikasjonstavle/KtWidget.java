@@ -18,18 +18,16 @@ import android.widget.RemoteViews;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileReader;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileReader;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
 
-/**
- * KtWidget – hjemskjerm-widget for Kommunikasjonstavle.
- *
- * Leser structure.json direkte fra appens private lagring,
- * og beregner aktiv aktivitet uten at Python trenger å kjøre.
- * AlarmManager oppdaterer widgeten automatisk hvert 15. minutt.
- */
 public class KtWidget extends AppWidgetProvider {
 
     private static final String TAG            = "KtWidget";
@@ -38,21 +36,23 @@ public class KtWidget extends AppWidgetProvider {
 
     @Override
     public void onEnabled(Context ctx) {
-        // Kalles når første widget legges til hjemskjermen
         scheduleAlarm(ctx);
     }
 
     @Override
     public void onDisabled(Context ctx) {
-        // Kalles når siste widget fjernes fra hjemskjermen
         cancelAlarm(ctx);
     }
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+        WidgetLog.w(ctx, "[onUpdate] " + ids.length + " widget(er)");
         for (int id : ids) {
             try { updateWidget(ctx, mgr, id); }
-            catch (Exception e) { Log.e(TAG, "onUpdate feil: " + e); }
+            catch (Exception e) {
+                Log.e(TAG, "onUpdate feil: " + e);
+                WidgetLog.w(ctx, "[FEIL] onUpdate: " + e.getMessage());
+            }
         }
     }
 
@@ -62,7 +62,7 @@ public class KtWidget extends AppWidgetProvider {
         String action = intent.getAction();
 
         if (ACTION_REFRESH.equals(action)) {
-            // Manuell ↻ eller AlarmManager-trigger
+            WidgetLog.w(ctx, "[ACTION_REFRESH] mottatt");
             AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
             int[] ids = mgr.getAppWidgetIds(
                 new ComponentName(ctx, KtWidget.class));
@@ -70,13 +70,13 @@ public class KtWidget extends AppWidgetProvider {
 
         } else if (Intent.ACTION_BOOT_COMPLETED.equals(action)
                 || "android.intent.action.QUICKBOOT_POWERON".equals(action)) {
-            // Telefon startet på nytt – gjenopprett alarm-kjeden
+            WidgetLog.w(ctx, "[BOOT] gjenoppretter alarm-kjede");
             AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
             int[] ids = mgr.getAppWidgetIds(
                 new ComponentName(ctx, KtWidget.class));
             if (ids.length > 0) {
                 Log.i(TAG, "Boot: gjenoppretter widget-alarm");
-                onUpdate(ctx, mgr, ids);  // scheduleNextFromData kalles inne her
+                onUpdate(ctx, mgr, ids);
             }
         }
     }
@@ -84,89 +84,65 @@ public class KtWidget extends AppWidgetProvider {
     // ── AlarmManager ──────────────────────────────────────────────
 
     static void scheduleAlarm(Context ctx) {
-        scheduleNext(ctx, 60_000); // første oppdatering om 1 min
+        scheduleNext(ctx, 60_000);
     }
 
-    /**
-     * Planlegger neste WIDGET_REFRESH om delayMs millisekunder.
-     * Bruker setExact som Android tillater fra AppWidget-kontekst,
-     * og unngår inexact-forsinkelser fra batterisparing.
-     */
     static void scheduleNext(Context ctx, long delayMs) {
         try {
             AlarmManager am = (AlarmManager)
                 ctx.getSystemService(Context.ALARM_SERVICE);
-            PendingIntent pi = getAlarmIntent(ctx);
-            am.setExact(
-                AlarmManager.RTC,
+            am.setExact(AlarmManager.RTC,
                 System.currentTimeMillis() + delayMs,
-                pi);
-            Log.i(TAG, "Neste oppdatering om " + (delayMs/1000) + " sek");
+                getAlarmIntent(ctx));
+            WidgetLog.w(ctx, "[ALARM] satt om " + (delayMs/1000) + " sek");
         } catch (Exception e) {
             Log.e(TAG, "scheduleNext feil: " + e);
+            WidgetLog.w(ctx, "[FEIL] scheduleNext: " + e.getMessage());
         }
     }
 
-    /**
-     * Beregner tidspunkt for neste oppdatering basert på data:
-     * - Aktiv aktivitet: oppdater når den slutter
-     * - Neste aktivitet: oppdater når den starter
-     * - Ingenting: oppdater om 15 minutter
-     */
-    static void scheduleNextFromData(Context ctx, WidgetData data) {
-        long delayMs = 15 * 60 * 1000L; // fallback: 15 min
-
+    static void scheduleNextFromData(Context ctx, JSONArray dr) {
+        long delayMs = 15 * 60 * 1000L;
         try {
-            File f = new File(ctx.getFilesDir(), "structure.json");
-            if (f.exists()) {
-                StringBuilder sb = new StringBuilder();
-                try (BufferedReader br =
-                         new BufferedReader(new FileReader(f))) {
-                    String line;
-                    while ((line = br.readLine()) != null)
-                        sb.append(line);
+            Calendar cal    = Calendar.getInstance();
+            int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
+                            + cal.get(Calendar.MINUTE);
+            int      nowSec = cal.get(Calendar.SECOND);
+
+            // Sorter etter starttidspunkt
+            List<JSONObject> entries = new ArrayList<>();
+            if (dr != null)
+                for (int i = 0; i < dr.length(); i++)
+                    entries.add(dr.getJSONObject(i));
+            Collections.sort(entries, (a, b) ->
+                toMin(a.optString("start","")) -
+                toMin(b.optString("start","")));
+
+            for (JSONObject e : entries) {
+                int s = toMin(e.optString("start", ""));
+                int t = toMin(e.optString("end",   ""));
+                if (s < 0 || t < 0) continue;
+
+                if (s <= nowMin && nowMin < t) {
+                    // Aktiv – oppdater ved slutt
+                    int remSec = (t - nowMin) * 60 - nowSec + 5;
+                    delayMs = remSec * 1000L;
+                    Log.i(TAG, "Slutter kl." + e.optString("end")
+                          + " om " + remSec + " sek");
+                    break;
                 }
-                JSONObject root = new JSONObject(sb.toString());
-                JSONArray  dr   = root.optJSONArray("dagsrytme");
-
-                if (dr != null && dr.length() > 0) {
-                    Calendar cal    = Calendar.getInstance();
-                    int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
-                                    + cal.get(Calendar.MINUTE);
-                    int      nowSec = cal.get(Calendar.SECOND);
-
-                    for (int i = 0; i < dr.length(); i++) {
-                        JSONObject e = dr.getJSONObject(i);
-                        int s = toMin(e.optString("start", ""));
-                        int t = toMin(e.optString("end",   ""));
-
-                        if (s >= 0 && t >= 0 && s <= nowMin && nowMin < t) {
-                            // Aktiv aktivitet – oppdater når den slutter
-                            int remSec = (t - nowMin) * 60 - nowSec + 5;
-                            delayMs = remSec * 1000L;
-                            Log.i(TAG, "Neste oppdatering om "
-                                  + remSec + " sek (aktivitet slutter kl."
-                                  + e.optString("end") + ")");
-                            break;
-                        }
-
-                        if (s > nowMin) {
-                            // Neste aktivitet – oppdater når den starter
-                            int waitSec = (s - nowMin) * 60 - nowSec + 5;
-                            delayMs = waitSec * 1000L;
-                            Log.i(TAG, "Neste oppdatering om "
-                                  + waitSec + " sek (neste aktivitet kl."
-                                  + e.optString("start") + ")");
-                            break;
-                        }
-                    }
+                if (s > nowMin) {
+                    // Neste – oppdater ved start
+                    int waitSec = (s - nowMin) * 60 - nowSec + 5;
+                    delayMs = waitSec * 1000L;
+                    Log.i(TAG, "Starter kl." + e.optString("start")
+                          + " om " + waitSec + " sek");
+                    break;
                 }
             }
         } catch (Exception e) {
             Log.w(TAG, "scheduleNextFromData feil: " + e);
         }
-
-        // Minimum 30 sekunder, maksimum 15 minutter
         delayMs = Math.max(30_000, Math.min(delayMs, 15 * 60 * 1000L));
         scheduleNext(ctx, delayMs);
     }
@@ -184,8 +160,7 @@ public class KtWidget extends AppWidgetProvider {
     static PendingIntent getAlarmIntent(Context ctx) {
         Intent i = new Intent(ctx, KtWidget.class);
         i.setAction(ACTION_REFRESH);
-        return PendingIntent.getBroadcast(
-            ctx, 0, i,
+        return PendingIntent.getBroadcast(ctx, 0, i,
             PendingIntent.FLAG_UPDATE_CURRENT |
             PendingIntent.FLAG_IMMUTABLE);
     }
@@ -194,11 +169,10 @@ public class KtWidget extends AppWidgetProvider {
 
     static void updateWidget(Context ctx, AppWidgetManager mgr, int id) {
         try {
-            // Les data: prøv structure.json, fall tilbake til SharedPreferences
             WidgetData data = readFromJson(ctx);
             if (data == null) data = readFromPrefs(ctx);
             if (data == null) data = new WidgetData(
-                "Kommunikasjonstavle", "", null);
+                "Kommunikasjonstavle", "", null, null);
 
             RemoteViews views = new RemoteViews(
                 ctx.getPackageName(), R.layout.kt_widget_layout);
@@ -206,22 +180,22 @@ public class KtWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.kt_line1, data.line1);
             views.setTextViewText(R.id.kt_line2, data.line2);
 
-            // Bilde
+            // Bilde – les direkte fra fil hvis mulig, ellers SharedPreferences
             boolean hasImage = false;
-            if (data.imgB64 != null && !data.imgB64.isEmpty()) {
-                try {
-                    byte[] bytes = Base64.decode(
-                        data.imgB64, Base64.DEFAULT);
-                    Bitmap bmp = BitmapFactory.decodeByteArray(
-                        bytes, 0, bytes.length);
-                    if (bmp != null) {
-                        views.setImageViewBitmap(R.id.kt_img, bmp);
-                        views.setViewVisibility(R.id.kt_img, View.VISIBLE);
-                        hasImage = true;
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "Bilde feil: " + e);
-                }
+            Bitmap bmp = null;
+
+            if (data.imagePath != null && !data.imagePath.isEmpty()) {
+                bmp = loadBitmapFromFile(data.imagePath);
+            }
+            if (bmp == null && data.imgB64 != null && !data.imgB64.isEmpty()) {
+                byte[] bytes = Base64.decode(data.imgB64, Base64.DEFAULT);
+                bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            }
+
+            if (bmp != null) {
+                views.setImageViewBitmap(R.id.kt_img, bmp);
+                views.setViewVisibility(R.id.kt_img, View.VISIBLE);
+                hasImage = true;
             }
             if (!hasImage) {
                 views.setViewVisibility(R.id.kt_img, View.GONE);
@@ -232,29 +206,45 @@ public class KtWidget extends AppWidgetProvider {
                 org.kivy.android.PythonActivity.class);
             open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
                           Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            PendingIntent piOpen = PendingIntent.getActivity(
-                ctx, 1, open,
+            PendingIntent piOpen = PendingIntent.getActivity(ctx, 1, open,
                 PendingIntent.FLAG_UPDATE_CURRENT |
                 PendingIntent.FLAG_IMMUTABLE);
             views.setOnClickPendingIntent(R.id.kt_line1, piOpen);
             views.setOnClickPendingIntent(R.id.kt_img,   piOpen);
 
-            // ↻ refresh
+            // ↻ knapp
             Intent ref = new Intent(ctx, KtWidget.class);
             ref.setAction(ACTION_REFRESH);
-            PendingIntent piRef = PendingIntent.getBroadcast(
-                ctx, 2, ref,
+            PendingIntent piRef = PendingIntent.getBroadcast(ctx, 2, ref,
                 PendingIntent.FLAG_UPDATE_CURRENT |
                 PendingIntent.FLAG_IMMUTABLE);
             views.setOnClickPendingIntent(R.id.kt_refresh, piRef);
 
             mgr.updateAppWidget(id, views);
+            WidgetLog.w(ctx, "[VISER] "" + data.line1 + ""  |  "
+                + data.line2
+                + (hasImage ? "  [bilde]" : "  [ingen bilde]"));
 
-            // Planlegg neste oppdatering til akkurat når aktiviteten slutter
-            scheduleNextFromData(ctx, data);
+            // Planlegg neste oppdatering
+            scheduleNextFromData(ctx, data.dagsrytme);
 
         } catch (Exception e) {
             Log.e(TAG, "updateWidget feil: " + e);
+        }
+    }
+
+    // ── Les bilde fra fil ─────────────────────────────────────────
+
+    static Bitmap loadBitmapFromFile(String path) {
+        try {
+            File f = new File(path);
+            if (!f.exists()) return null;
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 2; // Halvér oppløsning for minnesparing
+            return BitmapFactory.decodeFile(path, opts);
+        } catch (Exception e) {
+            Log.w(TAG, "loadBitmapFromFile feil: " + e);
+            return null;
         }
     }
 
@@ -262,7 +252,6 @@ public class KtWidget extends AppWidgetProvider {
 
     static WidgetData readFromJson(Context ctx) {
         try {
-            // structure.json ligger i appens private files-mappe
             File f = new File(ctx.getFilesDir(), "structure.json");
             if (!f.exists()) return null;
 
@@ -274,15 +263,23 @@ public class KtWidget extends AppWidgetProvider {
 
             JSONObject root = new JSONObject(sb.toString());
             JSONArray  dr   = root.optJSONArray("dagsrytme");
-            if (dr == null || dr.length() == 0) return null;
+            if (dr == null || dr.length() == 0)
+                return new WidgetData("Ingen aktivitet nå", "", null, dr);
 
-            Calendar cal     = Calendar.getInstance();
-            int      nowMin  = cal.get(Calendar.HOUR_OF_DAY) * 60 +
-                               cal.get(Calendar.MINUTE);
+            Calendar cal    = Calendar.getInstance();
+            int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
+                            + cal.get(Calendar.MINUTE);
+
+            // Sorter etter starttidspunkt
+            List<JSONObject> entries = new ArrayList<>();
+            for (int i = 0; i < dr.length(); i++)
+                entries.add(dr.getJSONObject(i));
+            Collections.sort(entries, (a, b) ->
+                toMin(a.optString("start","")) -
+                toMin(b.optString("start","")));
 
             JSONObject current = null;
-            for (int i = 0; i < dr.length(); i++) {
-                JSONObject e = dr.getJSONObject(i);
+            for (JSONObject e : entries) {
                 int s = toMin(e.optString("start", ""));
                 int t = toMin(e.optString("end",   ""));
                 if (s >= 0 && t >= 0 && s <= nowMin && nowMin < t) {
@@ -292,29 +289,39 @@ public class KtWidget extends AppWidgetProvider {
             }
 
             if (current == null) {
-                return new WidgetData("Ingen aktivitet nå", "", null);
+                // Finn neste aktivitet
+                String nextName = "";
+                String nextTime = "";
+                for (JSONObject e : entries) {
+                    int s = toMin(e.optString("start",""));
+                    if (s > nowMin) {
+                        nextName = e.optString("name","");
+                        nextTime = e.optString("start","");
+                        break;
+                    }
+                }
+                String l1 = nextName.isEmpty()
+                    ? "Ingen aktivitet nå"
+                    : "Neste: " + nextName;
+                String l2 = nextTime.isEmpty() ? "" : "kl. " + nextTime;
+                WidgetLog.w(ctx, "[JSON] ingen aktiv. Neste: \"" + nextName
+                    + "\" kl." + nextTime);
+                return new WidgetData(l1, l2, null, dr);
             }
 
-            String name  = current.optString("name", "");
+            String name  = current.optString("name",  "");
             String start = current.optString("start", "");
             String end   = current.optString("end",   "");
             int    endM  = toMin(end);
             int    rem   = Math.max(0, endM - nowMin);
-            String line2 = start + " – " + end +
-                           "  (" + rem + " min igjen)";
+            String line2 = start + " – " + end
+                         + "  (" + rem + " min igjen)";
+            String imgPath = current.optString("image", "");
 
-            // Forsøk å lese bilde
-            String imgB64 = null;
-            SharedPreferences p =
-                ctx.getSharedPreferences("kt_widget", 0);
-            String cachedB64 = p.getString("img_b64", "");
-            String cachedName = p.getString("line1", "");
-            // Bruk cachet bilde hvis aktivitet er lik
-            if (name.equals(cachedName) && !cachedB64.isEmpty()) {
-                imgB64 = cachedB64;
-            }
-
-            return new WidgetData(name, line2, imgB64);
+            WidgetLog.w(ctx, "[JSON] aktiv: \"" + name
+                + "\" " + start + "-" + end
+                + (imgPath.isEmpty() ? " ingen bilde" : " har bilde"));
+            return new WidgetData(name, line2, imgPath, dr);
 
         } catch (Exception e) {
             Log.w(TAG, "readFromJson feil: " + e);
@@ -328,13 +335,11 @@ public class KtWidget extends AppWidgetProvider {
                 ctx.getSharedPreferences("kt_widget", 0);
             String line1 = p.getString("line1", null);
             if (line1 == null) return null;
-            return new WidgetData(
-                line1,
+            return new WidgetData(line1,
                 p.getString("line2",   ""),
-                p.getString("img_b64", ""));
-        } catch (Exception e) {
-            return null;
-        }
+                null,
+                null);
+        } catch (Exception e) { return null; }
     }
 
     static int toMin(String t) {
@@ -342,17 +347,16 @@ public class KtWidget extends AppWidgetProvider {
             String[] parts = t.split(":");
             return Integer.parseInt(parts[0]) * 60 +
                    Integer.parseInt(parts[1]);
-        } catch (Exception e) {
-            return -1;
-        }
+        } catch (Exception e) { return -1; }
     }
 
     // ── Data-klasse ────────────────────────────────────────────────
 
     static class WidgetData {
-        String line1, line2, imgB64;
-        WidgetData(String l1, String l2, String img) {
-            line1 = l1; line2 = l2; imgB64 = img;
+        String    line1, line2, imagePath, imgB64;
+        JSONArray dagsrytme;
+        WidgetData(String l1, String l2, String img, JSONArray dr) {
+            line1 = l1; line2 = l2; imagePath = img; dagsrytme = dr;
         }
     }
 }
