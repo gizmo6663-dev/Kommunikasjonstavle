@@ -691,6 +691,21 @@ def get_thumbnail(path, w, h):
         return None
 
 
+def _wlog_write(msg):
+    """Skriv til widget_log.txt – synlig fra Innstillinger → Vis widget-logg."""
+    try:
+        import datetime as _wdt
+        _wlog = os.path.join(DATA_DIR, 'widget_log.txt') if DATA_DIR else None
+        if not _wlog:
+            return
+        os.makedirs(os.path.dirname(_wlog), exist_ok=True)
+        ts = _wdt.datetime.now().strftime('%H:%M:%S')
+        with open(_wlog, 'a', encoding='utf-8') as f:
+            f.write(ts + '  ' + msg + '\n')
+    except Exception:
+        pass
+
+
 def haptic_feedback():
     """
     Haptisk feedback ved knappetrykk.
@@ -1124,6 +1139,7 @@ def _open_android_picker(callback):
             _pick_image_callback[0] = None
             # RESULT_OK = -1 i Java, men p4a kan sende usignert 0xFFFFFFFF
             _RESULT_OK = (-1, 0xFFFFFFFF, 4294967295)
+            _wlog_write(f'[RESULT] req={request_code} res={result_code} data={data is not None}')
             _plog(f'on_activity_result: req={request_code} res={result_code} data={data is not None}')
             if result_code not in _RESULT_OK or data is None:
                 _plog(f'Bildevelger avbrutt: result_code={result_code}')
@@ -1159,9 +1175,11 @@ def _open_android_picker(callback):
                     Clock.schedule_once(lambda *_: cb(None), 0)
 
         activity_bind(on_activity_result=on_activity_result)
+        _wlog_write('[PICKER] activity_bind OK, starter filvelger')
         mActivity.startActivityForResult(intent, _PICK_IMAGE_REQUEST)
         _plog('ACTION_OPEN_DOCUMENT startet (flervalg aktivert)')
     except Exception as e:
+        _wlog_write(f'[PICKER FEIL] {type(e).__name__}: {e}')
         _plog(f'_open_android_picker feil: {e}')
         logging.exception('_open_android_picker: feil')
         callback(None)
