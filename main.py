@@ -631,6 +631,23 @@ def _update_widget(data):
             'no.askapp.kommunikasjonstavle.KtWidget'))
         mActivity.sendBroadcast(broadcast)
         logging.info('Widget oppdatert OK')
+        # Skriv til widget_log.txt
+        try:
+            import datetime as _dt2
+            _wlog = os.path.join(DATA_DIR, 'widget_log.txt') if DATA_DIR else None
+            if _wlog:
+                os.makedirs(os.path.dirname(_wlog), exist_ok=True)
+                _ts = _dt2.datetime.now().strftime('%H:%M:%S')
+                with open(_wlog, 'a', encoding='utf-8') as _wf:
+                    _wf.write(f'{_ts}  [PYTHON] _update_widget: {line1} | {line2}\n')
+                # Behold maks 200 linjer
+                with open(_wlog, 'r', encoding='utf-8') as _wf:
+                    _lines = _wf.readlines()
+                if len(_lines) > 200:
+                    with open(_wlog, 'w', encoding='utf-8') as _wf:
+                        _wf.writelines(_lines[-200:])
+        except Exception:
+            pass
     except Exception as e:
         logging.debug('_update_widget feilet: %s', e)
 
@@ -3643,6 +3660,8 @@ class KommunikasjonstavleApp(App):
             font_size=fsp(17), bold=True, color=(0.08,0.10,0.35,1), halign='left'))
         outer.add_widget(mk_btn('Les brukerveiledning', hex_k('#4D96FF'), h=dp(54), fs=15,
             cb=lambda *_: self._show_help_popup()))
+        outer.add_widget(mk_btn('Vis widget-logg', hex_k('#78909C'), h=dp(48), fs=14,
+            cb=lambda *_: self._show_widget_log()))
 
         # ── Personvern ───────────────────────────────────────────────
         outer.add_widget(Label(
@@ -3739,6 +3758,57 @@ INNSTILLINGER
         layout.add_widget(sv)
         Popup(title='Brukerveiledning', content=layout,
               size_hint=(0.95, 0.92)).open()
+
+    def _show_widget_log(self):
+        """Viser widget_log.txt – logg over widget-prosesser og oppdateringer."""
+        log_path = os.path.join(DATA_DIR, 'widget_log.txt') if DATA_DIR else None
+        if not log_path or not os.path.exists(log_path):
+            self._toast('Ingen widget-logg ennå.')
+            return
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            # Vis de 100 siste linjene, nyeste øverst
+            text = ''.join(reversed(lines[-100:]))
+        except Exception as e:
+            text = f'Feil ved lesing: {e}'
+
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+
+        # Topprad med tittel og slett-knapp
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        top.add_widget(Label(text='Widget-logg (nyeste øverst)',
+                             font_size=fsp(14), bold=True,
+                             color=(0.1,0.1,0.3,1)))
+        pop_ref = [None]
+        def _clear(*_):
+            try:
+                open(log_path, 'w').close()
+                self._toast('Logg tømt.')
+                pop_ref[0].dismiss()
+            except Exception:
+                pass
+        top.add_widget(mk_btn('Tøm', hex_k('#EF5350'), h=dp(40), fs=12,
+            cb=_clear))
+        layout.add_widget(top)
+
+        sv = ScrollView()
+        lbl = Label(
+            text=text or '(tom)',
+            font_name='NotoSans', font_size=fsp(11),
+            color=(0.1,0.15,0.1,1),
+            halign='left', valign='top',
+            size_hint_y=None,
+        )
+        lbl.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+        lbl.bind(texture_size=lambda w,v: setattr(w,'height',v[1]))
+        sv.add_widget(lbl)
+        layout.add_widget(sv)
+
+        pop = Popup(title='Widget-logg', content=layout,
+                    size_hint=(0.97, 0.92))
+        pop_ref[0] = pop
+        pop.open()
 
     def _show_privacy_popup(self):
         """
