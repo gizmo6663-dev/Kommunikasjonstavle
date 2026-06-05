@@ -631,25 +631,26 @@ def _update_widget(data):
             'no.askapp.kommunikasjonstavle.KtWidget'))
         mActivity.sendBroadcast(broadcast)
         logging.info('Widget oppdatert OK')
-        # Skriv til widget_log.txt
-        try:
-            import datetime as _dt2
-            _wlog = os.path.join(DATA_DIR, 'widget_log.txt') if DATA_DIR else None
-            if _wlog:
-                os.makedirs(os.path.dirname(_wlog), exist_ok=True)
-                _ts = _dt2.datetime.now().strftime('%H:%M:%S')
-                with open(_wlog, 'a', encoding='utf-8') as _wf:
-                    _wf.write(f'{_ts}  [PYTHON] _update_widget: {line1} | {line2}\n')
-                # Behold maks 200 linjer
-                with open(_wlog, 'r', encoding='utf-8') as _wf:
-                    _lines = _wf.readlines()
-                if len(_lines) > 200:
-                    with open(_wlog, 'w', encoding='utf-8') as _wf:
-                        _wf.writelines(_lines[-200:])
-        except Exception:
-            pass
     except Exception as e:
         logging.debug('_update_widget feilet: %s', e)
+        return
+
+    # Widget_log skrives ETTER at jnius-konteksten er lukket
+    try:
+        import datetime as _dt2
+        _wlog = os.path.join(DATA_DIR, 'widget_log.txt') if DATA_DIR else None
+        if _wlog:
+            os.makedirs(os.path.dirname(_wlog), exist_ok=True)
+            _ts = _dt2.datetime.now().strftime('%H:%M:%S')
+            with open(_wlog, 'a', encoding='utf-8') as _wf:
+                _wf.write(f'{_ts}  [PYTHON] _update_widget: {line1} | {line2}\n')
+            with open(_wlog, 'r', encoding='utf-8') as _wf:
+                _lines = _wf.readlines()
+            if len(_lines) > 200:
+                with open(_wlog, 'w', encoding='utf-8') as _wf:
+                    _wf.writelines(_lines[-200:])
+    except Exception:
+        pass
 
 
 _thumb_cache = {}   # { (path, w, h): Kivy Texture }
