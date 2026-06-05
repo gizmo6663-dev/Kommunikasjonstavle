@@ -1121,8 +1121,11 @@ def _open_android_picker(callback):
             activity_unbind(on_activity_result=on_activity_result)
             cb = _pick_image_callback[0]
             _pick_image_callback[0] = None
-            if result_code != -1 or data is None:
-                _plog('Bildevelger: bruker avbrøt eller ingen data')
+            # RESULT_OK = -1 i Java, men p4a kan sende usignert 0xFFFFFFFF
+            _RESULT_OK = (-1, 0xFFFFFFFF, 4294967295)
+            _plog(f'on_activity_result: req={request_code} res={result_code} data={data is not None}')
+            if result_code not in _RESULT_OK or data is None:
+                _plog(f'Bildevelger avbrutt: result_code={result_code}')
                 if cb:
                     Clock.schedule_once(lambda *_: cb(None), 0)
                 return
