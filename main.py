@@ -1050,26 +1050,25 @@ def _handle_share_intent(intent):
 def _copy_content_uri(uri, dst_path):
     """
     Kopierer en Android content-URI til lokal fil via FileHelper.java.
-    FileHelper.copyUriToFile() gjør all I/O i Java med ekte byte[]-array.
     """
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     try:
         from jnius import autoclass
         from android import mActivity
-        _plog(f'_copy_content_uri: laster FileHelper...')
+        _wlog_write('[COPY] laster FileHelper...')
         FileHelper = autoclass('no.askapp.kommunikasjonstavle.FileHelper')
-        _plog(f'_copy_content_uri: FileHelper lastet OK, kaller copyUriToFile')
+        _wlog_write(f'[COPY] kaller copyUriToFile uri_type={type(uri).__name__}')
         n = FileHelper.copyUriToFile(mActivity, uri, dst_path)
-        _plog(f'_copy_content_uri: copyUriToFile returnerte {n}')
+        _wlog_write(f'[COPY] returnerte {n}')
         if n < 0:
-            _plog('_copy_content_uri: FileHelper returnerte -1 – sjekk logcat')
+            _wlog_write('[COPY] FEIL: FileHelper returnerte -1')
             return False
-        _plog(f'_copy_content_uri OK: {n} bytes -> {dst_path}')
+        _wlog_write(f'[COPY] OK: {n} bytes')
         _scale_image(dst_path)
         return True
     except Exception as e:
+        _wlog_write(f'[COPY UNNTAK] {type(e).__name__}: {e}')
         _plog(f'_copy_content_uri UNNTAK: {type(e).__name__}: {e}')
-        logging.exception('_copy_content_uri: feil')
         return False
 
 
