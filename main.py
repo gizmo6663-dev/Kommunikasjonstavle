@@ -1150,26 +1150,29 @@ def _open_android_picker(callback):
             paths = []
             # Flervalg: ClipData
             clip = data.getClipData()
+            _wlog_write(f'[CLIP] clip={clip is not None} count={clip.getItemCount() if clip else 0}')
             if clip and clip.getItemCount() > 0:
                 for i in range(clip.getItemCount()):
                     uri = clip.getItemAt(i).getUri()
                     p   = _uri_to_path(uri)
+                    _wlog_write(f'[CLIP item {i}] uri={uri is not None} path={p}')
                     if p:
                         paths.append(p)
-                _plog(f'Flervalg: {len(paths)} bilder')
             else:
                 # Enkeltvalg: getData()
                 uri = data.getData()
+                _wlog_write(f'[GETDATA] uri={uri}')
                 if uri:
                     p = _uri_to_path(uri)
+                    _wlog_write(f'[URI2PATH] p={p}')
                     if p:
                         paths.append(p)
 
+            _wlog_write(f'[PATHS] total={len(paths)}')
             if cb:
                 if len(paths) == 1:
                     Clock.schedule_once(lambda *_: cb(paths[0]), 0)
                 elif len(paths) > 1:
-                    # Send liste – callback som støtter flervalg
                     Clock.schedule_once(lambda *_: cb(paths), 0)
                 else:
                     Clock.schedule_once(lambda *_: cb(None), 0)
