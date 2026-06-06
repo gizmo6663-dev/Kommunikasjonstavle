@@ -40,7 +40,9 @@ android.permissions = \
     android.permission.WRITE_EXTERNAL_STORAGE, \
     android.permission.READ_MEDIA_IMAGES, \
     android.permission.VIBRATE, \
-    android.permission.RECEIVE_BOOT_COMPLETED
+    android.permission.RECEIVE_BOOT_COMPLETED, \
+    android.permission.USE_EXACT_ALARM, \
+    android.permission.SCHEDULE_EXACT_ALARM
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
