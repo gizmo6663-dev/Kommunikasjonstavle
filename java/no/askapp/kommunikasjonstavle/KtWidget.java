@@ -146,16 +146,19 @@ public class KtWidget extends AppWidgetProvider {
                 if (s < 0 || t < 0) continue;
 
                 if (s <= nowMin && nowMin < t) {
-                    // Aktiv – oppdater ved slutt
-                    int remSec = (t - nowMin) * 60 - nowSec + 5;
+                    // Aktiv – oppdater ved slutt.
+                    // +1 sek padding: fyrer like etter minuttgrensa så Calendar
+                    // garantert har rullet over til neste minutt når widgeten
+                    // leser klokka igjen. Med setExactAndAllowWhileIdle holder 1 sek.
+                    int remSec = (t - nowMin) * 60 - nowSec + 1;
                     delayMs = remSec * 1000L;
                     Log.i(TAG, "Slutter kl." + e.optString("end")
                           + " om " + remSec + " sek");
                     break;
                 }
                 if (s > nowMin) {
-                    // Neste – oppdater ved start
-                    int waitSec = (s - nowMin) * 60 - nowSec + 5;
+                    // Neste – oppdater ved start (samme padding-logikk)
+                    int waitSec = (s - nowMin) * 60 - nowSec + 1;
                     delayMs = waitSec * 1000L;
                     Log.i(TAG, "Starter kl." + e.optString("start")
                           + " om " + waitSec + " sek");
@@ -165,7 +168,13 @@ public class KtWidget extends AppWidgetProvider {
         } catch (Exception e) {
             Log.w(TAG, "scheduleNextFromData feil: " + e);
         }
-        delayMs = Math.max(30_000, Math.min(delayMs, 15 * 60 * 1000L));
+        // Nedre clamp på 2 sek beskytter mot uendelige løkker hvis remSec
+        // skulle bli null/negativ pga. en bug. Den gamle verdien (30 sek)
+        // forsinket transisjoner med opptil 30 sek for korte aktiviteter
+        // og generelt de siste 30 sek av enhver aktivitet.
+        // Øvre clamp på 15 min sikrer at vi våkner jevnlig selv om noe
+        // går galt med beregningen.
+        delayMs = Math.max(2_000, Math.min(delayMs, 15 * 60 * 1000L));
         scheduleNext(ctx, delayMs);
     }
 
