@@ -124,15 +124,28 @@ jobs:
                 exit 1
               fi
 
-              # ── Verifiser at FileHelper faktisk finnes i den ferdige APK-en. ──
-              # Beskytter mot fremtidige stille feil der bygget lykkes men klassen
-              # likevel mangler.
+              # ── Verifiser at FileHelper finnes i hvilken som helst dex-fil. ──
+              # Kivy/p4a-apper er nesten alltid multidex (>64K metoder), så vi må
+              # iterere over classes.dex, classes2.dex, classes3.dex osv.
               echo '=== Verifiserer FileHelper i APK ==='
-              if ! unzip -p \"\$APK\" classes.dex | strings | grep -q 'no/askapp/kommunikasjonstavle/FileHelper'; then
-                echo 'FEIL: FileHelper.class mangler fra classes.dex'
+              FOUND=0
+              for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
+                if unzip -p \"\$APK\" \"\$DEX\" | strings | grep -q 'no/askapp/kommunikasjonstavle/FileHelper'; then
+                  echo \"OK: FileHelper funnet i \$DEX\"
+                  FOUND=1
+                  break
+                fi
+              done
+              if [ \$FOUND -eq 0 ]; then
+                echo 'FEIL: FileHelper.class mangler fra alle dex-filer'
+                echo 'Dex-filer i APK:'
+                unzip -l \"\$APK\" | grep -E 'classes[0-9]*\\.dex' || true
+                echo 'Java-kildefiler i dists:'
+                ls -la \$DIST/src/main/java/no/askapp/kommunikasjonstavle/ || true
+                echo 'Kompilerte .class-filer:'
+                find \$DIST/build/intermediates -name 'FileHelper.class' || echo '(ingen)'
                 exit 1
               fi
-              echo 'OK: FileHelper er til stede i APK'
 
               mkdir -p bin
               cp \"\$APK\" bin/
