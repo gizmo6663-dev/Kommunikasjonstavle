@@ -969,11 +969,32 @@ def request_android_permissions():
 
     # Tillatelsene som strenger – fungerer i alle p4a-versjoner.
     # Android ignorerer tillatelser som allerede er innvilget.
-    PERMS = [
-        'android.permission.READ_EXTERNAL_STORAGE',
-        'android.permission.WRITE_EXTERNAL_STORAGE',
-        'android.permission.READ_MEDIA_IMAGES',
-    ]
+    # Android 13+ (API 33): READ_EXTERNAL_STORAGE er utdatert og ignorert.
+    # Vi må be om READ_MEDIA_IMAGES i stedet.
+    # Android < 13: READ_EXTERNAL_STORAGE er korrekt.
+    try:
+        from android import mActivity
+        sdk = mActivity.getApplicationInfo().targetSdkVersion
+        api = mActivity.getPackageManager()                        .getApplicationInfo(mActivity.getPackageName(), 0)                        .targetSdkVersion
+        # Enklere: sjekk Build.VERSION.SDK_INT
+        from jnius import autoclass
+        Build = autoclass('android.os.Build$VERSION')
+        sdk_int = Build.SDK_INT
+        _plog(f'SDK_INT={sdk_int}')
+    except Exception as _e:
+        sdk_int = 34  # anta Android 14 ved feil
+        _plog(f'SDK_INT ukjent, antar {sdk_int}: {_e}')
+
+    if sdk_int >= 33:
+        PERMS = [
+            'android.permission.READ_MEDIA_IMAGES',
+        ]
+    else:
+        PERMS = [
+            'android.permission.READ_EXTERNAL_STORAGE',
+            'android.permission.WRITE_EXTERNAL_STORAGE',
+        ]
+    _plog(f'Ber om tillatelser (SDK {sdk_int}): {PERMS}')
 
     # Steg 1: prøv android.permissions-modulen (p4a standard)
     try:
@@ -1177,6 +1198,13 @@ def _open_android_picker(callback):
                     Clock.schedule_once(lambda *_: cb(None), 0)
 
         activity_bind(on_activity_result=on_activity_result)
+
+        # NB: ACTION_OPEN_DOCUMENT bruker Storage Access Framework, som gir
+        # midlertidig URI-tillatelse uten at appen trenger READ_MEDIA_IMAGES.
+        # Vi spør derfor ikke om denne tillatelsen i det hele tatt — det sparer
+        # brukeren én dialog og fjerner et race mellom permission-prompt og
+        # startActivityForResult.
+
         _wlog_write('[PICKER] activity_bind OK, starter filvelger')
         mActivity.startActivityForResult(intent, _PICK_IMAGE_REQUEST)
         _plog('ACTION_OPEN_DOCUMENT startet (flervalg aktivert)')
