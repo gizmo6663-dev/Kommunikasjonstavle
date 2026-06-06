@@ -102,11 +102,21 @@ jobs:
               rm -rf \$DIST/build/intermediates
               rm -rf \$DIST/build/tmp
 
+              # ── Nuke Gradles build-cache mellom PASS 1 og PASS 2. ──
+              # AGPs dexBuilderDebug har intern per-class inkrementell tilstand som
+              # kan bli forvirret når en .class-fil dukker opp i PASS 2 etter å ha
+              # vært fraværende i PASS 1. Sikrest å starte med rent ark.
+              rm -rf ~/.gradle/caches/build-cache-*
+              rm -rf /root/.gradle/caches/build-cache-*
+
               # ── PASS 2: Gradle med widget-filer på plass ──
+              # --no-build-cache: dexBuilderDebug må ikke gjenbruke per-class
+              #   dex-arkiv-entries fra PASS 1 (som ikke kjente til FileHelper).
+              # --rerun-tasks: tvinger alle tasks til å kjøre, ignorerer UP-TO-DATE.
               echo '=== PASS 2: Gradle assembleDebug ==='
               cd \$DIST
               chmod +x gradlew
-              ./gradlew assembleDebug --build-cache 2>&1 | tee /home/user/hostcwd/gradle.log
+              ./gradlew assembleDebug --no-build-cache --rerun-tasks 2>&1 | tee /home/user/hostcwd/gradle.log
               GRADLE_EXIT=\${PIPESTATUS[0]}
 
               cd /home/user/hostcwd
@@ -124,26 +134,38 @@ jobs:
                 exit 1
               fi
 
-              # ── Verifiser at FileHelper finnes i hvilken som helst dex-fil. ──
-              # Kivy/p4a-apper er nesten alltid multidex (>64K metoder), så vi må
-              # iterere over classes.dex, classes2.dex, classes3.dex osv.
-              echo '=== Verifiserer FileHelper i APK ==='
-              FOUND=0
-              for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
-                if unzip -p \"\$APK\" \"\$DEX\" | strings | grep -q 'no/askapp/kommunikasjonstavle/FileHelper'; then
-                  echo \"OK: FileHelper funnet i \$DEX\"
-                  FOUND=1
-                  break
+              # ── Verifiser at alle prosjekt-klassene finnes i dex. ──
+              # Vi sjekker alle tre, ikke bare FileHelper, fordi det forteller oss
+              # om problemet rammer hele prosjekt-dex-en eller bare én klasse.
+              echo '=== Verifiserer prosjekt-klasser i APK ==='
+              MISSING=()
+              for CLS in FileHelper KtWidget WidgetLog; do
+                FOUND_CLS=0
+                for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
+                  if unzip -p \"\$APK\" \"\$DEX\" | strings | grep -q \"no/askapp/kommunikasjonstavle/\$CLS\"; then
+                    echo \"OK: \$CLS funnet i \$DEX\"
+                    FOUND_CLS=1
+                    break
+                  fi
+                done
+                if [ \$FOUND_CLS -eq 0 ]; then
+                  MISSING+=(\$CLS)
                 fi
               done
-              if [ \$FOUND -eq 0 ]; then
-                echo 'FEIL: FileHelper.class mangler fra alle dex-filer'
+              if [ \${#MISSING[@]} -ne 0 ]; then
+                echo \"FEIL: manglende klasser i alle dex-filer: \${MISSING[@]}\"
+                echo ''
                 echo 'Dex-filer i APK:'
                 unzip -l \"\$APK\" | grep -E 'classes[0-9]*\\.dex' || true
+                echo ''
                 echo 'Java-kildefiler i dists:'
                 ls -la \$DIST/src/main/java/no/askapp/kommunikasjonstavle/ || true
+                echo ''
                 echo 'Kompilerte .class-filer:'
-                find \$DIST/build/intermediates -name 'FileHelper.class' || echo '(ingen)'
+                find \$DIST/build/intermediates -name '*.class' -path '*/no/askapp/*' || echo '(ingen)'
+                echo ''
+                echo 'Project dex-archive innhold:'
+                find \$DIST/build/intermediates -path '*project*dex*' -type f 2>/dev/null | head -50 || true
                 exit 1
               fi
 
