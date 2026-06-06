@@ -37,30 +37,38 @@ jobs:
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
-              set -e
+              # ── pipefail: enhver feil i en pipeline skal faktisk feile ──
+              set -eo pipefail
+
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
               # Oppdater versjonskode i spec
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
 
+              # ── PASS 1: la buildozer sette opp dists/ ──
+              # Vi tillater feil her, fordi formålet er å bygge dists-mappestrukturen.
+              # Hvis selve buildozer-byggekjeden feiler, vil PASS 2 også feile, og
+              # det blir fanget der.
+              echo '=== PASS 1: buildozer android debug ==='
               buildozer android debug 2>&1 | tee build_step1.log || true
 
               BASE=.buildozer/android/platform/build-arm64-v8a
               DIST=\$BASE/dists/kommunikasjonstavle
 
               if [ ! -d \$DIST ]; then
-                echo 'FEIL: dists-mappen ble ikke opprettet'
+                echo 'FEIL: dists-mappen ble ikke opprettet av buildozer'
                 cat build_step1.log > build.log
                 exit 1
               fi
 
+              # ── Injiser widget-filer ──
               echo '=== Injiserer widget-filer ==='
 
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
               mkdir -p \$KTDST
               cp java/no/askapp/kommunikasjonstavle/*.java \$KTDST/
-              echo \"Java: \$(ls \$KTDST)\"
+              echo \"Java-filer injisert: \$(ls \$KTDST)\"
 
               mkdir -p \$DIST/src/main/res/xml
               mkdir -p \$DIST/src/main/res/layout
@@ -87,27 +95,48 @@ jobs:
                 python3 patch_manifest.py \$MANIFEST
               fi
 
-              find \$DIST/build/intermediates -maxdepth 1 -type d 2>/dev/null | grep -E 'merged_manifest|manifest_|packaged_manifest|_res$|^.*/res$|symbol_list|^.*/dex$|^.*/classes$' | xargs rm -rf 2>/dev/null || true
-              find \$DIST/build/tmp -maxdepth 1 -type d 2>/dev/null | grep -E 'processDebug|compileDebug|dexBuilder' | xargs rm -rf 2>/dev/null || true
+              # ── Cleanup: tving Gradle til å regenerere alt som avhenger
+              #    av Java/manifest/res, OG slett gammel APK så vi aldri kan
+              #    plukke opp en stale fil hvis pass 2 feiler. ──
+              rm -rf \$DIST/build/outputs/apk
+              rm -rf \$DIST/build/intermediates
+              rm -rf \$DIST/build/tmp
 
-              echo '=== Kaller Gradle ==='
+              # ── PASS 2: Gradle med widget-filer på plass ──
+              echo '=== PASS 2: Gradle assembleDebug ==='
               cd \$DIST
               chmod +x gradlew
               ./gradlew assembleDebug --build-cache 2>&1 | tee /home/user/hostcwd/gradle.log
-              GRADLE_EXIT=\$?
+              GRADLE_EXIT=\${PIPESTATUS[0]}
 
               cd /home/user/hostcwd
+              cat build_step1.log  > build.log
+              cat gradle.log      >> build.log
+
+              if [ \$GRADLE_EXIT -ne 0 ]; then
+                echo \"FEIL: Gradle assembleDebug feilet (exit \$GRADLE_EXIT)\"
+                exit \$GRADLE_EXIT
+              fi
+
               APK=\$(find \$DIST/build/outputs/apk/debug -name '*.apk' 2>/dev/null | head -1)
-              if [ -n \"\$APK\" ] && [ \$GRADLE_EXIT -eq 0 ]; then
-                mkdir -p bin
-                cp \"\$APK\" bin/
-                echo \"APK: \$(ls bin/)\"
-                cat gradle.log > build.log
-              else
-                cat build_step1.log  > build.log
-                cat gradle.log      >> build.log
+              if [ -z \"\$APK\" ]; then
+                echo 'FEIL: Ingen APK funnet etter Gradle assembleDebug'
                 exit 1
               fi
+
+              # ── Verifiser at FileHelper faktisk finnes i den ferdige APK-en. ──
+              # Beskytter mot fremtidige stille feil der bygget lykkes men klassen
+              # likevel mangler.
+              echo '=== Verifiserer FileHelper i APK ==='
+              if ! unzip -p \"\$APK\" classes.dex | strings | grep -q 'no/askapp/kommunikasjonstavle/FileHelper'; then
+                echo 'FEIL: FileHelper.class mangler fra classes.dex'
+                exit 1
+              fi
+              echo 'OK: FileHelper er til stede i APK'
+
+              mkdir -p bin
+              cp \"\$APK\" bin/
+              echo \"APK lagt i bin/: \$(ls bin/)\"
             "
 
       - name: Finn APK-fil
