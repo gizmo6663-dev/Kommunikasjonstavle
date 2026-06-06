@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Build;
 import android.util.Base64;
 import android.util.Log;
 import android.view.View;
@@ -91,15 +92,31 @@ public class KtWidget extends AppWidgetProvider {
         try {
             AlarmManager am = (AlarmManager)
                 ctx.getSystemService(Context.ALARM_SERVICE);
-            // Bruk inexact set() i stedet for setExact():
-            // - På Android 12+ krever setExact() SCHEDULE_EXACT_ALARM-permission
-            //   (Android 14+: USE_EXACT_ALARM, kun visse apptyper får lov).
-            // - En widget for dagsrytme trenger ikke sekundpresisjon — et minutts
-            //   slingringsmonn rundt aktivitetsbytte er helt greit.
-            am.set(AlarmManager.RTC,
-                System.currentTimeMillis() + delayMs,
-                getAlarmIntent(ctx));
-            WidgetLog.w(ctx, "[ALARM] satt om " + (delayMs/1000) + " sek");
+            long target = System.currentTimeMillis() + delayMs;
+            PendingIntent pi = getAlarmIntent(ctx);
+
+            // Eksakte alarmer for dagsrytme-overganger:
+            // - API < 31: canScheduleExactAlarms() finnes ikke, men eksakte alarmer er alltid tillatt.
+            // - API 31+: vi må sjekke canScheduleExactAlarms() runtime. På apper som deklarerer
+            //   USE_EXACT_ALARM (kategori: kalender/alarm/dagsrytme) er den auto-innvilget.
+            // - setExactAndAllowWhileIdle bypasser Doze, så et veggmontert nettbrett som har stått
+            //   stille en stund får oppdatert widget med riktig aktivitet uansett.
+            boolean canExact = (Build.VERSION.SDK_INT < 31) || am.canScheduleExactAlarms();
+            String mode;
+            try {
+                if (canExact) {
+                    am.setExactAndAllowWhileIdle(AlarmManager.RTC, target, pi);
+                    mode = "exact+idle";
+                } else {
+                    am.set(AlarmManager.RTC, target, pi);
+                    mode = "inexact (mangler permission)";
+                }
+            } catch (SecurityException se) {
+                // Defensiv: skal ikke skje når canScheduleExactAlarms() er true, men håndter likevel
+                am.set(AlarmManager.RTC, target, pi);
+                mode = "inexact (SecurityException)";
+            }
+            WidgetLog.w(ctx, "[ALARM] " + mode + " satt om " + (delayMs/1000) + " sek");
         } catch (Exception e) {
             Log.e(TAG, "scheduleNext feil: " + e);
             WidgetLog.w(ctx, "[FEIL] scheduleNext: " + e.getMessage());
