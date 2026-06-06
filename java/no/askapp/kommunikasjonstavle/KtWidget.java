@@ -91,7 +91,12 @@ public class KtWidget extends AppWidgetProvider {
         try {
             AlarmManager am = (AlarmManager)
                 ctx.getSystemService(Context.ALARM_SERVICE);
-            am.setExact(AlarmManager.RTC,
+            // Bruk inexact set() i stedet for setExact():
+            // - På Android 12+ krever setExact() SCHEDULE_EXACT_ALARM-permission
+            //   (Android 14+: USE_EXACT_ALARM, kun visse apptyper får lov).
+            // - En widget for dagsrytme trenger ikke sekundpresisjon — et minutts
+            //   slingringsmonn rundt aktivitetsbytte er helt greit.
+            am.set(AlarmManager.RTC,
                 System.currentTimeMillis() + delayMs,
                 getAlarmIntent(ctx));
             WidgetLog.w(ctx, "[ALARM] satt om " + (delayMs/1000) + " sek");
@@ -221,7 +226,7 @@ public class KtWidget extends AppWidgetProvider {
             views.setOnClickPendingIntent(R.id.kt_refresh, piRef);
 
             mgr.updateAppWidget(id, views);
-            WidgetLog.w(ctx, "[VISER] "" + data.line1 + ""  |  "
+            WidgetLog.w(ctx, "[VISER] \"" + data.line1 + "\"  |  "
                 + data.line2
                 + (hasImage ? "  [bilde]" : "  [ingen bilde]"));
 
@@ -357,6 +362,7 @@ public class KtWidget extends AppWidgetProvider {
         JSONArray dagsrytme;
         WidgetData(String l1, String l2, String img, JSONArray dr) {
             line1 = l1; line2 = l2; imagePath = img; dagsrytme = dr;
+            imgB64 = null;  // Eksplisitt: vi bruker imagePath nå, ikke base64
         }
     }
 }
