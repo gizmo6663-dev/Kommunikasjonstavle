@@ -38,6 +38,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.textinput import TextInput
 from kivy.uix.slider import Slider
 from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.widget import Widget
 from kivy.graphics.texture import Texture
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
@@ -5710,14 +5711,19 @@ INNSTILLINGER
 
     def _pick_time_dialog(self, initial_hhmm, on_picked):
         """
-        Åpner Android's innebygde rullerende tidsvelger (TimePickerDialog).
-        Samme komponent som klokke/alarm-appen bruker, så brukeren får et
-        kjent grensesnitt: dra opp/ned for å bla, eller trykk på et tall
-        for å taste direkte med tastaturet.
+        Egen tids-velger med stor numpad og hurtigjusterings-knapper.
+
+        Brukerflyt:
+        - To bokser (HH og MM). Den aktive er fremhevet.
+        - Trykk en boks for å gi den fokus.
+        - Trykk siffer for å skrive – auto-bytt fra HH til MM etter 2 siffer
+          (eller hvis et siffer gjør verdien ugyldig).
+        - ⌫ sletter siste siffer.
+        - ±5 / ±15 justerer hele tidspunktet (krysser time-grenser korrekt).
+        - OK bekrefter, Avbryt forkaster.
 
         initial_hhmm – starttid som 'HH:MM'.
-        on_picked    – callback som mottar en 'HH:MM'-streng når brukeren
-                       bekrefter. Avbryt fyrer ingen callback.
+        on_picked    – callback med 'HH:MM' når brukeren bekrefter.
         """
         try:
             parts = initial_hhmm.split(':')
@@ -5726,93 +5732,172 @@ INNSTILLINGER
         except Exception:
             h, m = 8, 0
 
-        if platform != 'android':
-            # Desktop-fallback (for testing) – ikke i bruk på produksjonsenhet
-            self._pick_time_fallback(h, m, on_picked)
-            return
+        ACTIVE_COLOR   = '#4D96FF'   # blå for aktiv boks
+        INACTIVE_COLOR = '#9CA3AF'   # grå for inaktiv boks
+        DIGIT_COLOR    = '#E8EAF2'   # lys for talltastatur
+        BACK_COLOR     = '#FFB74D'   # oransje for slett-knapp
+        ADJ_COLOR      = '#78909C'   # mørk grå for ±knapper
 
-        try:
-            from jnius import autoclass, PythonJavaClass, java_method
-            from android.runnable import run_on_ui_thread
-        except Exception:
-            self._pick_time_fallback(h, m, on_picked)
-            return
-
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        activity       = PythonActivity.mActivity
-
-        class TimeSetListener(PythonJavaClass):
-            __javainterfaces__ = ['android/app/TimePickerDialog$OnTimeSetListener']
-
-            @java_method('(Landroid/widget/TimePicker;II)V')
-            def onTimeSet(self, view, hour, minute):
-                hhmm = '{:02d}:{:02d}'.format(hour, minute)
-                # Tilbake til Kivy-tråden for å oppdatere widgets trygt
-                Clock.schedule_once(lambda *_: on_picked(hhmm), 0)
-
-        listener = TimeSetListener()
-        # Behold referansen så Python-objektet ikke GC-es før dialogen lukkes
-        self._tp_listener = listener
-
-        @run_on_ui_thread
-        def _show():
-            try:
-                TimePickerDialog = autoclass('android.app.TimePickerDialog')
-                dialog = TimePickerDialog(activity, listener, h, m, True)  # 24h
-                dialog.show()
-            except Exception as e:
-                logging.error('TimePickerDialog feilet: %s', e)
-                Clock.schedule_once(
-                    lambda *_: self._pick_time_fallback(h, m, on_picked), 0)
-
-        _show()
-
-    def _pick_time_fallback(self, h, m, on_picked):
-        """
-        Enkel fallback når native dialog ikke er tilgjengelig.
-        Brukes typisk bare ved skrivebords-testing utenfor Android.
-        """
-        outer = BoxLayout(orientation='vertical',
-                          spacing=dp(12), padding=dp(16))
-        row = BoxLayout(orientation='horizontal', spacing=dp(8),
-                        size_hint_y=None, height=dp(60))
-        h_inp = TextInput(
-            text='{:02d}'.format(h), multiline=False,
-            size_hint_x=None, width=dp(70),
-            input_filter='int', font_size=sp(22), halign='center',
-        )
-        m_inp = TextInput(
-            text='{:02d}'.format(m), multiline=False,
-            size_hint_x=None, width=dp(70),
-            input_filter='int', font_size=sp(22), halign='center',
-        )
-        row.add_widget(h_inp)
-        row.add_widget(Label(text=':', font_size=sp(22),
-                              size_hint_x=None, width=dp(20),
-                              color=(0, 0, 0, 1)))
-        row.add_widget(m_inp)
-        outer.add_widget(row)
-
+        state = {
+            'h': h, 'm': m,
+            'focus': 'h',          # 'h' eller 'm'
+            'fresh': True,         # True = neste siffer erstatter, False = appender
+        }
         pop_ref = [None]
+
+        # ── Display: to tappbare bokser ───────────────────────────────
+        disp_row = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(96),
+                             spacing=dp(4))
+        disp_row.add_widget(Widget())  # spacer venstre
+
+        hh_btn = mk_btn('{:02d}'.format(state['h']),
+                        hex_k(ACTIVE_COLOR), h=dp(96), fs=42,
+                        size_hint_x=None, width=dp(110))
+        sep = Label(text=':', font_size=sp(40),
+                    color=(0.1, 0.1, 0.2, 1),
+                    size_hint_x=None, width=dp(28),
+                    halign='center', valign='middle')
+        mm_btn = mk_btn('{:02d}'.format(state['m']),
+                        hex_k(INACTIVE_COLOR), h=dp(96), fs=42,
+                        size_hint_x=None, width=dp(110))
+
+        disp_row.add_widget(hh_btn)
+        disp_row.add_widget(sep)
+        disp_row.add_widget(mm_btn)
+        disp_row.add_widget(Widget())  # spacer høyre
+
+        def refresh_display():
+            hh_btn.text = '{:02d}'.format(state['h'])
+            mm_btn.text = '{:02d}'.format(state['m'])
+            if state['focus'] == 'h':
+                hh_btn.btn_color = list(hex_k(ACTIVE_COLOR))
+                mm_btn.btn_color = list(hex_k(INACTIVE_COLOR))
+            else:
+                hh_btn.btn_color = list(hex_k(INACTIVE_COLOR))
+                mm_btn.btn_color = list(hex_k(ACTIVE_COLOR))
+
+        def focus_field(field):
+            state['focus'] = field
+            state['fresh'] = True
+            refresh_display()
+
+        hh_btn.bind(on_release=lambda *_: focus_field('h'))
+        mm_btn.bind(on_release=lambda *_: focus_field('m'))
+
+        # ── Numpad ────────────────────────────────────────────────────
+        def press_digit(d):
+            d = int(d)
+            f = state['focus']
+            cur = state[f]
+            limit = 23 if f == 'h' else 59
+            if state['fresh']:
+                # Første siffer i feltet – erstatt
+                state[f] = d
+                state['fresh'] = False
+                # Hvis første siffer alene overskrider grensen, kan vi
+                # gå rett videre. F.eks. HH: trykk 3 → HH=3, men neste
+                # siffer kan ikke gjøre 3X gyldig (alle 30+ er ugyldige),
+                # så det er greit å auto-bytte allerede her.
+                # Men 0, 1, 2 kan fortsatt få 2. siffer (00-23).
+                if f == 'h' and d >= 3:
+                    # Auto-bytt til MM med tomt felt
+                    state['focus'] = 'm'
+                    state['fresh'] = True
+                elif f == 'm' and d >= 6:
+                    # MM kan ikke ha første siffer > 5
+                    # Bare aksepter dette som hele verdien, ingen videre input nødvendig
+                    state['fresh'] = True  # neste trykk starter på nytt
+            else:
+                # Andre siffer – multipliser med 10 og legg til
+                new_val = cur * 10 + d
+                if new_val > limit:
+                    # Ugyldig – bruk dette som ny verdi (start over)
+                    state[f] = d
+                    state['fresh'] = False
+                    if f == 'h' and d >= 3:
+                        state['focus'] = 'm'
+                        state['fresh'] = True
+                else:
+                    state[f] = new_val
+                    # Feltet er fullt – auto-bytt fra HH til MM
+                    if f == 'h':
+                        state['focus'] = 'm'
+                        state['fresh'] = True
+                    else:
+                        state['fresh'] = True  # MM full, neste trykk erstatter
+            refresh_display()
+
+        def press_back(*_):
+            f = state['focus']
+            cur = state[f]
+            if cur >= 10:
+                state[f] = cur // 10
+                state['fresh'] = False
+            elif cur > 0:
+                state[f] = 0
+                state['fresh'] = True
+            else:
+                # Allerede 0 – flytt fokus til forrige felt om vi er på MM
+                if f == 'm':
+                    state['focus'] = 'h'
+                    state['fresh'] = False
+            refresh_display()
+
+        numpad = GridLayout(cols=3, spacing=dp(6),
+                            size_hint_y=None, height=dp(248))
+        for d in '123456789':
+            btn = mk_btn(d, hex_k(DIGIT_COLOR), h=dp(58), fs=22,
+                         cb=lambda *_, dd=d: press_digit(dd))
+            numpad.add_widget(btn)
+        # Bunnrad: ⌫, 0, spacer
+        numpad.add_widget(mk_btn('⌫', hex_k(BACK_COLOR), h=dp(58), fs=20,
+                                  cb=press_back))
+        numpad.add_widget(mk_btn('0', hex_k(DIGIT_COLOR), h=dp(58), fs=22,
+                                  cb=lambda *_: press_digit('0')))
+        numpad.add_widget(Widget())  # tom celle for symmetri
+
+        # ── Hurtigjustering ±5 / ±15 ─────────────────────────────────
+        def adjust(delta_min):
+            total = state['h'] * 60 + state['m'] + delta_min
+            total = total % (24 * 60)  # wraps over døgnet
+            state['h'] = total // 60
+            state['m'] = total % 60
+            state['fresh'] = True
+            refresh_display()
+
+        adj_row = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(46),
+                            spacing=dp(6))
+        for label, dm in [('−15', -15), ('−5', -5), ('+5', +5), ('+15', +15)]:
+            adj_row.add_widget(mk_btn(label, hex_k(ADJ_COLOR), h=dp(46), fs=14,
+                                      cb=lambda *_, d=dm: adjust(d)))
+
+        # ── Avbryt / OK ───────────────────────────────────────────────
         def confirm(*_):
-            try:
-                hh = max(0, min(23, int(h_inp.text or '0')))
-                mm = max(0, min(59, int(m_inp.text or '0')))
-                on_picked('{:02d}:{:02d}'.format(hh, mm))
-            except Exception:
-                pass
+            hhmm = '{:02d}:{:02d}'.format(state['h'], state['m'])
+            on_picked(hhmm)
             pop_ref[0].dismiss()
 
-        btns = BoxLayout(orientation='horizontal',
-                         size_hint_y=None, height=dp(50), spacing=dp(10))
-        btns.add_widget(mk_btn('OK', hex_k('#6BCB77'), h=dp(50), cb=confirm))
-        btns.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
-                                cb=lambda *_: pop_ref[0].dismiss()))
-        outer.add_widget(btns)
+        btn_row = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(54),
+                            spacing=dp(10))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(54), fs=15,
+                                   cb=lambda *_: pop_ref[0].dismiss()))
+        btn_row.add_widget(mk_btn('OK', hex_k('#6BCB77'), h=dp(54), fs=16,
+                                   cb=confirm))
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(10), padding=dp(14))
+        outer.add_widget(disp_row)
+        outer.add_widget(numpad)
+        outer.add_widget(adj_row)
+        outer.add_widget(btn_row)
 
         pop = Popup(title='Velg tidspunkt', content=outer,
-                    size_hint=POPUP_SMALL)
+                    size_hint=POPUP_LARGE, title_size=fsp(16))
         pop_ref[0] = pop
+        refresh_display()
         pop.open()
 
     def _confirm(self, title, message, on_confirm,
