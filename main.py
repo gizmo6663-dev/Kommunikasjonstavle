@@ -376,6 +376,45 @@ def get_day_plan(data, code):
     plans = data.get('dagsplaner') or {}
     return plans.get(code, [])
 
+def is_paused(data):
+    """True hvis dagsrytmen er satt på pause."""
+    return bool(data.get('pause'))
+
+def get_category(data, cat_id):
+    """Finner kategoridict basert på id. Returnerer None hvis ikke funnet."""
+    if not cat_id:
+        return None
+    for c in data.get('kategorier', []):
+        if c.get('id') == cat_id:
+            return c
+    return None
+
+def time_of_day_tint():
+    """
+    Returnerer (r, g, b, a) for vindusbakgrunnen basert på klokkeslett.
+    Bittesmå skift – ikke nok til å føles som temaskifte, men gjør at appen
+    «lever» gjennom dagen. Beregnet å holde innenfor 5–8 % av basis.
+
+    Tidsperioder (omtrentlig):
+      06–10  morgen   – litt kjøligere blålig
+      10–14  midt     – nøytral
+      14–18  ettermiddag – litt varmere off-white
+      18–22  kveld    – kjøligere igjen, dempet
+      22–06  natt     – mer dempet
+    """
+    h    = datetime.now().hour
+    base = 0.94  # vår vanlige bakgrunn ~ (0.94, 0.95, 0.98, 1.0)
+    if   6  <= h < 10:   # morgen
+        return (0.93, 0.95, 0.99, 1.0)
+    elif 10 <= h < 14:   # midt
+        return (0.94, 0.95, 0.98, 1.0)
+    elif 14 <= h < 18:   # ettermiddag
+        return (0.97, 0.96, 0.94, 1.0)
+    elif 18 <= h < 22:   # kveld
+        return (0.92, 0.93, 0.96, 1.0)
+    else:                # natt
+        return (0.90, 0.91, 0.94, 1.0)
+
 # ─── Standard popup-størrelser ────────────────────────────────────
 # Konsistente popup-størrelser gjør appen forutsigbar å bruke. Bruk
 # disse fremfor å skrive size_hint=(...,...) direkte i hver popup.
@@ -445,6 +484,18 @@ PALETTE = [
     '#00E5FF', '#76FF03', '#F50057', '#FF6D00', '#1DE9B6', '#FFD740',
 ]
 
+# Standard aktivitetskategorier som brukes til fargekoding i dagsplaner.
+# Hver aktivitet kan tilordnes én kategori; den vises som en tynn fargestripe
+# på venstre kant av rad-elementene. Brukeren kan endre disse senere.
+DEFAULT_CATEGORIES = [
+    {'id': 'maltid',   'name': 'Måltid',   'color': '#FFB74D'},
+    {'id': 'lek',      'name': 'Lek',      'color': '#FFD93D'},
+    {'id': 'hvile',    'name': 'Hvile',    'color': '#9C7DCE'},
+    {'id': 'utetid',   'name': 'Utetid',   'color': '#6BCB77'},
+    {'id': 'samling',  'name': 'Samling',  'color': '#4D96FF'},
+    {'id': 'overgang', 'name': 'Overgang', 'color': '#90A4AE'},
+]
+
 DEFAULT_STRUCT = {
     "folders": [
         {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": [], "subfolders": [], "opens": 0},
@@ -456,6 +507,10 @@ DEFAULT_STRUCT = {
     ],
     "sequences": [],
     "dagsrytme": [],
+    "dagsplaner": {c: [] for c in DAY_CODES},
+    "notater":    {c: "" for c in DAY_CODES},
+    "kategorier": list(DEFAULT_CATEGORIES),
+    "pause":      None,    # {"since": "ISO timestamp"} eller None
     "settings": {
         "tts_enabled": False,
         "font_scale": 1.0,
@@ -649,42 +704,61 @@ def _update_widget(data):
         from jnius import autoclass
         from android import mActivity
 
-        # Bruk dagens plan fra dagsplaner. Faller tilbake til gammel dagsrytme-
-        # liste for bakoverkompatibilitet med strukturer fra før migrering.
-        plans = data.get('dagsplaner')
-        if isinstance(plans, dict):
-            entries = plans.get(today_code(), [])
+        # Pause-sjekk først – widget skal være helt tydelig på status
+        if is_paused(data):
+            line1 = '⏸  Dagsrytme på pause'
+            line2 = 'Trykk for å gjenoppta'
+            img_b64 = ''
+            current = None
+            upcoming = None
         else:
-            entries = data.get('dagsrytme', [])
-        now       = _dt.datetime.now()
-        now_total = now.hour * 60 + now.minute
+            # Bruk dagens plan fra dagsplaner. Faller tilbake til gammel dagsrytme-
+            # liste for bakoverkompatibilitet med strukturer fra før migrering.
+            plans = data.get('dagsplaner')
+            if isinstance(plans, dict):
+                entries = plans.get(today_code(), [])
+            else:
+                entries = data.get('dagsrytme', [])
+            now       = _dt.datetime.now()
+            now_total = now.hour * 60 + now.minute
 
-        def to_min(t):
-            try:
-                h, m = str(t).split(':')
-                return int(h)*60 + int(m)
-            except Exception:
-                return -1
+            def to_min(t):
+                try:
+                    h, m = str(t).split(':')
+                    return int(h)*60 + int(m)
+                except Exception:
+                    return -1
 
-        current  = None
-        for e in entries:
-            s = to_min(e.get('start', ''))
-            t = to_min(e.get('end',   ''))
-            if s < 0 or t < 0:
-                continue
-            if s <= now_total < t:
-                current = e
-                break
+            current  = None
+            upcoming = None
+            for e in sorted(entries, key=lambda x: x.get('start', '00:00')):
+                s = to_min(e.get('start', ''))
+                t = to_min(e.get('end',   ''))
+                if s < 0 or t < 0:
+                    continue
+                if s <= now_total < t:
+                    current = e
+                elif s > now_total and upcoming is None:
+                    upcoming = e
 
-        # Enkod bilde i ren Python FØR jnius
-        img_b64 = _encode_img_b64(current.get('image', '') if current else '')
+            # Enkod bilde i ren Python FØR jnius
+            img_b64 = _encode_img_b64(current.get('image', '') if current else '')
 
-        if current:
-            line1 = current['name']
-            line2 = current.get('start','') + ' – ' + current.get('end','')
-        else:
-            line1 = 'Ingen aktivitet nå'
-            line2 = ''
+            if current:
+                line1 = current['name']
+                line2 = current.get('start','') + ' – ' + current.get('end','')
+                # Hvis det er en kommende aktivitet, vis den som tilleggslinje.
+                if upcoming:
+                    nxt_start = upcoming.get('start','')
+                    line2 += '   ·   Neste: ' + upcoming.get('name','') + ' kl. ' + nxt_start
+            elif upcoming:
+                line1 = 'Neste: ' + upcoming.get('name','')
+                line2 = 'kl. ' + upcoming.get('start','')
+                # Dempet bilde av kommende aktivitet
+                img_b64 = _encode_img_b64(upcoming.get('image', ''))
+            else:
+                line1 = 'Ingen aktivitet nå'
+                line2 = ''
 
         prefs  = mActivity.getSharedPreferences('kt_widget', 0)
         editor = prefs.edit()
@@ -864,7 +938,7 @@ def apply_high_contrast(enabled):
     if enabled:
         Window.clearcolor = (1.0, 1.0, 1.0, 1.0)
     else:
-        Window.clearcolor = (0.94, 0.95, 0.98, 1.0)
+        Window.clearcolor = time_of_day_tint()
 
 def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
@@ -937,6 +1011,20 @@ def load_struct():
                 d['dagsplaner'] = {
                     code: [dict(a) for a in old] for code in DAY_CODES
                 }
+            # Notater per ukedag – tomme strenger ved første migrering.
+            if 'notater' not in d:
+                d['notater'] = {code: '' for code in DAY_CODES}
+            else:
+                # Sørg for at alle 7 koder finnes (kan mangle hvis fil ble
+                # delvis-redigert manuelt).
+                for code in DAY_CODES:
+                    d['notater'].setdefault(code, '')
+            # Kategorier – brukes til fargekoding av aktiviteter.
+            if 'kategorier' not in d:
+                d['kategorier'] = list(DEFAULT_CATEGORIES)
+            # Pause-status: None når ingen pause er aktiv.
+            if 'pause' not in d:
+                d['pause'] = None
             if 'settings' not in d:
                 d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False, 'swipe_nav': False}
             return d
@@ -2049,8 +2137,19 @@ class KommunikasjonstavleApp(App):
 
     def build(self):
         setup_logging()
-        Window.clearcolor = (0.94, 0.95, 0.98, 1)
+        Window.clearcolor = time_of_day_tint()
         Window.softinput_mode = 'below_target'  # Skyv innhold over tastatur
+
+        # Periodisk oppdatering av tid-av-døgn-fargetone. Hver halvtime sjekker
+        # vi om bakgrunnen bør skiftes til neste tidsbånd. Subtilt nok til at
+        # brukeren ikke merker selve overgangen.
+        def _refresh_tint(*_):
+            if self._cur_scr == 'image':
+                return  # adaptiv bakgrunn på bildeskjermen overstyrer
+            if is_hc():
+                return  # høykontrast overstyrer
+            Window.clearcolor = time_of_day_tint()
+        Clock.schedule_interval(_refresh_tint, 1800)
 
         # Sett ALLE datastier fra user_data_dir – alltid skrivbar
         # uten tillatelser på alle Android-versjoner.
@@ -2484,7 +2583,7 @@ class KommunikasjonstavleApp(App):
             self._tidsur_stop()
         # Nullstill adaptiv bakgrunn når vi forlater bilde-skjermen
         if self._cur_scr == 'image':
-            hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else (0.94, 0.95, 0.98, 1.0)
+            hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
             Window.clearcolor = hc_bg
 
         self._content.clear_widgets()
@@ -2534,6 +2633,13 @@ class KommunikasjonstavleApp(App):
 
         outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6)))
 
+        # ── «Akkurat nå»-kort ────────────────────────────────────
+        # Speiler widgeten: viser nåværende aktivitet eller neste,
+        # eller pause-status. Trykk fører rett til dagsplan-skjermen
+        # så brukeren slipper å gå om quickbaren.
+        snap = self._home_now_card()
+        if snap is not None:
+            outer.add_widget(snap)
 
         # ── «Ny mappe»-knapp kun i redigeringsmodus ───────────────
         if self.edit_mode:
@@ -2543,15 +2649,124 @@ class KommunikasjonstavleApp(App):
             ))
 
         # ── 3-kolonne mappegrid ───────────────────────────────────
-        grid = GridLayout(cols=3, spacing=dp(6), padding=(dp(6), dp(6)), size_hint_y=None)
-        grid.bind(minimum_height=grid.setter('height'))
-        for fo in self.data['folders']:
-            grid.add_widget(self._make_folder_tile(fo))
-
-        sv = ScrollView()
-        sv.add_widget(grid)
-        outer.add_widget(sv)
+        if not self.data['folders']:
+            # Vennlig empty state hvis ingen mapper er opprettet ennå
+            outer.add_widget(self._empty_state(
+                glyph='📁',
+                msg='Ingen mapper ennå.\nTrykk "Red." og deretter "+ Ny mappe".'))
+        else:
+            grid = GridLayout(cols=3, spacing=dp(6), padding=(dp(6), dp(6)),
+                              size_hint_y=None)
+            grid.bind(minimum_height=grid.setter('height'))
+            for fo in self.data['folders']:
+                grid.add_widget(self._make_folder_tile(fo))
+            sv = ScrollView()
+            sv.add_widget(grid)
+            outer.add_widget(sv)
         self._set_content(outer)
+
+    def _home_now_card(self):
+        """
+        Bygger kortet øverst på hjemskjermen som speiler widgetens innhold.
+        Returnerer None hvis det ikke er noen meningsfull info å vise –
+        da slipper hjemskjermen et tomt kort som tar plass uten verdi.
+        """
+        if is_paused(self.data):
+            box = RBox(orientation='horizontal',
+                       size_hint_y=None, height=dp(72),
+                       padding=(dp(14), dp(8)),
+                       box_color=(1.0, 0.86, 0.30, 1.0), radius=dp(16))
+            box.add_widget(Label(
+                text='[b]⏸  Dagsrytme på pause[/b]\nTrykk for å gå til dagsplan',
+                markup=True, font_size=fsp(14),
+                color=(0.15, 0.10, 0.05, 1), halign='left', valign='middle'))
+            box.children[-1].bind(size=box.children[-1].setter('text_size'))
+            def _tap(w, touch):
+                if w.collide_point(*touch.pos):
+                    self._nav_dagsrytme()
+                    return True
+                return False
+            box.bind(on_touch_down=_tap)
+            return box
+
+        # Finn nåværende/neste aktivitet for dagens plan
+        entries = sorted(get_day_plan(self.data, today_code()),
+                         key=lambda e: e.get('start', '00:00'))
+        if not entries:
+            return None  # ingen aktiviteter i dag, ikke vis kort
+        now   = datetime.now()
+        now_m = now.hour * 60 + now.minute
+        current = upcoming = None
+        for e in entries:
+            s = self._dr_parse(e.get('start', '00:00'))
+            t = self._dr_parse(e.get('end',   '23:59'))
+            if s <= now_m < t:
+                current = (e, s, t); break
+            elif s > now_m and upcoming is None:
+                upcoming = (e, s)
+        if not current and not upcoming:
+            # Alle aktiviteter ferdige for dagen – minimalt kort
+            box = RBox(orientation='horizontal',
+                       size_hint_y=None, height=dp(54),
+                       padding=(dp(14), dp(6)),
+                       box_color=(0.92, 0.96, 0.92, 1.0), radius=dp(14))
+            box.add_widget(Label(
+                text='✓  Alle dagens aktiviteter er fullført.',
+                font_size=fsp(14), color=(0.20, 0.40, 0.25, 1),
+                halign='center'))
+            return box
+
+        # Bygg kortet – horisontalt layout med (lite) bilde + tekst
+        e, info = (current[0], 'NÅ') if current else (upcoming[0], 'NESTE')
+        cat = get_category(self.data, e.get('category'))
+        # Bakgrunnsfarge: lett tonet etter kategori hvis tilgjengelig
+        if cat:
+            cr, cg, cb, _ = hex_k(cat['color'])
+            # Mix med hvit for myk bakgrunn
+            bg = (0.92 + cr * 0.08, 0.93 + cg * 0.07, 0.96 + cb * 0.04, 1.0)
+        else:
+            bg = (0.94, 0.96, 1.0, 1.0)
+        card = RBox(orientation='horizontal',
+                    size_hint_y=None, height=dp(96),
+                    padding=(dp(10), dp(8)), spacing=dp(10),
+                    box_color=bg, radius=dp(16))
+        # Bilde (mindre enn på dagsplan-skjermen)
+        if e.get('image') and os.path.exists(e['image']):
+            img_wrap = BoxLayout(size_hint_x=None, width=dp(80))
+            img_wrap.add_widget(self._make_framed_image(
+                e['image'], dp(80), faded=(info == 'NESTE')))
+            card.add_widget(img_wrap)
+        # Tekstkolonne
+        col = BoxLayout(orientation='vertical', spacing=dp(2))
+        badge_color = '#6BCB77' if info == 'NÅ' else '#4D96FF'
+        col.add_widget(Label(
+            text=f'[b][color={badge_color[1:]}]{info}[/color][/b]   '
+                 f'[b]{e["name"]}[/b]',
+            markup=True, font_size=fsp(17),
+            color=(0.04, 0.10, 0.36, 1),
+            size_hint_y=None, height=dp(28), halign='left'))
+        col.children[-1].bind(size=col.children[-1].setter('text_size'))
+        sub = f'{e.get("start","")} – {e.get("end","")}'
+        if info == 'NÅ':
+            rem = current[2] - now_m
+            sub += f'   ({self._dr_fmt(rem)} igjen)'
+        else:
+            wait = upcoming[1] - now_m
+            sub += f'   (starter om {self._dr_fmt(wait)})'
+        col.add_widget(Label(
+            text=sub, font_size=fsp(13),
+            color=(0.35, 0.40, 0.55, 1),
+            size_hint_y=None, height=dp(22), halign='left'))
+        col.children[-1].bind(size=col.children[-1].setter('text_size'))
+        card.add_widget(col)
+        # Trykk → naviger til dagsplan
+        def _tap(w, touch):
+            if w.collide_point(*touch.pos):
+                self._nav_dagsrytme()
+                return True
+            return False
+        card.bind(on_touch_down=_tap)
+        return card
 
     def _make_folder_tile(self, fo):
         """Enkel farget flis med sentrert navn – ingen bilde."""
@@ -4198,6 +4413,18 @@ INNSTILLINGER
         pop_ref[0] = pop
         pop.open()
 
+    def _toggle_pause(self):
+        """Slå dagsrytme-pause av/på. Lagres og synkes til widget."""
+        if is_paused(self.data):
+            self.data['pause'] = None
+            self._toast('Dagsrytme gjenopptatt.')
+        else:
+            self.data['pause'] = {'since': datetime.now().isoformat()}
+            self._toast('Dagsrytme satt på pause.')
+        save_struct(self.data)
+        Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
+        self._build_dagsrytme_ui()
+
     def _build_dagsrytme_ui(self, animate=False):
         """
         Bygger dagsplan-skjermen for valgt ukedag. Kalles av bakgrunnsklokken.
@@ -4211,14 +4438,16 @@ INNSTILLINGER
         sel       = self._dr_selected_day
         today_c   = today_code()
         is_today  = (sel == today_c)
+        paused    = is_paused(self.data) and is_today
         entries   = sorted(get_day_plan(self.data, sel),
                            key=lambda e: e.get('start', '00:00'))
         now       = datetime.now()
         now_m     = now.hour * 60 + now.minute
 
         current = upcoming = None
-        # NÅ/KOMMENDE er bare meningsfullt for i dag
-        if is_today:
+        # NÅ/KOMMENDE er bare meningsfullt for i dag, og blir suspendert
+        # når dagsrytmen er på pause.
+        if is_today and not paused:
             for e in entries:
                 s = self._dr_parse(e.get('start', '00:00'))
                 t = self._dr_parse(e.get('end',   '23:59'))
@@ -4231,9 +4460,28 @@ INNSTILLINGER
                           size_hint_y=None)
         outer.bind(minimum_height=outer.setter('height'))
 
+        # ── Pause-banner ─────────────────────────────────────────
+        # Vises kun på dagens fane når pause er aktiv. Trykkbar for
+        # å gjenoppta direkte (sparer brukeren for en omvei).
+        if paused:
+            banner = RBox(orientation='horizontal',
+                          size_hint_y=None, height=dp(52),
+                          padding=(dp(12), dp(6)),
+                          box_color=(1.0, 0.86, 0.30, 1.0), radius=dp(14))
+            banner.add_widget(Label(
+                text='[b]⏸  Dagsrytme på pause[/b] – trykk for å gjenoppta',
+                markup=True, font_size=fsp(15),
+                color=(0.15, 0.10, 0.05, 1), halign='left', valign='middle'))
+            # Hele banneret er trykkbart via on_touch_down
+            def _banner_tap(w, touch):
+                if w.collide_point(*touch.pos):
+                    self._toggle_pause()
+                    return True
+                return False
+            banner.bind(on_touch_down=_banner_tap)
+            outer.add_widget(banner)
+
         # ── Ukedag-faner ─────────────────────────────────────────
-        # Valgt dag: blå. I dag (men ikke valgt): grønn. Andre: grå.
-        # Liten markering på dagens fane så brukeren ser hvor de er.
         tabs = BoxLayout(orientation='horizontal',
                          size_hint_y=None, height=dp(48), spacing=dp(4))
         for code in DAY_CODES:
@@ -4252,26 +4500,78 @@ INNSTILLINGER
 
         # ── Dagstittel ───────────────────────────────────────────
         title_text = DAY_FULL_NO[sel] + (' (i dag)' if is_today else '')
-        title_lbl = Label(text=title_text, size_hint_y=None, height=dp(30),
+        outer.add_widget(Label(text=title_text, size_hint_y=None, height=dp(30),
             font_size=fsp(17), bold=True, color=(0.04, 0.10, 0.36, 1),
-            halign='center')
-        outer.add_widget(title_lbl)
+            halign='center'))
+
+        # ── Dagsfremdrift ────────────────────────────────────────
+        # Tynn linje som viser hvor langt vi er kommet i dagens plan.
+        # Fullført = end-tid har passert klokken. Bare meningsfullt
+        # på i dag og når vi har minst én aktivitet.
+        if is_today and not paused and entries:
+            total = len(entries)
+            completed_count = sum(
+                1 for e in entries
+                if self._dr_parse(e.get('end', '23:59')) <= now_m
+            )
+            done_pct = completed_count / total if total else 0
+            prog_row = BoxLayout(orientation='horizontal',
+                                 size_hint_y=None, height=dp(22),
+                                 spacing=dp(8))
+            prog_row.add_widget(Label(
+                text=f'Fullført: {completed_count} av {total}',
+                size_hint_x=None, width=dp(130),
+                font_size=fsp(12), color=(0.35, 0.35, 0.45, 1),
+                halign='left'))
+            prog_bar = BoxLayout(size_hint_y=None, height=dp(8))
+            with prog_bar.canvas.before:
+                from kivy.graphics import Color as KColor, Rectangle, Line as KLine
+                # Spor (lys)
+                KColor(0.85, 0.86, 0.92, 1)
+                track = Rectangle(pos=prog_bar.pos, size=prog_bar.size)
+                # Fyll (grønn)
+                KColor(0.30, 0.70, 0.40, 1)
+                fill = Rectangle(pos=prog_bar.pos,
+                                 size=(prog_bar.width * done_pct, prog_bar.height))
+            def _u(pb, *_):
+                track.pos  = pb.pos
+                track.size = pb.size
+                fill.pos   = pb.pos
+                fill.size  = (pb.width * done_pct, pb.height)
+            prog_bar.bind(size=_u, pos=_u)
+            prog_row.add_widget(prog_bar)
+            outer.add_widget(prog_row)
 
         # ── Edit-mode-knapper ────────────────────────────────────
         if self.edit_mode:
             outer.add_widget(mk_btn('+  Legg til aktivitet', hex_k('#6BCB77'), h=dp(50),
                 cb=lambda *_: self._dr_entry_popup(None)))
+            if is_today:
+                # Pause-knappen vises kun for dagens fane (det er der den
+                # faktisk har en effekt).
+                p_label = '▶  Gjenoppta dagsrytme' if paused else '⏸  Sett på pause'
+                p_color = '#6BCB77' if paused else '#FF9F43'
+                outer.add_widget(mk_btn(p_label, hex_k(p_color), h=dp(48),
+                    cb=lambda *_: self._toggle_pause()))
             outer.add_widget(mk_btn('⎘  Kopier til andre dager', hex_k('#FF9F43'), h=dp(48),
                 cb=lambda *_: self._dr_copy_popup()))
             outer.add_widget(mk_btn('↗  Eksporter dagsplan', hex_k('#546E7A'), h=dp(48),
                 cb=lambda *_: self._export_popup('dagsrytme')))
 
-        if is_today and current:
+        # ── Nåværende/kommende blokk ─────────────────────────────
+        if paused:
+            outer.add_widget(Label(
+                text='Dagsrytmen er pauset. Den vil ikke vise nåværende\n'
+                     'eller neste aktivitet før du gjenopptar.',
+                size_hint_y=None, height=dp(54),
+                font_size=fsp(14), color=(0.4, 0.4, 0.5, 1),
+                halign='center', valign='middle'))
+            outer.children[-1].bind(size=outer.children[-1].setter('text_size'))
+        elif is_today and current:
             e, s_m, t_m = current
             remaining = t_m - now_m
             elapsed   = now_m - s_m
             duration  = max(t_m - s_m, 1)
-            # Liten "Pågår"-pille over tittelen for rask visuell skanning
             badge_row = BoxLayout(orientation='horizontal',
                                    size_hint_y=None, height=dp(28),
                                    spacing=dp(6))
@@ -4285,17 +4585,13 @@ INNSTILLINGER
                          height=dp(22))
             blbl.bind(texture_size=lambda l, ts: setattr(l, 'width', ts[0]))
             badge.add_widget(blbl)
-            badge.bind(children=lambda *_:
-                       setattr(badge, 'width',
-                               (blbl.width if blbl.width else dp(70)) + dp(20)))
             badge.width = dp(86)
             badge_row.add_widget(badge)
             badge_row.add_widget(Widget())
             outer.add_widget(badge_row)
 
             if e.get('image') and os.path.exists(e['image']):
-                outer.add_widget(Image(source=e['image'], size_hint_y=None, height=dp(260),
-                    allow_stretch=True, keep_ratio=True))
+                outer.add_widget(self._make_framed_image(e['image'], dp(260)))
             outer.add_widget(Label(text=e['name'], size_hint_y=None, height=dp(52),
                 font_size=fsp(26), bold=True, color=(0.04, 0.10, 0.36, 1), halign='center'))
             outer.add_widget(Label(
@@ -4310,20 +4606,18 @@ INNSTILLINGER
                              size_hint_y=None, height=dp(18))
             outer.add_widget(pb)
 
-            # Fargede fremgangsetiketter – grønn → gul → rød
             pct = elapsed / duration if duration > 0 else 0
             if pct < 0.6:
-                prog_col = (0.15, 0.65, 0.20, 1)   # grønn: god tid igjen
+                prog_col = (0.15, 0.65, 0.20, 1)
             elif pct < 0.85:
-                prog_col = (0.85, 0.62, 0.05, 1)   # gul: snart slutt
+                prog_col = (0.85, 0.62, 0.05, 1)
             else:
-                prog_col = (0.80, 0.15, 0.12, 1)   # rød: nesten ferdig
+                prog_col = (0.80, 0.15, 0.12, 1)
 
             time_bar = BoxLayout(size_hint_y=None, height=dp(8))
             with time_bar.canvas.before:
                 from kivy.graphics import Color as KColor, Rectangle
                 KColor(*prog_col)
-                # Fyller proporsjonal bredde
                 prog_rect = Rectangle(
                     pos=time_bar.pos,
                     size=(time_bar.width * (elapsed / duration), time_bar.height)
@@ -4338,7 +4632,6 @@ INNSTILLINGER
         elif is_today and upcoming:
             e, s_m = upcoming
             wait = s_m - now_m
-            # "Neste"-pille for visuell skanning
             badge_row = BoxLayout(orientation='horizontal',
                                    size_hint_y=None, height=dp(28),
                                    spacing=dp(6))
@@ -4357,8 +4650,8 @@ INNSTILLINGER
                 size_hint_y=None, height=dp(30), font_size=fsp(15),
                 color=(0.5, 0.5, 0.5, 1), halign='center'))
             if e.get('image') and os.path.exists(e['image']):
-                outer.add_widget(Image(source=e['image'], size_hint_y=None, height=dp(160),
-                    allow_stretch=True, keep_ratio=True, opacity=0.65))
+                outer.add_widget(self._make_framed_image(
+                    e['image'], dp(160), faded=True))
             outer.add_widget(Label(text=e['name'],
                 size_hint_y=None, height=dp(44), font_size=fsp(22), bold=True,
                 color=(0.04, 0.10, 0.36, 1), halign='center'))
@@ -4372,15 +4665,13 @@ INNSTILLINGER
                 size_hint_y=None, height=dp(50),
                 halign='center', valign='middle'))
         elif not entries:
-            # Tom dag (i dag eller annen)
-            outer.add_widget(BoxLayout(size_hint_y=None, height=dp(40)))
-            msg = ('Ingen aktiviteter for ' + DAY_FULL_NO[sel].lower() + '.\n'
-                   'Trykk "Red." og "+" for å starte.')
-            outer.add_widget(Label(text=msg,
-                font_size=fsp(16), color=(0.45, 0.45, 0.5, 1),
-                size_hint_y=None, height=dp(80),
-                halign='center', valign='middle'))
+            outer.add_widget(BoxLayout(size_hint_y=None, height=dp(20)))
+            outer.add_widget(self._empty_state(
+                glyph='📅',
+                msg='Ingen aktiviteter for ' + DAY_FULL_NO[sel].lower() + '.\n'
+                    'Trykk "Red." og "+" for å starte.'))
 
+        # ── Aktivitetsliste med fargestripe + fullført-markering ──
         if entries:
             outer.add_widget(Label(
                 text='Plan for ' + DAY_FULL_NO[sel].lower() + ':',
@@ -4388,19 +4679,61 @@ INNSTILLINGER
                 font_size=fsp(14), bold=True, color=(0.3, 0.3, 0.4, 1),
                 halign='left'))
             list_sv  = ScrollView(size_hint_y=None, height=dp(176))
-            list_box = BoxLayout(orientation='vertical', spacing=dp(4), size_hint_y=None)
+            list_box = BoxLayout(orientation='vertical', spacing=dp(4),
+                                 size_hint_y=None)
             list_box.bind(minimum_height=list_box.setter('height'))
             for e in entries:
                 is_cur = bool(current and current[0]['id'] == e['id'])
+                # Aktivitet anses fullført når slutten har passert klokken
+                # på i dag. På andre dager er begrepet ikke meningsfullt.
+                end_m = self._dr_parse(e.get('end', '23:59'))
+                completed = is_today and not paused and end_m <= now_m
+
+                # Kategorifarge – vises som tynn stripe til venstre.
+                cat = get_category(self.data, e.get('category'))
+                stripe_col = hex_k(cat['color']) if cat else None
+
+                # Bakgrunnsfarge for raden
+                if is_cur:
+                    bg = (0.84, 0.96, 0.84, 1.0)
+                elif completed:
+                    bg = (0.93, 0.93, 0.95, 1.0)
+                else:
+                    bg = (0.97, 0.97, 1.0, 1.0)
+
                 row = RBox(orientation='horizontal', size_hint_y=None, height=dp(52),
-                    spacing=dp(6), padding=(dp(8), dp(4)),
-                    box_color=(0.84, 0.96, 0.84, 1.0) if is_cur else (0.97, 0.97, 1.0, 1.0),
-                    radius=dp(14))
+                    spacing=dp(6), padding=(dp(4), dp(4)),
+                    box_color=bg, radius=dp(14))
+
+                # Kategoristripe
+                if stripe_col:
+                    stripe = BoxLayout(size_hint_x=None, width=dp(5))
+                    with stripe.canvas.before:
+                        from kivy.graphics import Color as KColor, Rectangle
+                        KColor(*stripe_col)
+                        s_rect = Rectangle(pos=stripe.pos, size=stripe.size)
+                    def _us(sw, *_, sr=s_rect):
+                        sr.pos = sw.pos; sr.size = sw.size
+                    stripe.bind(size=_us, pos=_us)
+                    row.add_widget(stripe)
+                else:
+                    # Liten spacer for justering
+                    row.add_widget(Widget(size_hint_x=None, width=dp(5)))
+
+                # Tekst – med strikethrough hvis fullført
+                txt = f'  {e.get("start","?")} - {e.get("end","?")}  {e["name"]}'
+                if completed and not is_cur:
+                    label_text = f'[s]{txt}[/s]'
+                    text_col = (0.45, 0.48, 0.55, 1)
+                else:
+                    label_text = txt
+                    text_col = ((0.04, 0.30, 0.04, 1) if is_cur
+                                else (0.08, 0.10, 0.35, 1))
                 row.add_widget(Label(
-                    text=f'  {e.get("start","?")} - {e.get("end","?")}  {e["name"]}',
+                    text=label_text, markup=True,
                     font_size=fsp(14), bold=is_cur,
-                    color=(0.04, 0.30, 0.04, 1) if is_cur else (0.08, 0.10, 0.35, 1),
-                    halign='left'))
+                    color=text_col, halign='left'))
+
                 if self.edit_mode:
                     row.add_widget(mk_btn('Red.', hex_k('#C77DFF'), h=dp(44), fs=12,
                         size_hint_x=None, width=dp(52),
@@ -4411,6 +4744,46 @@ INNSTILLINGER
                 list_box.add_widget(row)
             list_sv.add_widget(list_box)
             outer.add_widget(list_sv)
+
+        # ── Daglige notater ──────────────────────────────────────
+        # Vises alltid, men i edit-mode blir det redigerbart.
+        note_text = self.data.get('notater', {}).get(sel, '')
+        notes_section = BoxLayout(orientation='vertical',
+                                  size_hint_y=None, spacing=dp(4))
+        notes_section.bind(minimum_height=notes_section.setter('height'))
+        notes_section.add_widget(Label(
+            text=f'Notater for {DAY_FULL_NO[sel].lower()}:',
+            size_hint_y=None, height=dp(24),
+            font_size=fsp(13), bold=True, color=(0.3, 0.3, 0.4, 1),
+            halign='left'))
+        if self.edit_mode:
+            note_inp = TextInput(
+                text=note_text, multiline=True,
+                size_hint_y=None, height=dp(96),
+                font_size=fsp(14),
+                hint_text='Observasjoner, hendelser, kommunikasjon mellom skift…',
+            )
+            def _save_note(inst, val):
+                self.data.setdefault('notater', {})[sel] = val
+                save_struct(self.data)
+            note_inp.bind(text=_save_note)
+            notes_section.add_widget(note_inp)
+        else:
+            # Visningsmodus: vis tekst i en RBox-lignende boks
+            disp = RBox(orientation='vertical',
+                        size_hint_y=None, padding=(dp(10), dp(8)),
+                        box_color=(0.98, 0.98, 1.0, 1.0), radius=dp(10))
+            disp.bind(minimum_height=disp.setter('height'))
+            shown = note_text if note_text.strip() else '(Ingen notater for denne dagen.)'
+            txt_col = (0.1, 0.1, 0.3, 1) if note_text.strip() else (0.5, 0.5, 0.6, 1)
+            lbl = Label(text=shown, font_size=fsp(13),
+                        color=txt_col, size_hint_y=None,
+                        halign='left', valign='top')
+            lbl.bind(width=lambda l, w: setattr(l, 'text_size', (w - dp(10), None)),
+                     texture_size=lambda l, ts: setattr(l, 'height', max(dp(36), ts[1] + dp(10))))
+            disp.add_widget(lbl)
+            notes_section.add_widget(disp)
+        outer.add_widget(notes_section)
 
         sv = ScrollView()
         sv.add_widget(outer)
@@ -4441,6 +4814,70 @@ INNSTILLINGER
             plans[sel] = [e for e in plans[sel] if e.get('id') != entry.get('id')]
         save_struct(self.data)
         self._build_dagsrytme_ui()
+
+    def _make_framed_image(self, source, height, faded=False):
+        """
+        Bilde med indre skygge og 200 ms fade-in når teksturen er klar.
+        Indre skyggen ligger på topp av bildet i kantene og gir en svak
+        følelse av at bildet er satt INN i en ramme – ikke ligger oppå.
+
+        source – filsti til bildet
+        height – ønsket høyde
+        faded  – True for å rendre med 0.65 opacity (brukes for "neste"-
+                 visningen der bildet skal være dempet)
+        """
+        wrap = BoxLayout(size_hint_y=None, height=height)
+        img = Image(source=source, allow_stretch=True, keep_ratio=True,
+                    opacity=0)
+        # Tegn indre skygge som mørke kanter inne i bildet via canvas.after
+        with wrap.canvas.after:
+            from kivy.graphics import Color as KColor, Line as KLine
+            # Mørke kanter med dempet opasitet – simulerer indre skygge.
+            # Kantene blir tegnet på topp av bildet, ikke utenfor.
+            KColor(0, 0, 0, 0.12)
+            inner_top    = KLine(width=2)
+            inner_left   = KLine(width=2)
+            KColor(0, 0, 0, 0.06)
+            inner_right  = KLine(width=2)
+            inner_bottom = KLine(width=2)
+        def _u(w, *_):
+            x, y, ww, hh = w.x, w.y, w.width, w.height
+            # Topp og venstre – sterkere skygge (lyskilde fra øvre venstre)
+            inner_top.points    = [x+2, y+hh-2, x+ww-2, y+hh-2]
+            inner_left.points   = [x+2, y+hh-2, x+2, y+2]
+            inner_right.points  = [x+ww-2, y+hh-2, x+ww-2, y+2]
+            inner_bottom.points = [x+2, y+2, x+ww-2, y+2]
+        wrap.bind(size=_u, pos=_u)
+        wrap.add_widget(img)
+        # Fade-in: vent til teksturen er klar
+        target = 0.65 if faded else 1.0
+        def _fade_when_ready(*_):
+            Animation(opacity=target, duration=0.2, t='out_quad').start(img)
+        if img.texture:
+            _fade_when_ready()
+        else:
+            img.bind(texture=lambda *_: _fade_when_ready())
+        return wrap
+
+    def _empty_state(self, glyph, msg):
+        """
+        Vennlig 'tom skjerm'-visning med stort symbol + tekst.
+        Bedre alternativ enn ren tekst på skjermer uten innhold.
+        """
+        box = BoxLayout(orientation='vertical',
+                        size_hint_y=None, height=dp(180),
+                        spacing=dp(6), padding=(dp(20), dp(20)))
+        box.add_widget(Label(text=glyph, font_size=sp(48),
+                              color=(0.55, 0.58, 0.70, 1),
+                              size_hint_y=None, height=dp(72),
+                              halign='center'))
+        lbl = Label(text=msg, font_size=fsp(15),
+                    color=(0.45, 0.45, 0.55, 1),
+                    size_hint_y=None, height=dp(72),
+                    halign='center', valign='top')
+        lbl.bind(width=lambda l, w: setattr(l, 'text_size', (w - dp(20), None)))
+        box.add_widget(lbl)
+        return box
 
     def _dr_entry_popup(self, entry):
         """Popup for å opprette eller redigere en dagsrytme-aktivitet."""
@@ -4491,6 +4928,42 @@ INNSTILLINGER
         time_row.add_widget(end_btn)
         layout.add_widget(time_row)
 
+        # ── Kategorivelger ───────────────────────────────────────
+        # Knapp som viser nåværende kategori og åpner et utvalg.
+        # Brukes til fargekoding i dagsplanen.
+        cat_state = [entry.get('category') if entry else None]
+        cat_btn   = mk_btn('Kategori', hex_k('#9CA3AF'),
+                            h=dp(46), fs=14)
+        def refresh_cat_label():
+            cat = get_category(self.data, cat_state[0])
+            if cat:
+                cat_btn.text = f'Kategori: {cat["name"]}'
+                cat_btn.btn_color = list(hex_k(cat['color']))
+            else:
+                cat_btn.text = 'Kategori: (ingen)'
+                cat_btn.btn_color = list(hex_k('#9CA3AF'))
+        def open_cat_picker(*_):
+            inner = BoxLayout(orientation='vertical',
+                              spacing=dp(6), padding=dp(12))
+            pop_inner_ref = [None]
+            def pick(cat_id):
+                cat_state[0] = cat_id
+                refresh_cat_label()
+                pop_inner_ref[0].dismiss()
+            # "Ingen" øverst
+            inner.add_widget(mk_btn('(Ingen kategori)', hex_k('#9CA3AF'),
+                h=dp(42), fs=14, cb=lambda *_: pick(None)))
+            for c in self.data.get('kategorier', []):
+                inner.add_widget(mk_btn(c['name'], hex_k(c['color']),
+                    h=dp(42), fs=14, cb=lambda *_, cid=c['id']: pick(cid)))
+            pop_inner = Popup(title='Velg kategori', content=inner,
+                              size_hint=POPUP_MEDIUM, title_size=fsp(16))
+            pop_inner_ref[0] = pop_inner
+            pop_inner.open()
+        cat_btn.bind(on_release=open_cat_picker)
+        refresh_cat_label()
+        layout.add_widget(cat_btn)
+
         chosen_img = [entry.get('image') if entry else None]
         img_lbl = Label(
             text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
@@ -4515,9 +4988,12 @@ INNSTILLINGER
             if new:
                 self.data['dagsplaner'][sel].append({
                     'id': str(uuid.uuid4()), 'name': nm,
-                    'start': st, 'end': en, 'image': chosen_img[0]})
+                    'start': st, 'end': en, 'image': chosen_img[0],
+                    'category': cat_state[0]})
             else:
-                entry.update({'name': nm, 'start': st, 'end': en, 'image': chosen_img[0]})
+                entry.update({'name': nm, 'start': st, 'end': en,
+                              'image': chosen_img[0],
+                              'category': cat_state[0]})
             save_struct(self.data)
             Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
             pop_ref[0].dismiss()
