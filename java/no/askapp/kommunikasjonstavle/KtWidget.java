@@ -108,13 +108,17 @@ public class KtWidget extends AppWidgetProvider {
                     am.setExactAndAllowWhileIdle(AlarmManager.RTC, target, pi);
                     mode = "exact+idle";
                 } else {
-                    am.set(AlarmManager.RTC, target, pi);
-                    mode = "inexact (mangler permission)";
+                    // Inexact fallback: setAndAllowWhileIdle (ikke plain set) –
+                    // bypasser Doze og er mindre sannsynlig til å bli parkert
+                    // i bakgrunnen av Samsung sin batterioptimisering. Fortsatt
+                    // ikke sekundpresist, men typisk innen 10 sek av målet.
+                    am.setAndAllowWhileIdle(AlarmManager.RTC, target, pi);
+                    mode = "inexact+idle (mangler permission)";
                 }
             } catch (SecurityException se) {
                 // Defensiv: skal ikke skje når canScheduleExactAlarms() er true, men håndter likevel
-                am.set(AlarmManager.RTC, target, pi);
-                mode = "inexact (SecurityException)";
+                am.setAndAllowWhileIdle(AlarmManager.RTC, target, pi);
+                mode = "inexact+idle (SecurityException)";
             }
             WidgetLog.w(ctx, "[ALARM] " + mode + " satt om " + (delayMs/1000) + " sek");
         } catch (Exception e) {
@@ -125,6 +129,7 @@ public class KtWidget extends AppWidgetProvider {
 
     static void scheduleNextFromData(Context ctx, JSONArray dr) {
         long delayMs = 15 * 60 * 1000L;
+        boolean scheduled = false;  // Sann hvis en aktiv/fremtidig aktivitet matchet
         try {
             Calendar cal    = Calendar.getInstance();
             int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
@@ -152,21 +157,27 @@ public class KtWidget extends AppWidgetProvider {
                     // leser klokka igjen. Med setExactAndAllowWhileIdle holder 1 sek.
                     int remSec = (t - nowMin) * 60 - nowSec + 1;
                     delayMs = remSec * 1000L;
-                    Log.i(TAG, "Slutter kl." + e.optString("end")
-                          + " om " + remSec + " sek");
+                    WidgetLog.w(ctx, "[PLAN] slutt kl." + e.optString("end")
+                          + " om " + remSec + "s");
+                    scheduled = true;
                     break;
                 }
                 if (s > nowMin) {
                     // Neste – oppdater ved start (samme padding-logikk)
                     int waitSec = (s - nowMin) * 60 - nowSec + 1;
                     delayMs = waitSec * 1000L;
-                    Log.i(TAG, "Starter kl." + e.optString("start")
-                          + " om " + waitSec + " sek");
+                    WidgetLog.w(ctx, "[PLAN] start kl." + e.optString("start")
+                          + " om " + waitSec + "s");
+                    scheduled = true;
                     break;
                 }
             }
+            if (!scheduled) {
+                WidgetLog.w(ctx, "[PLAN] ingen kommende aktivitet – default 15 min");
+            }
         } catch (Exception e) {
             Log.w(TAG, "scheduleNextFromData feil: " + e);
+            WidgetLog.w(ctx, "[FEIL] scheduleNextFromData: " + e.getMessage());
         }
         // Nedre clamp på 2 sek beskytter mot uendelige løkker hvis remSec
         // skulle bli null/negativ pga. en bug. Den gamle verdien (30 sek)
@@ -226,6 +237,11 @@ public class KtWidget extends AppWidgetProvider {
             if (bmp != null) {
                 views.setImageViewBitmap(R.id.kt_img, bmp);
                 views.setViewVisibility(R.id.kt_img, View.VISIBLE);
+                // Dempet bilde i pending-tilstand (~40% alpha) for å antyde
+                // at aktiviteten kommer, men er ikke i gang ennå.
+                // Full alpha (255) når aktiviteten er aktiv.
+                views.setInt(R.id.kt_img, "setImageAlpha",
+                             data.pending ? 100 : 255);
                 hasImage = true;
             }
             if (!hasImage) {
@@ -320,24 +336,38 @@ public class KtWidget extends AppWidgetProvider {
             }
 
             if (current == null) {
-                // Finn neste aktivitet
+                // Finn neste aktivitet – og vis bildet dempet for å antyde
+                // at den kommer.
                 String nextName = "";
-                String nextTime = "";
+                String nextStart = "";
+                String nextEnd   = "";
+                String nextImg   = "";
                 for (JSONObject e : entries) {
                     int s = toMin(e.optString("start",""));
                     if (s > nowMin) {
-                        nextName = e.optString("name","");
-                        nextTime = e.optString("start","");
+                        nextName  = e.optString("name", "");
+                        nextStart = e.optString("start", "");
+                        nextEnd   = e.optString("end",   "");
+                        nextImg   = e.optString("image", "");
                         break;
                     }
                 }
-                String l1 = nextName.isEmpty()
-                    ? "Ingen aktivitet nå"
-                    : "Neste: " + nextName;
-                String l2 = nextTime.isEmpty() ? "" : "kl. " + nextTime;
-                WidgetLog.w(ctx, "[JSON] ingen aktiv. Neste: \"" + nextName
-                    + "\" kl." + nextTime);
-                return new WidgetData(l1, l2, null, dr);
+                String l1, l2;
+                if (nextName.isEmpty()) {
+                    l1 = "Ingen aktivitet nå";
+                    l2 = "";
+                } else {
+                    l1 = "Neste: " + nextName;
+                    l2 = "kl. " + nextStart
+                         + (nextEnd.isEmpty() ? "" : " – " + nextEnd);
+                }
+                WidgetLog.w(ctx, "[JSON] pending. Neste: \"" + nextName
+                    + "\" " + nextStart
+                    + (nextImg.isEmpty() ? " (uten bilde)" : " (med dempet bilde)"));
+                String img = nextImg.isEmpty() ? null : nextImg;
+                WidgetData wd = new WidgetData(l1, l2, img, dr);
+                wd.pending = (img != null);
+                return wd;
             }
 
             String name  = current.optString("name",  "");
@@ -386,9 +416,13 @@ public class KtWidget extends AppWidgetProvider {
     static class WidgetData {
         String    line1, line2, imagePath, imgB64;
         JSONArray dagsrytme;
+        // pending=true betyr at vi venter på en aktivitet (før første eller i mellomrom).
+        // Brukes til å vise bildet dempet (alpha) for å antyde at det kommer.
+        boolean   pending;
         WidgetData(String l1, String l2, String img, JSONArray dr) {
             line1 = l1; line2 = l2; imagePath = img; dagsrytme = dr;
             imgB64 = null;  // Eksplisitt: vi bruker imagePath nå, ikke base64
+            pending = false;
         }
     }
 }
