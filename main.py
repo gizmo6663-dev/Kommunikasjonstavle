@@ -72,18 +72,33 @@ _KV = """
     background_color: 0, 0, 0, 0
     bold: True
     canvas.before:
-        # Rotasjon rundt midten av knappen
+        # Skala-transform rundt midten av knappen.
+        # Brukes til trykk-feedback (0.96 → 1.0) – roligere enn rotasjon.
         PushMatrix:
-        Rotate:
-            angle: self.rotation
+        Scale:
+            x: self.scale
+            y: self.scale
             origin: self.center
-        # 1. Skygge – skrå ned mot høyre (offset +3dp X, -3dp Y)
+        # 1. Myk skygge i tre lag – gir gradvis fade fra senter til kant
+        #    i stedet for en hard-kantet kopi av knappen.
         Color:
-            rgba: 0.04, 0.06, 0.18, 0.12
+            rgba: 0.04, 0.06, 0.18, 0.04
         RoundedRectangle:
-            pos: self.x + dp(3), self.y - dp(3)
-            size: self.width, self.height
+            pos: self.x + dp(4.5), self.y - dp(4.5)
+            size: self.width + dp(3), self.height + dp(3)
+            radius: [self.radius + dp(3)]
+        Color:
+            rgba: 0.04, 0.06, 0.18, 0.06
+        RoundedRectangle:
+            pos: self.x + dp(2.5), self.y - dp(2.5)
+            size: self.width + dp(1), self.height + dp(1)
             radius: [self.radius + dp(2)]
+        Color:
+            rgba: 0.04, 0.06, 0.18, 0.08
+        RoundedRectangle:
+            pos: self.x + dp(1), self.y - dp(1)
+            size: self.width, self.height
+            radius: [self.radius + dp(1)]
         # 2. PIL-gradient som tekstur (genereres av _update_grad_texture)
         Color:
             rgba: 1, 1, 1, 1
@@ -108,7 +123,7 @@ _KV = """
             rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
             width: 1.0
     canvas.after:
-        # PopMatrix ETTER at tekst er tegnet – slik roteres alt inkl. label
+        # PopMatrix ETTER at tekst er tegnet – slik skaleres alt inkl. label
         PopMatrix:
 
 <RBox>:
@@ -221,13 +236,14 @@ if os.path.exists(_FONT_PATH):
 
 class RBtn(Button):
     """
-    Avrundet knapp med skygge, kantlinje og PIL-basert lineær gradient.
-    rotation er NumericProperty slik at Animation kan animere den
-    via PushMatrix/Rotate/PopMatrix i KV-regelen.
+    Avrundet knapp med myk skygge, kantlinje og PIL-basert lineær gradient.
+    scale er NumericProperty slik at Animation kan animere den
+    via PushMatrix/Scale/PopMatrix i KV-regelen — gir en rolig
+    "trykk-inn-i-overflaten"-følelse i stedet for rotasjons-vipping.
     """
     btn_color  = ListProperty([0.30, 0.50, 1.0, 1.0])
     radius     = NumericProperty(dp(14))
-    rotation   = NumericProperty(0.0)
+    scale      = NumericProperty(1.0)
     _grad_cache = {}  # delt tekstur-cache for alle RBtn-instanser
 
     def on_btn_color(self, *_):
@@ -321,6 +337,22 @@ FOLDER_COLORS = [
     '#FFD93D', '#FF6B6B', '#6BCB77', '#4D96FF',
     '#C77DFF', '#FF9F43', '#4ECDC4', '#FF6BB5',
 ]
+
+# ─── Standard popup-størrelser ────────────────────────────────────
+# Konsistente popup-størrelser gjør appen forutsigbar å bruke. Bruk
+# disse fremfor å skrive size_hint=(...,...) direkte i hver popup.
+#   POPUP_TOAST   – kortvarig melding (3 sek)
+#   POPUP_CONFIRM – ja/nei-bekreftelse for destruktive handlinger
+#   POPUP_SMALL   – få elementer, kompakt valg eller info
+#   POPUP_MEDIUM  – skjemaer, hjelpetekst, lister med scroll
+#   POPUP_LARGE   – store redigeringsskjemaer, fargevelger, søk
+#   POPUP_FULL    – filvelger, full-bilde-zoom – nesten hele skjermen
+POPUP_TOAST   = (0.78, 0.22)
+POPUP_CONFIRM = (0.85, 0.42)
+POPUP_SMALL   = (0.82, 0.55)
+POPUP_MEDIUM  = (0.90, 0.78)
+POPUP_LARGE   = (0.95, 0.92)
+POPUP_FULL    = (0.97, 0.94)
 
 # Bakgrunnsfarger for verktøyknapper (normal / aktiv)
 TOOL_COLORS = {
@@ -820,17 +852,18 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     orig_color = list(btn_color)
 
     def _on_press(btn, *_):
-        # Mørklegg + vipp lett til venstre
+        # Mørklegg svakt + skala-trykk ned til 96%.
+        # 88% brightness er mykere enn tidligere 75% – passer flat-stilet bedre.
         r, g, bv, a = btn.btn_color
-        btn.btn_color = [max(0, r*0.75), max(0, g*0.75), max(0, bv*0.75), a]
-        Animation(rotation=-2.5, duration=0.07, t='out_quad').start(btn)
+        btn.btn_color = [max(0, r*0.88), max(0, g*0.88), max(0, bv*0.88), a]
+        Animation(scale=0.96, duration=0.07, t='out_quad').start(btn)
         haptic_feedback()
 
     def _on_release_anim(btn, *_):
         btn.btn_color = list(orig_color)
-        # Tilbake med liten oversving: -2.5 → +1.2 → 0
-        (Animation(rotation=1.2, duration=0.07, t='out_quad') +
-         Animation(rotation=0.0, duration=0.09, t='out_bounce')).start(btn)
+        # Tilbake til normalstørrelse med svak elastisk overskyting (out_back).
+        # Mer behersket enn forrige rotasjons-bounce.
+        Animation(scale=1.0, duration=0.13, t='out_back').start(btn)
 
     b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
@@ -1256,7 +1289,7 @@ class TappableImage(Image):
             Rectangle(pos=(0,0), size=Window.size)
         zoom_img = Image(
             source=self.source,
-            size_hint=(0.96, 0.96),
+            size_hint=POPUP_FULL,
             pos_hint={'center_x': .5, 'center_y': .5},
             allow_stretch=True, keep_ratio=True,
         )
@@ -2191,7 +2224,7 @@ class KommunikasjonstavleApp(App):
 
         pop = Popup(
             title='Legg til delt bilde',
-            content=layout, size_hint=(0.92, 0.88),
+            content=layout, size_hint=POPUP_LARGE,
         )
         pop_ref[0] = pop
         pop.open()
@@ -3090,7 +3123,7 @@ class KommunikasjonstavleApp(App):
         btn_pal.bind(on_release=lambda *_: show_tab('pal'))
         btn_grd.bind(on_release=lambda *_: show_tab('grd'))
 
-        pop = Popup(title='Farge', content=outer, size_hint=(0.95, 0.92))
+        pop = Popup(title='Farge', content=outer, size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         show_tab('pal')
         pop.open()
@@ -3452,7 +3485,7 @@ class KommunikasjonstavleApp(App):
         pop = Popup(
             title='Ny handlingsrekke' if new_seq else f'Rediger: {seq["name"]}',
             content=layout,
-            size_hint=(0.95, 0.94),
+            size_hint=POPUP_FULL,
         )
         pop_ref[0] = pop
         pop.open()
@@ -3523,7 +3556,7 @@ class KommunikasjonstavleApp(App):
 
         pick_pop = Popup(
             title='Velg ASK-bilde',
-            content=layout, size_hint=(0.95, 0.92),
+            content=layout, size_hint=POPUP_LARGE,
         )
         pick_ref[0] = pick_pop
         pick_pop.open()
@@ -3822,7 +3855,7 @@ INNSTILLINGER
         sv.add_widget(lbl)
         layout.add_widget(sv)
         Popup(title='Brukerveiledning', content=layout,
-              size_hint=(0.95, 0.92)).open()
+              size_hint=POPUP_LARGE).open()
 
     def _show_widget_log(self):
         """Viser widget_log.txt – logg over widget-prosesser og oppdateringer."""
@@ -3871,7 +3904,7 @@ INNSTILLINGER
         layout.add_widget(sv)
 
         pop = Popup(title='Widget-logg', content=layout,
-                    size_hint=(0.97, 0.92))
+                    size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         pop.open()
 
@@ -3922,7 +3955,7 @@ INNSTILLINGER
 
         pop = Popup(
             title='Personvernerklæring – Kommunikasjonstavle',
-            content=outer, size_hint=(0.95, 0.92),
+            content=outer, size_hint=POPUP_LARGE,
         )
         pop.open()
 
@@ -3957,7 +3990,7 @@ INNSTILLINGER
             br.add_widget(mk_btn('Lukk', hex_k('#9CA3AF'), h=dp(50), fs=14,
                 cb=lambda *_: pop_ref[0].dismiss()))
             layout.add_widget(br)
-            pop = Popup(title=title, content=layout, size_hint=(0.88, 0.82))
+            pop = Popup(title=title, content=layout, size_hint=POPUP_MEDIUM)
             pop_ref[0] = pop; pop.open()
         except ImportError:
             self._toast('qrcode-pakken mangler. Legg til "qrcode" i buildozer.spec.')
@@ -4231,7 +4264,7 @@ INNSTILLINGER
         layout.add_widget(btn_row)
 
         pop = Popup(title='Ny aktivitet' if new else 'Rediger aktivitet',
-                    content=layout, size_hint=(0.95, 0.90))
+                    content=layout, size_hint=POPUP_LARGE)
         pop_ref[0] = pop; pop.open()
 
     # ══════════════════════════════════════════════════
@@ -4540,7 +4573,7 @@ INNSTILLINGER
         layout.add_widget(mk_btn('Start spill', hex_k('#6BCB77'), h=dp(58), fs=18, cb=on_start))
         layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
             cb=lambda *_: (pop_ref[0].dismiss(), self.nav_stack.pop() if self.nav_stack else None)))
-        pop = Popup(title='Bildepar-spill', content=layout, size_hint=(0.88, 0.64))
+        pop = Popup(title='Bildepar-spill', content=layout, size_hint=POPUP_MEDIUM)
         pop_ref[0] = pop; pop.open()
 
     def _start_bildepar_game(self, cards):
@@ -4685,7 +4718,7 @@ INNSTILLINGER
             cb=lambda *_: (pop_ref[0].dismiss(), self._bildepar_setup_popup(all_imgs))))
         br.add_widget(mk_btn('Hjem', hex_k('#4D96FF'), h=dp(52), fs=16,
             cb=lambda *_: (pop_ref[0].dismiss(), self.go_home())))
-        pop = Popup(title='Spill fullfort!', content=layout, size_hint=(0.82, 0.52))
+        pop = Popup(title='Spill fullfort!', content=layout, size_hint=POPUP_SMALL)
         pop_ref[0] = pop; pop.open()
 
     # ══════════════════════════════════════════════════
@@ -4809,7 +4842,7 @@ INNSTILLINGER
 
         pop = Popup(
             title='Ny mappe' if new else 'Rediger mappe',
-            content=layout, size_hint=(0.93, 0.90),
+            content=layout, size_hint=POPUP_LARGE,
         )
         pop_ref[0] = pop
         pop.open()
@@ -4850,6 +4883,9 @@ INNSTILLINGER
         layout.bind(minimum_height=layout.setter('height'))
 
         # ── Bildeforhåndsvisning ──────────────────────────────────
+        # Høyden tilpasses bildets sideforhold (innen 120–280dp).
+        # En liggende thumbnail får da lav høyde uten tom plass over og under;
+        # et stående bilde får mer høyde uten å bli klemt sammen.
         init_src = ''
         if it and it.get('image') and os.path.exists(it.get('image', '')):
             init_src = it['image']
@@ -4858,6 +4894,20 @@ INNSTILLINGER
             size_hint_y=None, height=dp(180),
             allow_stretch=True, keep_ratio=True,
         )
+
+        def _resize_preview(img, *_):
+            """Justerer høyden basert på bildets sideforhold når teksturen lastes."""
+            tw, th = img.texture_size
+            if tw <= 0 or th <= 0:
+                return
+            # Estimer tilgjengelig bredde i popup-en (POPUP_LARGE = 0.95)
+            # minus padding på hver side
+            popup_w = max(Window.width * 0.95 - dp(56), dp(200))
+            ratio   = th / tw
+            ideal   = popup_w * ratio
+            img.height = max(dp(120), min(dp(280), ideal))
+
+        img_preview.bind(texture_size=_resize_preview)
         layout.add_widget(img_preview)
 
         # ── Navn-felt ─────────────────────────────────────────────
@@ -4935,7 +4985,7 @@ INNSTILLINGER
 
         pop = Popup(
             title='Nytt ASK-bilde' if new else 'Rediger ASK-bilde',
-            content=sv, size_hint=(0.93, 0.82),
+            content=sv, size_hint=POPUP_LARGE,
         )
         pop_ref[0] = pop
         pop.open()
@@ -5080,7 +5130,7 @@ INNSTILLINGER
 
         pop = Popup(
             title='Ny undermappe' if new else 'Rediger undermappe',
-            content=layout, size_hint=(0.90, 0.82))
+            content=layout, size_hint=POPUP_MEDIUM)
         pop_ref[0] = pop; pop.open()
 
     def _del_subfolder(self, parent_fo, sub):
@@ -5159,7 +5209,7 @@ INNSTILLINGER
 
         pop = Popup(
             title='Flytt bilde',
-            content=layout, size_hint=(0.88, 0.82),
+            content=layout, size_hint=POPUP_MEDIUM,
         )
         pop_ref[0] = pop
         pop.open()
@@ -5241,7 +5291,7 @@ INNSTILLINGER
             cb=lambda *_: pop_ref[0].dismiss()))
 
         pop = Popup(title='Velg bilde', content=layout,
-                    size_hint=(0.96, 0.90))
+                    size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         pop.open()
 
@@ -5282,7 +5332,7 @@ INNSTILLINGER
             btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52),
                 cb=lambda *_: fc_pop_ref[0].dismiss()))
             fc_layout.add_widget(btn_row)
-            pop = Popup(title='Velg bilde', content=fc_layout, size_hint=(0.97, 0.93))
+            pop = Popup(title='Velg bilde', content=fc_layout, size_hint=POPUP_FULL)
             fc_pop_ref[0] = pop
             pop.open()
 
@@ -5402,7 +5452,7 @@ INNSTILLINGER
         btn_ara.bind(on_release=search_arasaac)
         inp.bind(on_text_validate=search_local)
 
-        pop = Popup(title='Søk', content=layout, size_hint=(0.96, 0.92))
+        pop = Popup(title='Søk', content=layout, size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         pop.open()
 
@@ -5434,7 +5484,7 @@ INNSTILLINGER
         layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(46),
             cb=lambda *_: fp_pop.dismiss()))
         fp_pop = Popup(title='Velg mappe', content=layout,
-                       size_hint=(0.82, 0.72))
+                       size_hint=POPUP_MEDIUM)
         fp_pop.open()
 
     def _arasaac_search_popup(self, fo):
@@ -5519,7 +5569,7 @@ INNSTILLINGER
 
         inp.bind(on_text_validate=lambda *_: do_search())
         pop = Popup(title='ARASAAC symbolsøk',
-                    content=layout, size_hint=(0.96, 0.92))
+                    content=layout, size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         pop.open()
 
@@ -5579,7 +5629,7 @@ INNSTILLINGER
         btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(52), fs=14,
             cb=lambda *_: warn_ref[0].dismiss()))
         warn_layout.add_widget(btn_row)
-        warn_pop = Popup(title='Personvern', content=warn_layout, size_hint=(0.90, 0.68))
+        warn_pop = Popup(title='Personvern', content=warn_layout, size_hint=POPUP_MEDIUM)
         warn_ref[0] = warn_pop
         warn_pop.open()
 
@@ -5637,7 +5687,7 @@ INNSTILLINGER
         lbl.bind(size=lbl.setter('text_size'))
         pop = Popup(
             title='', content=lbl,
-            size_hint=(0.78, 0.22),
+            size_hint=POPUP_TOAST,
         )
         pop.open()
         Clock.schedule_once(lambda *_: pop.dismiss(), duration)
@@ -5682,7 +5732,7 @@ INNSTILLINGER
 
         pop = Popup(
             title=title, content=layout,
-            size_hint=(0.85, 0.42),
+            size_hint=POPUP_CONFIRM,
             title_size=fsp(17),
         )
         pop_ref[0] = pop
