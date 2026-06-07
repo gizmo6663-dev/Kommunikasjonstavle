@@ -515,7 +515,8 @@ DEFAULT_STRUCT = {
         "tts_enabled": False,
         "font_scale": 1.0,
         "high_contrast": False,
-        "swipe_nav": False
+        "swipe_nav": False,
+        "onboarding_done": False
     }
 }
 
@@ -1026,7 +1027,12 @@ def load_struct():
             if 'pause' not in d:
                 d['pause'] = None
             if 'settings' not in d:
-                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False, 'swipe_nav': False}
+                d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False, 'swipe_nav': False, 'onboarding_done': False}
+            else:
+                # Brukere som migrerer fra eldre versjon har allerede appen
+                # i bruk – ingen grunn til å vise omvisningen for dem.
+                # Helt nye brukere (uten settings-dict) får derimot turen.
+                d['settings'].setdefault('onboarding_done', True)
             return d
         except Exception as e:
             logging.error('Feil ved lasting av structure.json: %s', e)
@@ -1536,20 +1542,31 @@ class DrawCanvas(Image):
 
     def _moving_avg_centered(self, pts, window):
         """
-        Sentrert glidende gjennomsnitt: hvert punkt er snittet av like mange
-        punkter før og etter. Symmetrisk, så det introduserer ingen retnings-
-        forskyvning i starten av strøket – som er årsaken til hakkene man fikk
-        med bakover-trekkende snitt ved høy stabilisering.
+        Sentrert glidende gjennomsnitt med endepunkts-bevaring.
 
-        Brukes ved touch-up når vi har alle råpunktene tilgjengelig.
+        Vinduet krymper symmetrisk mot endepunktene slik at:
+          - smoothed[0]  = raw[0]   (eksakt – ingen midling)
+          - smoothed[-1] = raw[-1]  (eksakt – ingen midling)
+          - smoothed[i] i midten av strøket = full vindumidling
+
+        Dette er kritisk for lukkede former som sirkler: hvis endepunktene
+        ble midlet sammen med naboene, ville begge bli trukket innover mot
+        midten av strøket og brukeren fikk et synlig gap mellom start og
+        slutt. Slik holdes start- og sluttpunktet eksakt der fingeren var,
+        mens midten får full glatting.
         """
         if window <= 1 or len(pts) < 2:
             return list(pts)
         half = window // 2
+        N = len(pts)
         result = []
-        for i in range(len(pts)):
-            s = max(0, i - half)
-            e = min(len(pts), i + half + 1)
+        for i in range(N):
+            # Radien er minst av: ønsket halv-vindu, avstand til start,
+            # avstand til slutt. Ved i=0 og i=N-1 blir radien 0 og vi
+            # bevarer det rå punktet.
+            radius = min(half, i, N - 1 - i)
+            s = i - radius
+            e = i + radius + 1
             w = pts[s:e]
             result.append((
                 int(sum(p[0] for p in w) / len(w)),
@@ -2266,7 +2283,12 @@ class KommunikasjonstavleApp(App):
         """
         Sjekker om appen ble åpnet via Share intent (delt bilde fra Galleri).
         Binder også on_new_intent for å fange deling mens appen kjører.
+        Viser onboarding-omvisningen for nye brukere første gang.
         """
+        # Onboarding: kort delay så hjemskjermen rekker å rendres først,
+        # ellers ser det rart ut at popup-en dukker opp før appen.
+        Clock.schedule_once(self._maybe_show_onboarding, 0.6)
+
         if platform == 'android':
             try:
                 from android import mActivity
@@ -4064,6 +4086,16 @@ class KommunikasjonstavleApp(App):
             'Les personvernerklæringen',
             hex_k('#4D96FF'), h=dp(54), fs=15,
             cb=lambda *_: self._show_privacy_popup()))
+
+        # ── Omvisning ────────────────────────────────────────────
+        # Lar brukeren se den guidede omvisningen igjen senere.
+        outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1),
+            halign='left'))
+        outer.add_widget(mk_btn(
+            '🎯  Vis omvisning på nytt',
+            hex_k('#6BCB77'), h=dp(54), fs=15,
+            cb=lambda *_: self._show_onboarding()))
 
         # Wrap outer i ScrollView slik at innstillinger kan rulles
         sv = ScrollView(do_scroll_x=False)
@@ -6417,6 +6449,155 @@ INNSTILLINGER
     # ══════════════════════════════════════════════════
     #  TOAST
     # ══════════════════════════════════════════════════
+
+    def _maybe_show_onboarding(self, *_):
+        """Vises automatisk én gang ved første start for nye brukere."""
+        try:
+            done = self.data.get('settings', {}).get('onboarding_done', False)
+            if not done:
+                self._show_onboarding()
+        except Exception:
+            logging.exception('_maybe_show_onboarding feilet')
+
+    def _show_onboarding(self):
+        """
+        Kort guidet omvisning som forklarer appens hovedfunksjoner.
+        Vises automatisk én gang ved første åpning, men kan også
+        startes manuelt fra Innstillinger.
+
+        Designet for å være rask å bla gjennom – 6 korte slides med
+        emoji-illustrasjon, tittel og kort tekst. Bevisst ikke for lang;
+        brukeren skal kunne komme i gang etter et minutt.
+        """
+        slides = [
+            ('👋', 'Velkommen til Kommunikasjonstavle',
+             'Et verktøy for barnehage og spesialpedagogikk – '
+             'støtter visuell kommunikasjon, struktur i dagen og '
+             'tilrettelegging for barn med ulike kommunikasjonsbehov.'),
+            ('🖼️', 'Bildemapper på hjemskjermen',
+             'Mappene samler bilder etter tema (mat, klær, følelser '
+             'osv.). Trykk en mappe for å åpne den, og et bilde for å '
+             'vise det stort. Bildet kan brukes i kommunikasjon med '
+             'barnet ved peking eller blikk-kontakt.'),
+            ('📅', 'Dagsplan med ukedager',
+             'I "Dagsplan" lager du en aktivitetsplan per ukedag. '
+             'Hver dag kan ha sin egen plan – mandag kan se annerledes '
+             'ut enn fredag. Widget på hjemskjermen viser nåværende '
+             'aktivitet og hva som kommer neste.'),
+            ('⏱️', 'Tidsur og rekker',
+             'Tidsuret viser hvor lang tid det er igjen av en aktivitet. '
+             '"Rekker" er bildesekvenser – nyttig for rutiner som '
+             'påkledning, håndvask eller utflukt der ting skal skje i '
+             'en bestemt rekkefølge.'),
+            ('✏️', 'Redigeringsmodus',
+             'Trykk "Red." nederst for å redigere. Da kan du legge til '
+             'nye mapper, bilder, aktiviteter og sekvenser. Trykk "Red." '
+             'igjen for å gå tilbake til visningsmodus.'),
+            ('✅', 'Klar til å starte',
+             'Det var det – du kan starte å utforske appen nå. '
+             'Hvis du vil se denne omvisningen igjen senere, finner '
+             'du den i Innstillinger.'),
+        ]
+        idx = [0]
+        pop_ref = [None]
+
+        # Tittelområde (icon + headline)
+        icon_lbl  = Label(text='', font_size=sp(56), size_hint_y=None,
+                          height=dp(72), halign='center')
+        title_lbl = Label(text='', font_size=fsp(20), bold=True,
+                          size_hint_y=None, height=dp(40),
+                          color=(0.04, 0.10, 0.36, 1), halign='center')
+        body_lbl  = Label(text='', font_size=fsp(15),
+                          size_hint_y=None, height=dp(160),
+                          color=(0.20, 0.22, 0.32, 1),
+                          halign='center', valign='top')
+        body_lbl.bind(width=lambda l, w:
+                      setattr(l, 'text_size', (w - dp(20), None)))
+
+        # Sidemarkør-prikker
+        dots_row = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(20),
+                             spacing=dp(8))
+        dots = []
+        for _ in slides:
+            d = Label(text='●', font_size=sp(14),
+                      color=(0.7, 0.72, 0.80, 1))
+            dots.append(d)
+            dots_row.add_widget(Widget())
+            dots_row.add_widget(d)
+        dots_row.add_widget(Widget())
+
+        # Navigasjonsknapper
+        btn_row = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(54),
+                            spacing=dp(8))
+        skip_btn  = mk_btn('Hopp over', hex_k('#9CA3AF'),
+                            h=dp(54), fs=13)
+        prev_btn  = mk_btn('Forrige',   hex_k('#78909C'),
+                            h=dp(54), fs=14)
+        next_btn  = mk_btn('Neste',     hex_k('#4D96FF'),
+                            h=dp(54), fs=15)
+        btn_row.add_widget(skip_btn)
+        btn_row.add_widget(prev_btn)
+        btn_row.add_widget(next_btn)
+
+        def finish(*_):
+            self.data.setdefault('settings', {})['onboarding_done'] = True
+            save_struct(self.data)
+            pop_ref[0].dismiss()
+
+        def render(*_):
+            i = idx[0]
+            icon, title, body = slides[i]
+            icon_lbl.text  = icon
+            title_lbl.text = title
+            body_lbl.text  = body
+            for k, d in enumerate(dots):
+                d.color = ((0.30, 0.58, 1.0, 1) if k == i
+                           else (0.7, 0.72, 0.80, 1))
+            prev_btn.opacity  = 0 if i == 0 else 1
+            prev_btn.disabled = (i == 0)
+            if i == len(slides) - 1:
+                next_btn.text     = 'Ferdig'
+                next_btn.btn_color = list(hex_k('#6BCB77'))
+                skip_btn.opacity   = 0
+                skip_btn.disabled  = True
+            else:
+                next_btn.text     = 'Neste'
+                next_btn.btn_color = list(hex_k('#4D96FF'))
+                skip_btn.opacity   = 1
+                skip_btn.disabled  = False
+
+        def go_next(*_):
+            if idx[0] >= len(slides) - 1:
+                finish()
+                return
+            idx[0] += 1
+            render()
+        def go_prev(*_):
+            if idx[0] > 0:
+                idx[0] -= 1
+                render()
+
+        skip_btn.bind(on_release=finish)
+        prev_btn.bind(on_release=go_prev)
+        next_btn.bind(on_release=go_next)
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(8), padding=dp(16))
+        outer.add_widget(icon_lbl)
+        outer.add_widget(title_lbl)
+        outer.add_widget(body_lbl)
+        outer.add_widget(BoxLayout())  # spacer
+        outer.add_widget(dots_row)
+        outer.add_widget(btn_row)
+
+        pop = Popup(title='', content=outer,
+                    size_hint=POPUP_LARGE,
+                    separator_height=0)
+        pop_ref[0] = pop
+        render()
+        pop.open()
 
     def _toast(self, msg, duration=3.0):
         lbl = Label(
