@@ -1428,9 +1428,11 @@ class DrawCanvas(Image):
 
     def _moving_avg(self, pts, window):
         """
-        Glidende gjennomsnitt over punktbuffer.
+        Bakover-trekkende glidende gjennomsnitt.
         Hvert utgangspunkt er snittet av de siste 'window' inngangspunktene.
-        Gir sanntids-stabilisering mens fingeren beveger seg.
+        Brukes BARE under sanntids-tegning der vi ikke har "fremtidige" punkter
+        ennå. Asymmetrien gir et synlig hakk i starten ved høy stabilisering,
+        derfor bruker vi den sentrerte varianten ved sluttføring av strøk.
         """
         if window <= 1 or len(pts) < 2:
             return list(pts)
@@ -1438,6 +1440,29 @@ class DrawCanvas(Image):
         for i in range(len(pts)):
             s = max(0, i - window + 1)
             w = pts[s:i+1]
+            result.append((
+                int(sum(p[0] for p in w) / len(w)),
+                int(sum(p[1] for p in w) / len(w)),
+            ))
+        return result
+
+    def _moving_avg_centered(self, pts, window):
+        """
+        Sentrert glidende gjennomsnitt: hvert punkt er snittet av like mange
+        punkter før og etter. Symmetrisk, så det introduserer ingen retnings-
+        forskyvning i starten av strøket – som er årsaken til hakkene man fikk
+        med bakover-trekkende snitt ved høy stabilisering.
+
+        Brukes ved touch-up når vi har alle råpunktene tilgjengelig.
+        """
+        if window <= 1 or len(pts) < 2:
+            return list(pts)
+        half = window // 2
+        result = []
+        for i in range(len(pts)):
+            s = max(0, i - half)
+            e = min(len(pts), i + half + 1)
+            w = pts[s:e]
             result.append((
                 int(sum(p[0] for p in w) / len(w)),
                 int(sum(p[1] for p in w) / len(w)),
@@ -1660,9 +1685,11 @@ class DrawCanvas(Image):
                 if self.stabilize > 0 and len(self._raw_pts) >= 3:
                     # Post-strøk: gjenopprett canvas-snapshot og
                     # tegn hele strøket på nytt via Catmull-Rom.
-                    # Dette er det som glatter ut rystende linjer.
+                    # Vi bruker sentrert glidende snitt her – symmetrisk,
+                    # ingen randeffekt – så strøket ikke får et hakk i starten
+                    # ved høy stabilisering.
                     win      = max(1, self.stabilize * 2)
-                    smoothed = self._moving_avg(self._raw_pts, win)
+                    smoothed = self._moving_avg_centered(self._raw_pts, win)
                     subs     = max(2, self.stabilize)
                     final    = self._catmull_rom(smoothed, subdivisions=subs)
                     self._pil = self._stroke_base.copy()
