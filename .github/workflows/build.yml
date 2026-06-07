@@ -137,12 +137,15 @@ jobs:
               # ── Verifiser at alle prosjekt-klassene finnes i dex. ──
               # Vi sjekker alle tre, ikke bare FileHelper, fordi det forteller oss
               # om problemet rammer hele prosjekt-dex-en eller bare én klasse.
+              # Bruker 'grep -a' direkte på binæren (treat as text), ikke
+              # 'strings | grep' — 'strings' kan splitte runs av tegn på måter som
+              # gjør at klasseidentifikatorer ikke finnes som sammenhengende bit.
               echo '=== Verifiserer prosjekt-klasser i APK ==='
               MISSING=()
               for CLS in FileHelper KtWidget WidgetLog; do
                 FOUND_CLS=0
                 for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
-                  if unzip -p \"\$APK\" \"\$DEX\" | strings | grep -q \"no/askapp/kommunikasjonstavle/\$CLS\"; then
+                  if unzip -p \"\$APK\" \"\$DEX\" | grep -a -q \"no/askapp/kommunikasjonstavle/\$CLS\"; then
                     echo \"OK: \$CLS funnet i \$DEX\"
                     FOUND_CLS=1
                     break
