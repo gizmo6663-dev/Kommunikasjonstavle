@@ -4218,18 +4218,34 @@ INNSTILLINGER
         time_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
         time_row.add_widget(Label(text='Fra:', size_hint_x=None, width=dp(40),
             font_size=fsp(15), color=(0, 0, 0, 1)))
-        start_inp = TextInput(text='08:00' if new else entry.get('start', '08:00'),
-            multiline=False, size_hint_x=None, width=dp(80), font_size=sp(18),
-            size_hint_y=None, height=dp(50))
-        time_row.add_widget(start_inp)
+
+        # Tidsstate holdes i dict så lambda-callbacks kan oppdatere via referanse.
+        # Knappene viser nåværende valg og åpner Android's rullerende tidsvelger.
+        initial_start = '08:00' if new else entry.get('start', '08:00')
+        initial_end   = '08:30' if new else entry.get('end',   '08:30')
+        time_state = {'start': initial_start, 'end': initial_end}
+
+        start_btn = mk_btn(initial_start, hex_k('#4D96FF'), h=dp(50), fs=17,
+                           size_hint_x=None, width=dp(96))
+        end_btn   = mk_btn(initial_end,   hex_k('#4D96FF'), h=dp(50), fs=17,
+                           size_hint_x=None, width=dp(96))
+
+        def on_start_picked(hhmm):
+            time_state['start'] = hhmm
+            start_btn.text = hhmm
+        def on_end_picked(hhmm):
+            time_state['end'] = hhmm
+            end_btn.text = hhmm
+
+        start_btn.bind(on_release=lambda *_:
+            self._pick_time_dialog(time_state['start'], on_start_picked))
+        end_btn.bind(on_release=lambda *_:
+            self._pick_time_dialog(time_state['end'], on_end_picked))
+
+        time_row.add_widget(start_btn)
         time_row.add_widget(Label(text='Til:', size_hint_x=None, width=dp(36),
             font_size=fsp(15), color=(0, 0, 0, 1)))
-        end_inp = TextInput(text='08:30' if new else entry.get('end', '08:30'),
-            multiline=False, size_hint_x=None, width=dp(80), font_size=sp(18),
-            size_hint_y=None, height=dp(50))
-        time_row.add_widget(end_inp)
-        time_row.add_widget(Label(text='(HH:MM)', size_hint_x=None, width=dp(76),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1)))
+        time_row.add_widget(end_btn)
         layout.add_widget(time_row)
 
         chosen_img = [entry.get('image') if entry else None]
@@ -4243,8 +4259,8 @@ INNSTILLINGER
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
         def on_save(*_):
             nm = name_inp.text.strip()
-            st = start_inp.text.strip()
-            en = end_inp.text.strip()
+            st = time_state['start']
+            en = time_state['end']
             if not nm or not st or not en:
                 self._toast('Fyll inn navn og tidspunkt.')
                 return
@@ -5691,6 +5707,113 @@ INNSTILLINGER
         )
         pop.open()
         Clock.schedule_once(lambda *_: pop.dismiss(), duration)
+
+    def _pick_time_dialog(self, initial_hhmm, on_picked):
+        """
+        Åpner Android's innebygde rullerende tidsvelger (TimePickerDialog).
+        Samme komponent som klokke/alarm-appen bruker, så brukeren får et
+        kjent grensesnitt: dra opp/ned for å bla, eller trykk på et tall
+        for å taste direkte med tastaturet.
+
+        initial_hhmm – starttid som 'HH:MM'.
+        on_picked    – callback som mottar en 'HH:MM'-streng når brukeren
+                       bekrefter. Avbryt fyrer ingen callback.
+        """
+        try:
+            parts = initial_hhmm.split(':')
+            h = max(0, min(23, int(parts[0])))
+            m = max(0, min(59, int(parts[1])))
+        except Exception:
+            h, m = 8, 0
+
+        if platform != 'android':
+            # Desktop-fallback (for testing) – ikke i bruk på produksjonsenhet
+            self._pick_time_fallback(h, m, on_picked)
+            return
+
+        try:
+            from jnius import autoclass, PythonJavaClass, java_method
+            from android.runnable import run_on_ui_thread
+        except Exception:
+            self._pick_time_fallback(h, m, on_picked)
+            return
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activity       = PythonActivity.mActivity
+
+        class TimeSetListener(PythonJavaClass):
+            __javainterfaces__ = ['android/app/TimePickerDialog$OnTimeSetListener']
+
+            @java_method('(Landroid/widget/TimePicker;II)V')
+            def onTimeSet(self, view, hour, minute):
+                hhmm = '{:02d}:{:02d}'.format(hour, minute)
+                # Tilbake til Kivy-tråden for å oppdatere widgets trygt
+                Clock.schedule_once(lambda *_: on_picked(hhmm), 0)
+
+        listener = TimeSetListener()
+        # Behold referansen så Python-objektet ikke GC-es før dialogen lukkes
+        self._tp_listener = listener
+
+        @run_on_ui_thread
+        def _show():
+            try:
+                TimePickerDialog = autoclass('android.app.TimePickerDialog')
+                dialog = TimePickerDialog(activity, listener, h, m, True)  # 24h
+                dialog.show()
+            except Exception as e:
+                logging.error('TimePickerDialog feilet: %s', e)
+                Clock.schedule_once(
+                    lambda *_: self._pick_time_fallback(h, m, on_picked), 0)
+
+        _show()
+
+    def _pick_time_fallback(self, h, m, on_picked):
+        """
+        Enkel fallback når native dialog ikke er tilgjengelig.
+        Brukes typisk bare ved skrivebords-testing utenfor Android.
+        """
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(12), padding=dp(16))
+        row = BoxLayout(orientation='horizontal', spacing=dp(8),
+                        size_hint_y=None, height=dp(60))
+        h_inp = TextInput(
+            text='{:02d}'.format(h), multiline=False,
+            size_hint_x=None, width=dp(70),
+            input_filter='int', font_size=sp(22), halign='center',
+        )
+        m_inp = TextInput(
+            text='{:02d}'.format(m), multiline=False,
+            size_hint_x=None, width=dp(70),
+            input_filter='int', font_size=sp(22), halign='center',
+        )
+        row.add_widget(h_inp)
+        row.add_widget(Label(text=':', font_size=sp(22),
+                              size_hint_x=None, width=dp(20),
+                              color=(0, 0, 0, 1)))
+        row.add_widget(m_inp)
+        outer.add_widget(row)
+
+        pop_ref = [None]
+        def confirm(*_):
+            try:
+                hh = max(0, min(23, int(h_inp.text or '0')))
+                mm = max(0, min(59, int(m_inp.text or '0')))
+                on_picked('{:02d}:{:02d}'.format(hh, mm))
+            except Exception:
+                pass
+            pop_ref[0].dismiss()
+
+        btns = BoxLayout(orientation='horizontal',
+                         size_hint_y=None, height=dp(50), spacing=dp(10))
+        btns.add_widget(mk_btn('OK', hex_k('#6BCB77'), h=dp(50), cb=confirm))
+        btns.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
+                                cb=lambda *_: pop_ref[0].dismiss()))
+        outer.add_widget(btns)
+
+        pop = Popup(title='Velg tidspunkt', content=outer,
+                    size_hint=POPUP_SMALL)
+        pop_ref[0] = pop
+        pop.open()
 
     def _confirm(self, title, message, on_confirm,
                  confirm_label='Slett', cancel_label='Avbryt',
