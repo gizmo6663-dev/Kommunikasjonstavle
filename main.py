@@ -39,6 +39,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.slider import Slider
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.widget import Widget
+from kivy.animation import Animation
 from kivy.graphics.texture import Texture
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
@@ -873,7 +874,6 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     - Haptic feedback via plyer.vibrator (kort 30ms puls)
     - WCAG AAA i høykontrast-modus
     """
-    from kivy.animation import Animation
     kw.setdefault('size_hint_y', None)
     kw.setdefault('height', h)
     if is_hc():
@@ -1321,7 +1321,6 @@ class TappableImage(Image):
         dt  = now - self._last_touch
         self._last_touch = now
         # Visuell feedback: kort dimming
-        from kivy.animation import Animation
         Animation(opacity=0.65, duration=0.06).start(self)
         if dt < 0.35 and dt > 0.01:
             self._show_zoom_popup()
@@ -1331,13 +1330,11 @@ class TappableImage(Image):
 
     def on_touch_up(self, touch):
         if self.collide_point(*touch.pos):
-            from kivy.animation import Animation
             Animation(opacity=1.0, duration=0.12).start(self)
         return super().on_touch_up(touch)
 
     def _show_zoom_popup(self):
         from kivy.uix.floatlayout import FloatLayout
-        from kivy.animation import Animation
         overlay = FloatLayout(size=Window.size)
         with overlay.canvas.before:
             from kivy.graphics import Color as KColor, Rectangle
@@ -2468,7 +2465,6 @@ class KommunikasjonstavleApp(App):
         self._content.add_widget(widget)
 
         if animate:
-            from kivy.animation import Animation
             anim = Animation(opacity=1, duration=0.18, t='out_quad')
             anim.start(widget)
         else:
@@ -2914,7 +2910,6 @@ class KommunikasjonstavleApp(App):
 
         def toggle_brush_panel(*_):
             """Viser/skjuler penselraden ved trykk på Penn-knappen."""
-            from kivy.animation import Animation
             open_ = not self._brush_open[0]
             self._brush_open[0] = open_
             if open_:
@@ -4880,7 +4875,6 @@ INNSTILLINGER
         """
         Flip-animasjon: scale_x 1→0 (forsvinner), bytt innhold, scale_x 0→1.
         """
-        from kivy.animation import Animation
         cells = list(self._bp_grid.children)
         n = len(self._bp_cards)
         ci = n - 1 - idx
