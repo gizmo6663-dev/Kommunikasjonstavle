@@ -310,6 +310,14 @@ public class KtWidget extends AppWidgetProvider {
 
             JSONObject root = new JSONObject(sb.toString());
 
+            // Pause-sjekk: hvis dagsrytmen er på pause, vis det isteden
+            // for å være misvisende om "neste aktivitet".
+            JSONObject pause = root.optJSONObject("pause");
+            if (pause != null) {
+                return new WidgetData("⏸  Dagsrytme på pause",
+                                       "Trykk for å gjenoppta", null, null);
+            }
+
             // Hent dagens ukekode for å finne riktig plan.
             // Calendar.DAY_OF_WEEK: 1=SU, 2=MO, ... 7=SA.
             Calendar cal      = Calendar.getInstance();
