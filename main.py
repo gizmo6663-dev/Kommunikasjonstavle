@@ -99,18 +99,14 @@ _KV = """
             pos: self.pos
             size: self.size
             radius: [self.radius]
-        # 3. Subtil ytre kantlinje
+        # 3. Én subtil ytre kant for definisjon.
+        # Den indre "glans-linjen" er fjernet bevisst – den konkurrerte med
+        # gradient-toppen og skapte en visuell "dobbel kant"-effekt.
         Color:
-            rgba: 0, 0, 0, 0.14
+            rgba: 0, 0, 0, 0.16
         Line:
             rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
             width: 1.0
-        # 4. Lys indre glans-linje
-        Color:
-            rgba: 1, 1, 1, 0.30
-        Line:
-            rounded_rectangle: (self.x + dp(2), self.y + dp(2), self.width - dp(4), self.height - dp(4), max(1, self.radius - dp(1)))
-            width: 1.1
     canvas.after:
         # PopMatrix ETTER at tekst er tegnet – slik roteres alt inkl. label
         PopMatrix:
@@ -242,6 +238,11 @@ class RBtn(Button):
         Genererer en 1×64-px gradient-tekstur fra btn_color.
         Cacher teksturer per hex-farge – unngår unødvendig PIL-arbeid
         ved skjermbytte når samme farge brukes flere ganger.
+
+        Gradienten er nå ren lineær – fra svakt mørkere i bunn til
+        svakt lysere på toppen, uten brytningspunkter. Det fjerner
+        "bølge"-effekten som oppstod når den stykkevise gradienten
+        skiftet helning på to steder.
         """
         if not PIL_OK:
             return
@@ -253,25 +254,19 @@ class RBtn(Button):
             self._grad_tex = cached
             return
         try:
-            r, g, b, a = self.btn_color
             H = 64
             buf = bytearray(1 * H * 4)
+            # Subtil sweep: bunn −3% mørkere, topp +8% lysere.
+            # Total spredning ~11% (mot tidligere 36%) – knappen får
+            # fortsatt dimensjon, men oppleves som ett jevnt fargefelt.
+            DARK_END  = -0.03
+            LIGHT_END =  0.08
             for y in range(H):
-                # y=0 er bunn i PIL (flippes), y=H-1 er topp
-                # Gradient: øverst +22% lysere, midten ren farge, bunn -12% mørkere
-                t = y / (H - 1)           # 0=bunn, 1=topp etter flip
-                if t > 0.55:
-                    blend = (t - 0.55) / 0.45   # 0→1 fra midten til topp
-                    fr = min(1.0, r + 0.22 * blend)
-                    fg = min(1.0, g + 0.22 * blend)
-                    fb = min(1.0, b + 0.22 * blend)
-                elif t < 0.20:
-                    blend = (0.20 - t) / 0.20   # 0→1 fra midten til bunn
-                    fr = max(0.0, r - 0.14 * blend)
-                    fg = max(0.0, g - 0.14 * blend)
-                    fb = max(0.0, b - 0.14 * blend)
-                else:
-                    fr, fg, fb = r, g, b
+                t = y / (H - 1)             # 0 = bunn, 1 = topp etter flip
+                delta = DARK_END + (LIGHT_END - DARK_END) * t
+                fr = min(1.0, max(0.0, r + delta))
+                fg = min(1.0, max(0.0, g + delta))
+                fb = min(1.0, max(0.0, b + delta))
                 i = y * 4
                 buf[i]   = int(fr * 255)
                 buf[i+1] = int(fg * 255)
@@ -2241,7 +2236,7 @@ class KommunikasjonstavleApp(App):
             ('Dagsplan', '#FF9F43', self._nav_dagsrytme),
             ('Tidsur',   '#4D96FF', self._nav_tidsur),
             ('Spill',    '#C77DFF', self._nav_bildepar),
-            ('Tegn',     '#FF9F43', self.go_draw),
+            ('Tegn',     '#FFD93D', self.go_draw),
         ]
         for lbl, col, fn in _qcols:
             bar.add_widget(mk_btn(lbl, hex_k(col), h=dp(46), fs=12,
@@ -2251,8 +2246,8 @@ class KommunikasjonstavleApp(App):
     def _build_navbar(self):
         """
         Navigasjonsbar plassert NEDERST for énhånds-bruk på store telefoner.
-        Mørk bakgrunn (via KV) med halvt-transparente pill-knapper.
-        Knappene er hvite/lyse for god kontrast mot mørk bunn.
+        Lys grå bakgrunn (NavBar KV-regel) med fargede pill-knapper.
+        Hver knapp har sin egen kategori-farge for rask gjenkjennelse.
         """
         bar = NavBar(
             orientation='horizontal',
@@ -2261,9 +2256,8 @@ class KommunikasjonstavleApp(App):
             spacing=dp(6),
         )
 
-        # Halv-transparente pill-knapper mot mørk bakgrunn
-        # Farger er lysere/mer saturerte enn normalt siden de
-        # skal leses mot mørk (#1a2340) bakgrunn.
+        # Pill-knapper med kategori-farger mot lys grå navbar-bakgrunn.
+        # Tekstfargen velges automatisk via text_on() per knappefarge.
         btn_kw = dict(size_hint_y=None, height=dp(56), radius=dp(14))
 
         self._btn_back = mk_btn(
@@ -2343,14 +2337,20 @@ class KommunikasjonstavleApp(App):
         self._show_draw()
 
     def toggle_edit(self, *_):
-        if self._cur_scr in ('draw', 'image'):
+        # Skjermer hvor redigeringsmodus ikke har noen mening:
+        # ignorer trykket fremfor å kaste brukeren til hjemskjermen.
+        if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar', 'settings'):
             return
         self.edit_mode = not self.edit_mode
         self._set_edit_highlight(self.edit_mode)
+        # Hver skjerm som faktisk bruker edit_mode må gjenoppbygges
+        # så +knapper og slettekontroller dukker opp/forsvinner.
         if self._cur_scr == 'folder':
             self._show_folder(fid=self.cur_folder)
         elif self._cur_scr == 'sequences':
             self._show_sequences()
+        elif self._cur_scr == 'dagsrytme':
+            self._build_dagsrytme_ui()
         else:
             self._show_home()
 
@@ -3317,6 +3317,17 @@ class KommunikasjonstavleApp(App):
             self._toast('Feil ved eksport.')
 
     def _del_sequence(self, seq):
+        item_count = len(seq.get('items', []))
+        detail = (f' med {item_count} bilde' + ('r' if item_count != 1 else '')
+                  if item_count else '')
+        self._confirm(
+            title='Slette handlingsrekke?',
+            message=f'Handlingsrekken "{seq.get("name", "")}"{detail} '
+                    f'vil forsvinne fra appen.',
+            on_confirm=lambda: self._do_del_sequence(seq),
+        )
+
+    def _do_del_sequence(self, seq):
         self.data['sequences'] = [
             s for s in self.data.get('sequences', []) if s['id'] != seq['id']
         ]
@@ -4139,6 +4150,17 @@ INNSTILLINGER
         self._content.add_widget(sv)
 
     def _dr_delete(self, entry):
+        start = entry.get('start', '')
+        end   = entry.get('end',   '')
+        when  = f' ({start}–{end})' if start and end else ''
+        self._confirm(
+            title='Slette aktivitet?',
+            message=f'Aktiviteten "{entry.get("name", "")}"{when} '
+                    f'fjernes fra dagsrytmen.',
+            on_confirm=lambda: self._do_dr_delete(entry),
+        )
+
+    def _do_dr_delete(self, entry):
         self.data['dagsrytme'] = [
             e for e in self.data.get('dagsrytme', []) if e['id'] != entry['id']]
         save_struct(self.data)
@@ -4793,6 +4815,22 @@ INNSTILLINGER
         pop.open()
 
     def _del_folder(self, fo):
+        item_count = len(fo.get('items', []))
+        sub_count  = len(fo.get('subfolders', []))
+        details = []
+        if item_count:
+            details.append(f'{item_count} bilde' + ('r' if item_count != 1 else ''))
+        if sub_count:
+            details.append(f'{sub_count} undermappe' + ('r' if sub_count != 1 else ''))
+        detail_str = ' med ' + ' og '.join(details) if details else ''
+        self._confirm(
+            title='Slette mappe?',
+            message=f'Mappen "{fo.get("name", "")}"{detail_str} '
+                    f'vil forsvinne fra appen.',
+            on_confirm=lambda: self._do_del_folder(fo),
+        )
+
+    def _do_del_folder(self, fo):
         self.data['folders'] = [f for f in self.data['folders'] if f['id'] != fo['id']]
         save_struct(self.data)
         self._show_home()
@@ -4903,6 +4941,14 @@ INNSTILLINGER
         pop.open()
 
     def _del_item(self, fo, it):
+        self._confirm(
+            title='Slette bilde?',
+            message=f'"{it.get("name", "")}" blir slettet fra enheten '
+                    f'og kan ikke gjenopprettes.',
+            on_confirm=lambda: self._do_del_item(fo, it),
+        )
+
+    def _do_del_item(self, fo, it):
         img = it.get('image', '')
         fo['items'] = [i for i in fo['items'] if i['id'] != it['id']]
         # Slett bildefilen og invalider thumbnail-cache
@@ -5038,6 +5084,17 @@ INNSTILLINGER
         pop_ref[0] = pop; pop.open()
 
     def _del_subfolder(self, parent_fo, sub):
+        item_count = len(sub.get('items', []))
+        detail = (f' med {item_count} bilde' + ('r' if item_count != 1 else '')
+                  if item_count else '')
+        self._confirm(
+            title='Slette undermappe?',
+            message=f'Undermappen "{sub.get("name", "")}"{detail} '
+                    f'vil forsvinne fra appen.',
+            on_confirm=lambda: self._do_del_subfolder(parent_fo, sub),
+        )
+
+    def _do_del_subfolder(self, parent_fo, sub):
         parent_fo['subfolders'] = [
             s for s in parent_fo.get('subfolders', []) if s['id'] != sub['id']]
         save_struct(self.data)
@@ -5584,6 +5641,52 @@ INNSTILLINGER
         )
         pop.open()
         Clock.schedule_once(lambda *_: pop.dismiss(), duration)
+
+    def _confirm(self, title, message, on_confirm,
+                 confirm_label='Slett', cancel_label='Avbryt',
+                 confirm_color='#FF6B6B'):
+        """
+        Modal bekreftelsesdialog for destruktive handlinger.
+        on_confirm kalles bare hvis brukeren trykker bekreft-knappen.
+        Default-fargene er valgt for sletting; for andre destruktive
+        handlinger kan confirm_label/confirm_color overrides.
+        """
+        layout = BoxLayout(orientation='vertical',
+                           spacing=dp(14), padding=dp(16))
+        msg_lbl = Label(
+            text=message, font_size=fsp(16),
+            color=(0.08, 0.10, 0.30, 1),
+            halign='center', valign='middle',
+        )
+        msg_lbl.bind(size=msg_lbl.setter('text_size'))
+        layout.add_widget(msg_lbl)
+
+        btn_row = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(54),
+                            spacing=dp(10))
+        pop_ref = [None]
+
+        # Avbryt-knappen først (til venstre) – mindre risiko for feiltrykk
+        # når brukeren leser fra venstre og refleksivt trykker den nærmeste.
+        btn_cancel = mk_btn(
+            cancel_label, hex_k('#78909C'), h=dp(54), fs=15,
+            cb=lambda *_: pop_ref[0].dismiss(),
+        )
+        btn_confirm = mk_btn(
+            confirm_label, hex_k(confirm_color), h=dp(54), fs=15,
+            cb=lambda *_: (pop_ref[0].dismiss(), on_confirm()),
+        )
+        btn_row.add_widget(btn_cancel)
+        btn_row.add_widget(btn_confirm)
+        layout.add_widget(btn_row)
+
+        pop = Popup(
+            title=title, content=layout,
+            size_hint=(0.85, 0.42),
+            title_size=fsp(17),
+        )
+        pop_ref[0] = pop
+        pop.open()
 
 
 # ══════════════════════════════════════════════════════════════════
