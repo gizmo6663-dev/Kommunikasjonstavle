@@ -309,11 +309,27 @@ public class KtWidget extends AppWidgetProvider {
             }
 
             JSONObject root = new JSONObject(sb.toString());
-            JSONArray  dr   = root.optJSONArray("dagsrytme");
+
+            // Hent dagens ukekode for å finne riktig plan.
+            // Calendar.DAY_OF_WEEK: 1=SU, 2=MO, ... 7=SA.
+            Calendar cal      = Calendar.getInstance();
+            int      dowField = cal.get(Calendar.DAY_OF_WEEK);
+            String[] codes    = {"SU","MO","TU","WE","TH","FR","SA"};
+            String   todayCd  = codes[Math.max(0, Math.min(6, dowField - 1))];
+
+            // Hent dagens plan fra dagsplaner-objektet. Faller tilbake til
+            // det gamle dagsrytme-arrayet for strukturer fra før migrering.
+            JSONArray  dr     = null;
+            JSONObject plans  = root.optJSONObject("dagsplaner");
+            if (plans != null) {
+                dr = plans.optJSONArray(todayCd);
+            }
+            if (dr == null) {
+                dr = root.optJSONArray("dagsrytme");
+            }
             if (dr == null || dr.length() == 0)
                 return new WidgetData("Ingen aktivitet nå", "", null, dr);
 
-            Calendar cal    = Calendar.getInstance();
             int      nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60
                             + cal.get(Calendar.MINUTE);
 
