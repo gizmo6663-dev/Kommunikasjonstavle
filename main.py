@@ -25,6 +25,7 @@ import json
 import uuid
 import shutil
 import logging
+import functools
 import traceback as _tb
 from datetime import datetime
 
@@ -55,7 +56,7 @@ from kivy.uix.progressbar import ProgressBar
 
 
 try:
-    from PIL import Image as PILImage, ImageDraw
+    from PIL import Image as PILImage, ImageDraw, ImageFont
     PIL_OK = True
 except ImportError:
     PIL_OK = False
@@ -354,10 +355,11 @@ LOG_FILE    = None
 CANVAS_W = 960
 CANVAS_H = 1280   # Portrettformat passer mobilskjerm
 
-FOLDER_COLORS = [
-    '#FFD93D', '#FF6B6B', '#6BCB77', '#4D96FF',
-    '#C77DFF', '#FF9F43', '#4ECDC4', '#FF6BB5',
-]
+# FOLDER_COLORS – hentes fra PALETTE via indekser for å unngå duplisering.
+# Indeksene refererer til PALETTE-listen nedenfor.
+# Initialiseres etter PALETTE er definert.
+FOLDER_COLOR_IDX = [6, 12, 14, 15, 17, 21, 23, 24]
+FOLDER_COLORS: list = []  # fylles av _init_folder_colors() etter PALETTE
 
 # ─── Ukedager for dagsplaner ──────────────────────────────────────
 # ISO-baserte ukekoder (MO–SU). Python's datetime.weekday() gir 0=mandag,
@@ -485,6 +487,9 @@ PALETTE = [
     # Spesielle/levende
     '#00E5FF', '#76FF03', '#F50057', '#FF6D00', '#1DE9B6', '#FFD740',
 ]
+
+# Initialiser FOLDER_COLORS fra PALETTE-indekser (unngår duplisering)
+FOLDER_COLORS = [PALETTE[i] for i in FOLDER_COLOR_IDX]
 
 # Standard aktivitetskategorier som brukes til fargekoding i dagsplaner.
 # Hver aktivitet kan tilordnes én kategori; den vises som en tynn fargestripe
@@ -810,21 +815,15 @@ def _update_widget(data):
         pass
 
 
-_thumb_cache = {}   # { (path, w, h): Kivy Texture }
-_THUMB_MAX   = 200  # maks antall entries
-
-
+@functools.lru_cache(maxsize=200)
 def get_thumbnail(path, w, h):
     """
     Returnerer en PIL-basert Kivy Texture skalert til (w×h).
-    Bruker _thumb_cache for å unngå gjentatt PIL-arbeid og minnebruk.
-    Eldre entries kastes automatisk når cachen vokser over _THUMB_MAX.
+    Bruker functools.lru_cache(maxsize=200) for effektiv caching –
+    ingen manuell cache-håndtering nødvendig.
     """
     if not PIL_OK or not path or not os.path.exists(path):
         return None
-    key = (path, int(w), int(h))
-    if key in _thumb_cache:
-        return _thumb_cache[key]
     try:
         img  = PILImage.open(path).convert('RGB')
         img.thumbnail((int(w), int(h)), PILImage.LANCZOS)
@@ -837,15 +836,10 @@ def get_thumbnail(path, w, h):
         tex  = Texture.create(size=(int(w), int(h)), colorfmt='rgb')
         tex.blit_buffer(raw, colorfmt='rgb', bufferfmt='ubyte')
         tex.flip_vertical()
-        # Begrens cache-størrelse
-        if len(_thumb_cache) >= _THUMB_MAX:
-            # Fjern eldste entry
-            oldest = next(iter(_thumb_cache))
-            del _thumb_cache[oldest]
-        _thumb_cache[key] = tex
         return tex
     except Exception:
         return None
+
 
 
 def _wlog_write(msg):
@@ -985,7 +979,7 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
         # 88% brightness er mykere enn tidligere 75% – passer flat-stilet bedre.
         r, g, bv, a = btn.btn_color
         btn.btn_color = [max(0, r*0.88), max(0, g*0.88), max(0, bv*0.88), a]
-        Animation(scale=0.96, duration=0.07, t='out_quad').start(btn)
+        Animation(scale=0.92, duration=0.07, t='out_quad').start(btn)
         haptic_feedback()
 
     def _on_release_anim(btn, *_):
@@ -1058,13 +1052,43 @@ _save_event = [None]
 
 def save_struct(d, immediate=False):
     """
-    Lagrer structure.json med 500ms debounce.
+    Lagrer structure.json med 1 sekund debounce.
     immediate=True brukes ved app-pause og kritiske endringer.
     Reduserer I/O ved f.eks. opens-teller og sekvensielle endringer.
+    Viser «Lagrer...»-label på skjermen i 0.5 sek ved lagring.
     """
     if not STRUCT_FILE:
         logging.error('save_struct: STRUCT_FILE ikke satt ennå')
         return
+
+    def _show_save_indicator():
+        """Viser «Lagrer...»-label i 0.5 sekunder nederst på skjermen."""
+        try:
+            from kivy.app import App as _App
+            app = _App.get_running_app()
+            if not app or not hasattr(app, '_content'):
+                return
+            lbl = Label(
+                text='Lagrer...',
+                font_size=sp(13),
+                color=(0.3, 0.35, 0.5, 0.9),
+                size_hint=(None, None),
+                size=(dp(120), dp(30)),
+                halign='center',
+                bold=True,
+            )
+            # Plasser nederst i vinduet over navbar
+            from kivy.core.window import Window as _Win
+            lbl.pos = ((_Win.width - dp(120)) / 2, dp(76))
+            _Win.add_widget(lbl)
+            def _remove(*_):
+                try:
+                    _Win.remove_widget(lbl)
+                except Exception:
+                    pass
+            Clock.schedule_once(_remove, 0.5)
+        except Exception as _si_err:
+            logging.debug('save indicator feilet: %s', _si_err)
 
     def _do_save(*_):
         # Synkroniser dagsrytme-feltet med dagens plan. Widgeten og annen
@@ -1077,6 +1101,7 @@ def save_struct(d, immediate=False):
             with open(STRUCT_FILE, 'w', encoding='utf-8') as f:
                 json.dump(d, f, ensure_ascii=False, indent=2)
             logging.debug('structure.json lagret (%s)', STRUCT_FILE)
+            Clock.schedule_once(lambda *_: _show_save_indicator(), 0)
         except Exception as e:
             logging.error('Feil ved lagring: %s', e)
         _save_event[0] = None
@@ -1097,7 +1122,7 @@ def save_struct(d, immediate=False):
 
     if _save_event[0]:
         _save_event[0].cancel()
-    _save_event[0] = Clock.schedule_once(_do_save, 0.5)
+    _save_event[0] = Clock.schedule_once(_do_save, 1.0)
 
 def get_folder(d, fid):
     """Finner mappe med gitt id – søker rekursivt i subfolders."""
@@ -2602,6 +2627,7 @@ class KommunikasjonstavleApp(App):
         self.edit_mode   = False
         self.draw_canvas = None
         self._cur_scr    = 'home'
+        self._next_slide_dir = 'forward'  # slide-retning for neste _set_content
 
         root = BoxLayout(orientation='vertical')
         # Tittellinje øverst (slim, ikke-interaktiv, mørk)
@@ -2960,13 +2986,16 @@ class KommunikasjonstavleApp(App):
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
         outer.add_widget(self._lbl_title)
 
-        # Søk-ikon helt til høyre. Transparent bakgrunn, hvit lupe.
+        # Søk-knapp – bruker tekst «Søk» i stedet for emoji
+        # slik at den rendres korrekt på alle Android-enheter
+        # uavhengig av tilgjengelig emoji-font.
         search_btn = Button(
-            text='🔍',
+            text='Søk',
             background_normal='', background_down='',
             background_color=(0, 0, 0, 0),
-            color=(1, 1, 1, 0.85),
-            font_size=sp(20),
+            color=(1, 1, 1, 0.90),
+            font_size=sp(13),
+            bold=True,
             size_hint=(None, None), size=(dp(46), dp(38)),
             pos_hint={'right': 1, 'center_y': 0.5},
         )
@@ -2987,8 +3016,10 @@ class KommunikasjonstavleApp(App):
     def go_back(self, *_):
         if self.nav_stack:
             scr, kw = self.nav_stack.pop()
+            self._next_slide_dir = 'back'
             getattr(self, f'_show_{scr}')(**kw)
         else:
+            self._next_slide_dir = 'back'
             self._show_home()
 
     def go_home(self, *_):
@@ -3027,11 +3058,18 @@ class KommunikasjonstavleApp(App):
     def _push(self, scr, **kw):
         self.nav_stack.append((scr, kw))
 
-    def _set_content(self, widget, animate=True):
+    def _set_content(self, widget, animate=True, direction=None):
         """
-        Bytter innholdsflaten med fade + skalering fra 92%→100%.
-        Sveipe-touch-håndtering aktiveres hvis swipe_nav er på.
+        Bytter innholdsflaten med slide-animasjon.
+        direction='forward' → slide inn fra høyre (x: Window.width → 0)
+        direction='back'    → slide inn fra venstre (tilbake-navigasjon)
+        animate=False       → ingen animasjon (bakgrunns-refresh)
+        Retning kan settes via self._next_slide_dir (konsumeres her).
         """
+        if direction is None:
+            direction = getattr(self, '_next_slide_dir', 'forward')
+        self._next_slide_dir = 'forward'  # reset til default
+
         if self._cur_scr != 'dagsrytme':
             ev = getattr(self, '_dr_event', None)
             if ev:
@@ -3045,14 +3083,22 @@ class KommunikasjonstavleApp(App):
             Window.clearcolor = hc_bg
 
         self._content.clear_widgets()
-        widget.opacity = 0
         self._content.add_widget(widget)
 
         if animate:
-            anim = Animation(opacity=1, duration=0.18, t='out_quad')
-            anim.start(widget)
+            if direction == 'back':
+                # Slide inn fra venstre (tilbake-navigasjon)
+                widget.x = -Window.width
+                widget.opacity = 1
+                Animation(x=0, duration=0.2, t='out_cubic').start(widget)
+            else:
+                # Slide inn fra høyre (navigering fremover)
+                widget.x = Window.width
+                widget.opacity = 1
+                Animation(x=0, duration=0.2, t='out_cubic').start(widget)
         else:
             widget.opacity = 1
+            widget.x = 0
 
         # Bind sveipe-navigasjon hvis aktivert i innstillinger
         if self.data.get('settings', {}).get('swipe_nav', False):
@@ -3110,7 +3156,7 @@ class KommunikasjonstavleApp(App):
         if not self.data['folders']:
             # Vennlig empty state hvis ingen mapper er opprettet ennå
             outer.add_widget(self._empty_state(
-                glyph='📁',
+                glyph='[ Mapper ]',
                 msg='Ingen mapper ennå.\nTrykk "Red." og deretter "+ Ny mappe".'))
         else:
             grid = GridLayout(cols=3, spacing=dp(6), padding=(dp(6), dp(6)),
@@ -3311,7 +3357,7 @@ class KommunikasjonstavleApp(App):
                 cb=lambda *_: self._upload_to_folder(fo),
             ))
             btn_bar.add_widget(mk_btn(
-                '🔍 Søk', hex_k('#9B59B6'), h=dp(46), fs=13,
+                'Søk', hex_k('#9B59B6'), h=dp(46), fs=13,
                 cb=lambda *_: self._arasaac_search_popup(fo),
             ))
             btn_bar.add_widget(mk_btn(
@@ -4071,34 +4117,76 @@ class KommunikasjonstavleApp(App):
     def _export_sequence(self, seq):
         """
         Eksporterer handlingsrekken til /sdcard/Download/[navn]_handlingsrekke/.
-        Bildene nummereres (01_, 02_, …) og en tekstfil beskriver rekkefølgen.
+        Viser popup med spinner mens eksport pågår i bakgrunnstråd.
         """
+        import threading
         items = seq.get('items', [])
         if not items:
             self._toast('Ingen bilder å eksportere.')
             return
-        safe = seq['name'].replace(' ', '_').replace('/', '_')
+        safe       = seq['name'].replace(' ', '_').replace('/', '_')
         export_dir = os.path.join(DOWNLOAD_DIR, f'{safe}_handlingsrekke')
-        try:
-            os.makedirs(export_dir, exist_ok=True)
-            manifest = [f'Handlingsrekke: {seq["name"]}\n']
-            for i, it in enumerate(items, 1):
-                img_path = it.get('image', '')
-                if img_path and os.path.exists(img_path):
-                    ext      = os.path.splitext(img_path)[1].lower() or '.png'
-                    dst_name = f'{i:02d}_{it["name"].replace(" ", "_")}{ext}'
-                    shutil.copy2(img_path, os.path.join(export_dir, dst_name))
-                    manifest.append(f'{i}. {it["name"]}  ->  {dst_name}')
-                else:
-                    manifest.append(f'{i}. {it["name"]}  (ingen bildefil)')
-            txt_path = os.path.join(export_dir, 'rekkefølge.txt')
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write("\n".join(manifest))
-            self._toast(f'Eksportert til Nedlastinger:\n{safe}_handlingsrekke/')
-            logging.info('Eksportert sekvens: %s', export_dir)
-        except Exception:
-            logging.exception('_export_sequence: feil')
-            self._toast('Feil ved eksport.')
+
+        # ── Spinner-popup ─────────────────────────────────────────
+        spin_box = BoxLayout(orientation='vertical',
+                             spacing=dp(16), padding=dp(20))
+        spin_box.add_widget(Label(
+            text='Eksporterer...', font_size=fsp(16), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            size_hint_y=None, height=dp(32), halign='center'))
+        pb = ProgressBar(max=100, value=0,
+                         size_hint_y=None, height=dp(16))
+        spin_box.add_widget(pb)
+        spin_box.add_widget(Label(
+            text=f'{safe}_handlingsrekke/', font_size=fsp(12),
+            color=(0.4, 0.44, 0.55, 1),
+            size_hint_y=None, height=dp(24), halign='center'))
+        spin_pop = Popup(
+            title='', content=spin_box,
+            size_hint=POPUP_SMALL,
+            auto_dismiss=False,
+            separator_height=0)
+        spin_pop.open()
+
+        _pb_dir = [1]
+        def _pulse_pb(dt):
+            pb.value = (pb.value + 3 * _pb_dir[0]) % 101
+            if pb.value >= 100: _pb_dir[0] = -1
+            if pb.value <= 0:   _pb_dir[0] =  1
+        _pb_event = Clock.schedule_interval(_pulse_pb, 0.03)
+
+        def _do():
+            try:
+                os.makedirs(export_dir, exist_ok=True)
+                manifest = [f'Handlingsrekke: {seq["name"]}\n']
+                for i, it in enumerate(items, 1):
+                    img_path = it.get('image', '')
+                    if img_path and os.path.exists(img_path):
+                        ext      = os.path.splitext(img_path)[1].lower() or '.png'
+                        dst_name = f'{i:02d}_{it["name"].replace(" ", "_")}{ext}'
+                        shutil.copy2(img_path, os.path.join(export_dir, dst_name))
+                        manifest.append(f'{i}. {it["name"]}  ->  {dst_name}')
+                    else:
+                        manifest.append(f'{i}. {it["name"]}  (ingen bildefil)')
+                txt_path = os.path.join(export_dir, 'rekkefølge.txt')
+                with open(txt_path, 'w', encoding='utf-8') as f:
+                    f.write("\n".join(manifest))
+                logging.info('Eksportert sekvens: %s', export_dir)
+                def _done(*_):
+                    _pb_event.cancel()
+                    spin_pop.dismiss()
+                    self._toast(f'Eksportert til Nedlastinger:\n{safe}_handlingsrekke/')
+                Clock.schedule_once(_done, 0)
+            except Exception as ex:
+                _msg = str(ex)
+                def _err(*_):
+                    _pb_event.cancel()
+                    spin_pop.dismiss()
+                    self._toast(f'Eksport feilet: {_msg}')
+                    logging.exception('_export_sequence: feil')
+                Clock.schedule_once(_err, 0)
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _del_sequence(self, seq):
         item_count = len(seq.get('items', []))
@@ -4920,7 +5008,7 @@ INNSTILLINGER
         # Liste over eksisterende oppsett
         if not oppsett:
             outer.add_widget(self._empty_state(
-                glyph='🎭',
+                glyph='[ Oppsett ]',
                 msg='Ingen lagrede oppsett ennå.\n'
                     'Lag ditt første nederst.'))
         else:
@@ -5244,7 +5332,7 @@ INNSTILLINGER
             row2 = BoxLayout(orientation='horizontal',
                              size_hint_y=None, height=dp(44),
                              spacing=dp(6))
-            row2.add_widget(mk_btn('🎭  Dagsoppsett', hex_k('#C77DFF'),
+            row2.add_widget(mk_btn('Dagsoppsett', hex_k('#C77DFF'),
                 h=dp(44), fs=13,
                 cb=lambda *_: self._dagsoppsett_popup()))
             row2.add_widget(mk_btn('↗  Eksporter', hex_k('#546E7A'),
@@ -5254,15 +5342,120 @@ INNSTILLINGER
 
         # ── 5. Hovedinnhold ──────────────────────────────────────
         if edit:
-            # Kalender-stil dagvisning med dra-og-slipp.
-            # Bildet skjules her – fokuset er strukturen i dagen.
-            outer.add_widget(Label(
-                text='Trykk en blokk for å redigere, dra for å flytte.',
-                size_hint_y=None, height=dp(22),
-                font_size=fsp(12), color=(0.45, 0.48, 0.55, 1),
-                halign='center'))
-            cal = CalendarDayView(self, sel, entries)
-            outer.add_widget(cal)
+            # Enkel liste i redigeringsmodus – ↑/↓ for rekkefølge, Slett for fjerning.
+            # Ingen drag-og-slipp; mye lettere å bruke på mobil.
+            if not entries:
+                outer.add_widget(Label(
+                    text='Ingen aktiviteter ennå. Trykk «+ Legg til» ovenfor.',
+                    size_hint_y=None, height=dp(50),
+                    font_size=fsp(14), color=(0.45, 0.48, 0.55, 1),
+                    halign='center', valign='middle'))
+            else:
+                edit_sv = ScrollView(size_hint=(1, None), height=dp(360))
+                edit_box = BoxLayout(
+                    orientation='vertical', spacing=dp(6),
+                    size_hint_y=None, padding=(0, dp(4)))
+                edit_box.bind(minimum_height=edit_box.setter('height'))
+
+                def _rebuild_edit_list():
+                    edit_box.clear_widgets()
+                    current_entries = sorted(
+                        get_day_plan(self.data, sel),
+                        key=lambda e: e.get('start', '00:00'))
+                    for idx, e in enumerate(current_entries):
+                        row = RBox(
+                            orientation='horizontal',
+                            size_hint_y=None, height=dp(56),
+                            spacing=dp(4), padding=(dp(6), dp(4)),
+                            box_color=(0.96, 0.97, 1.0, 1.0), radius=dp(12))
+
+                        # Kategori-farge stripe
+                        cat = get_category(self.data, e.get('category'))
+                        stripe_col = hex_k(cat['color']) if cat else hex_k('#4D96FF')
+                        stripe = BoxLayout(size_hint_x=None, width=dp(4))
+                        from kivy.graphics import Color as KColor, Rectangle as KRect
+                        with stripe.canvas.before:
+                            KColor(*stripe_col)
+                            sr = KRect(pos=stripe.pos, size=stripe.size)
+                        def _us(sw, *_, _sr=sr): _sr.pos = sw.pos; _sr.size = sw.size
+                        stripe.bind(pos=_us, size=_us)
+                        row.add_widget(stripe)
+
+                        # Aktivitetsnavn + tidspunkt
+                        info_lbl = Label(
+                            text=f'{e.get("start","?")}–{e.get("end","?")}  {e["name"]}',
+                            font_size=fsp(13), color=(0.08, 0.10, 0.35, 1),
+                            halign='left', valign='middle',
+                            size_hint_x=1)
+                        info_lbl.bind(size=info_lbl.setter('text_size'))
+                        row.add_widget(info_lbl)
+
+                        # ↑ Flytt opp
+                        def _move_up(e_id=e['id'], *_):
+                            pl = self.data['dagsplaner'][sel]
+                            ids = [x['id'] for x in sorted(pl, key=lambda x: x.get('start','00:00'))]
+                            i2 = ids.index(e_id)
+                            if i2 > 0:
+                                # Bytt start-tidspunkter
+                                pl_map = {x['id']: x for x in pl}
+                                a, b = pl_map[ids[i2-1]], pl_map[ids[i2]]
+                                a['start'], b['start'] = b['start'], a['start']
+                                a['end'],   b['end']   = b['end'],   a['end']
+                                save_struct(self.data)
+                                _rebuild_edit_list()
+                        up_btn = mk_btn('▲', hex_k('#78909C'),
+                            h=dp(48), fs=14,
+                            size_hint_x=None, width=dp(42))
+                        up_btn.bind(on_release=lambda *_, f=_move_up: f())
+                        if idx == 0:
+                            up_btn.opacity = 0.35
+                            up_btn.disabled = True
+                        row.add_widget(up_btn)
+
+                        # ↓ Flytt ned
+                        def _move_down(e_id=e['id'], *_):
+                            pl = self.data['dagsplaner'][sel]
+                            ids = [x['id'] for x in sorted(pl, key=lambda x: x.get('start','00:00'))]
+                            i2 = ids.index(e_id)
+                            if i2 < len(ids) - 1:
+                                pl_map = {x['id']: x for x in pl}
+                                a, b = pl_map[ids[i2]], pl_map[ids[i2+1]]
+                                a['start'], b['start'] = b['start'], a['start']
+                                a['end'],   b['end']   = b['end'],   a['end']
+                                save_struct(self.data)
+                                _rebuild_edit_list()
+                        dn_btn = mk_btn('▼', hex_k('#78909C'),
+                            h=dp(48), fs=14,
+                            size_hint_x=None, width=dp(42))
+                        dn_btn.bind(on_release=lambda *_, f=_move_down: f())
+                        if idx == len(current_entries) - 1:
+                            dn_btn.opacity = 0.35
+                            dn_btn.disabled = True
+                        row.add_widget(dn_btn)
+
+                        # Rediger
+                        def _edit_entry(entry=e, *_):
+                            self._dr_entry_popup(entry)
+                        ed_btn = mk_btn('Red.', hex_k('#4D96FF'),
+                            h=dp(48), fs=12,
+                            size_hint_x=None, width=dp(52))
+                        ed_btn.bind(on_release=lambda *_, f=_edit_entry: f())
+                        row.add_widget(ed_btn)
+
+                        # Slett
+                        def _delete_entry(entry=e, *_):
+                            self._dr_delete(entry)
+                        del_btn = mk_btn('Slett', hex_k('#FF6B6B'),
+                            h=dp(48), fs=12,
+                            size_hint_x=None, width=dp(58))
+                        del_btn.bind(on_release=lambda *_, f=_delete_entry: f())
+                        row.add_widget(del_btn)
+
+                        edit_box.add_widget(row)
+
+                _rebuild_edit_list()
+                edit_sv.add_widget(edit_box)
+                outer.add_widget(edit_sv)
         elif paused:
             outer.add_widget(Label(
                 text='Dagsrytmen er pauset. Nåværende og neste vises ikke.',
@@ -5300,7 +5493,7 @@ INNSTILLINGER
                 current[1], current[2], now_m))
             # Start tidsur-knapp
             outer.add_widget(mk_btn(
-                f'⏱  Start tidsur ({self._dr_fmt(remaining)})',
+                f'Start tidsur ({self._dr_fmt(remaining)})',
                 hex_k('#4D96FF'), h=dp(48), fs=14,
                 cb=lambda *_, en=current[0], em=current[2]:
                     self._start_timer_for_activity(en, em)))
@@ -5334,7 +5527,7 @@ INNSTILLINGER
         elif not entries:
             outer.add_widget(BoxLayout(size_hint_y=None, height=dp(20)))
             outer.add_widget(self._empty_state(
-                glyph='📅',
+                glyph='[ Plan ]',
                 msg=f'Ingen aktiviteter for {DAY_FULL_NO[sel].lower()}.\n'
                     f'Trykk "Red." og "+" for å starte.'))
 
@@ -5783,6 +5976,7 @@ INNSTILLINGER
     def _export_popup(self, mode, seq=None):
         """
         Eksporter dagsplan eller handlingsrekke som PNG til Nedlastinger.
+        Viser popup med ubestemt ProgressBar og «Eksporterer...» mens det pågår.
         Kjøres i bakgrunnstråd for å ikke fryse UI.
         """
         if not PIL_OK:
@@ -5790,17 +5984,52 @@ INNSTILLINGER
             return
         import datetime as _dt, threading
 
-        entries = (self.data.get('dagsrytme', []) if mode == 'dagsrytme'
-                   else (seq.get('items', []) if seq else []))
-        title   = ('Dagsplan' if mode == 'dagsrytme'
-                   else (seq.get('name', 'Rekke') if seq else 'Rekke'))
-        fname   = f'{title}_{_dt.date.today()}.png'
+        # Dagsplan: bruk valgt dag sin plan
+        if mode == 'dagsrytme':
+            sel = getattr(self, '_dr_selected_day', today_code())
+            entries = sorted(
+                get_day_plan(self.data, sel),
+                key=lambda e: e.get('start', '00:00'))
+            title = f'Dagsplan_{DAY_FULL_NO.get(sel, sel)}'
+        else:
+            entries = seq.get('items', []) if seq else []
+            title   = seq.get('name', 'Rekke') if seq else 'Rekke'
+
+        fname = f'{title}_{_dt.date.today()}.png'
 
         if not entries:
             self._toast('Ingen innhold å eksportere.')
             return
 
-        self._toast('Eksporterer…')
+        # ── Spinner-popup ─────────────────────────────────────────
+        spin_box = BoxLayout(orientation='vertical',
+                             spacing=dp(16), padding=dp(20))
+        spin_box.add_widget(Label(
+            text='Eksporterer...', font_size=fsp(16), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            size_hint_y=None, height=dp(32), halign='center'))
+        pb = ProgressBar(max=100, value=0,
+                         size_hint_y=None, height=dp(16))
+        spin_box.add_widget(pb)
+        spin_box.add_widget(Label(
+            text=fname, font_size=fsp(12),
+            color=(0.4, 0.44, 0.55, 1),
+            size_hint_y=None, height=dp(24), halign='center'))
+
+        spin_pop = Popup(
+            title='', content=spin_box,
+            size_hint=POPUP_SMALL,
+            auto_dismiss=False,
+            separator_height=0)
+        spin_pop.open()
+
+        # Pulserende progressbar – simulerer aktivitet (ubestemt)
+        _pb_dir = [1]
+        def _pulse_pb(dt):
+            pb.value = (pb.value + 3 * _pb_dir[0]) % 101
+            if pb.value >= 100: _pb_dir[0] = -1
+            if pb.value <= 0:   _pb_dir[0] =  1
+        _pb_event = Clock.schedule_interval(_pulse_pb, 0.03)
 
         def _do():
             try:
@@ -5834,7 +6063,6 @@ INNSTILLINGER
                         try:
                             sym = PILImage.open(ip).convert('RGBA')
                             sym.thumbnail((ROW-8, ROW-8))
-                            # Bruk alfa-kanal som maske, eller konverter til RGB
                             r, g, b, a = sym.split()
                             sym_rgb = PILImage.merge('RGB', (r, g, b))
                             img.paste(sym_rgb, (nx, y+4), mask=a)
@@ -5846,13 +6074,20 @@ INNSTILLINGER
 
                 dst = os.path.join(DOWNLOAD_DIR, fname)
                 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-                img.save(dst)  # PNG – ingen quality-parameter
-                Clock.schedule_once(
-                    lambda *_: self._toast(f'Lagret: {fname}'), 0)
+                img.save(dst)
+
+                def _done(*_):
+                    _pb_event.cancel()
+                    spin_pop.dismiss()
+                    self._toast(f'Lagret: {fname}')
+                Clock.schedule_once(_done, 0)
             except Exception as ex:
                 _msg = str(ex)
-                Clock.schedule_once(
-                    lambda *_, m=_msg: self._toast(f'Eksport feilet: {m}'), 0)
+                def _err(*_):
+                    _pb_event.cancel()
+                    spin_pop.dismiss()
+                    self._toast(f'Eksport feilet: {_msg}')
+                Clock.schedule_once(_err, 0)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -5875,7 +6110,7 @@ INNSTILLINGER
         # disken så brukeren vet hva tidsuret gjelder.
         if getattr(self, '_timer_label', ''):
             root.add_widget(Label(
-                text=f'⏱  {self._timer_label}',
+                text=f'Tidsur: {self._timer_label}',
                 size_hint_y=None, height=dp(36),
                 font_size=fsp(18), bold=True,
                 color=(0.04, 0.10, 0.40, 1), halign='center'))
@@ -7003,7 +7238,7 @@ INNSTILLINGER
                 for it in fo.get('items', []):
                     if term in it.get('name', '').lower():
                         fo_ref = fo
-                        hits.append(('🖼️', it['name'],
+                        hits.append(('[Bilde]', it['name'],
                                      f'I mappe: {fo["name"]}',
                                      lambda _fo=fo_ref: self._open_folder(_fo)))
 
@@ -7012,7 +7247,7 @@ INNSTILLINGER
                 for act in get_day_plan(self.data, code):
                     if term in act.get('name', '').lower():
                         hits.append((
-                            '📅', act['name'],
+                            '[Plan]', act['name'],
                             f'{DAY_FULL_NO[code]} {act.get("start","")}–{act.get("end","")}',
                             lambda c=code: (
                                 setattr(self, '_dr_selected_day', c),
@@ -7371,95 +7606,189 @@ INNSTILLINGER
 
     def _show_onboarding(self):
         """
-        Kort guidet omvisning som forklarer appens hovedfunksjoner.
-        Vises automatisk én gang ved første åpning, men kan også
-        startes manuelt fra Innstillinger.
-
-        Designet for å være rask å bla gjennom – 6 korte slides med
-        emoji-illustrasjon, tittel og kort tekst. Bevisst ikke for lang;
-        brukeren skal kunne komme i gang etter et minutt.
+        Guidet omvisning i 6 slides + interaktiv mappe-oppretting.
+        Etter slide 6 bes brukeren trykke «Red.»-knappen (uthevet med
+        pulserende glød) og opprette sin første mappe (forhåndsutfylt
+        navn). Når mappen er lagret vises «Du er klar!»-slide.
         """
         slides = [
-            ('👋', 'Velkommen til Kommunikasjonstavle',
+            ('1/6', 'Velkommen til Kommunikasjonstavle',
              'Et verktøy for barnehage og spesialpedagogikk – '
              'støtter visuell kommunikasjon, struktur i dagen og '
              'tilrettelegging for barn med ulike kommunikasjonsbehov.'),
-            ('🖼️', 'Bildemapper på hjemskjermen',
+            ('2/6', 'Bildemapper på hjemskjermen',
              'Mappene samler bilder etter tema (mat, klær, følelser '
              'osv.). Trykk en mappe for å åpne den, og et bilde for å '
              'vise det stort. Bildet kan brukes i kommunikasjon med '
              'barnet ved peking eller blikk-kontakt.'),
-            ('📅', 'Dagsplan med ukedager',
-             'I "Dagsplan" lager du en aktivitetsplan per ukedag. '
-             'Hver dag kan ha sin egen plan – mandag kan se annerledes '
-             'ut enn fredag. Widget på hjemskjermen viser nåværende '
-             'aktivitet og hva som kommer neste.'),
-            ('⏱️', 'Tidsur og rekker',
-             'Tidsuret viser hvor lang tid det er igjen av en aktivitet. '
-             '"Rekker" er bildesekvenser – nyttig for rutiner som '
-             'påkledning, håndvask eller utflukt der ting skal skje i '
-             'en bestemt rekkefølge.'),
-            ('✏️', 'Redigeringsmodus',
-             'Trykk "Red." nederst for å redigere. Da kan du legge til '
-             'nye mapper, bilder, aktiviteter og sekvenser. Trykk "Red." '
-             'igjen for å gå tilbake til visningsmodus.'),
-            ('✅', 'Klar til å starte',
-             'Det var det – du kan starte å utforske appen nå. '
-             'Hvis du vil se denne omvisningen igjen senere, finner '
-             'du den i Innstillinger.'),
+            ('3/6', 'Dagsplan med ukedager',
+             'I «Dagsplan» lager du en aktivitetsplan per ukedag. '
+             'Hver dag kan ha sin egen plan. Widget på hjemskjermen '
+             'viser nåværende aktivitet og hva som kommer neste.'),
+            ('4/6', 'Tidsur og rekker',
+             'Tidsuret viser tid igjen av en aktivitet. '
+             '«Rekker» er bildesekvenser for rutiner som '
+             'påkledning, håndvask eller utflukt i bestemt rekkefølge.'),
+            ('5/6', 'Redigeringsmodus',
+             'Trykk «Red.» nederst for å redigere. Da kan du legge til '
+             'mapper, bilder, aktiviteter og sekvenser. '
+             'Trykk «Red.» igjen for å gå tilbake til visningsmodus.'),
+            ('6/6', 'Prøv det nå!',
+             'La oss opprette din første mappe. '
+             'Trykk «Neste» for å komme i gang – '
+             'vi guider deg gjennom det.'),
         ]
-        idx = [0]
-        pop_ref = [None]
+        idx      = [0]
+        pop_ref  = [None]
+        # Pulserings-event-referanse
+        pulse_ev = [None]
 
-        # Tittelområde (icon + headline)
-        icon_lbl  = Label(text='', font_size=sp(56), size_hint_y=None,
-                          height=dp(72), halign='center')
-        title_lbl = Label(text='', font_size=fsp(20), bold=True,
-                          size_hint_y=None, height=dp(40),
+        def _stop_pulse():
+            if pulse_ev[0]:
+                pulse_ev[0].cancel()
+                pulse_ev[0] = None
+                # Reset Red.-knapp til normal
+                try:
+                    self._btn_edit.btn_color = list(
+                        hex_k('#7B2FBE' if self.edit_mode else '#C77DFF'))
+                    from kivy.graphics import Color as KColor
+                    with self._btn_edit.canvas.before:
+                        pass  # canvas refresh
+                except Exception:
+                    pass
+
+        def _start_pulse():
+            """Pulserende glød rundt Red.-knappen via fargeanimasjon."""
+            _stop_pulse()
+            state = [0.0, 1]  # [fase, retning]
+            def _tick(dt):
+                state[0] += 0.07 * state[1]
+                if state[0] >= 1.0: state[1] = -1
+                if state[0] <= 0.0: state[1] =  1
+                t = state[0]
+                # Veksle mellom lilla og lys lilla
+                r = 0.48 + 0.20 * t
+                g = 0.18 + 0.20 * t
+                b = 0.74 + 0.20 * t
+                try:
+                    self._btn_edit.btn_color = [r, g, b, 1.0]
+                except Exception:
+                    pass
+            pulse_ev[0] = Clock.schedule_interval(_tick, 0.04)
+
+        # ── UI-elementer ──────────────────────────────────────────
+        step_lbl  = Label(text='', font_size=fsp(12),
+                          size_hint_y=None, height=dp(22),
+                          color=(0.55, 0.58, 0.68, 1), halign='center')
+        title_lbl = Label(text='', font_size=fsp(19), bold=True,
+                          size_hint_y=None, height=dp(44),
                           color=(0.04, 0.10, 0.36, 1), halign='center')
         body_lbl  = Label(text='', font_size=fsp(15),
-                          size_hint_y=None, height=dp(160),
+                          size_hint_y=None, height=dp(150),
                           color=(0.20, 0.22, 0.32, 1),
                           halign='center', valign='top')
         body_lbl.bind(width=lambda l, w:
                       setattr(l, 'text_size', (w - dp(20), None)))
 
-        # Sidemarkør-prikker
+        # Dotnav
         dots_row = BoxLayout(orientation='horizontal',
-                             size_hint_y=None, height=dp(20),
-                             spacing=dp(8))
+                             size_hint_y=None, height=dp(20), spacing=dp(8))
         dots = []
         for _ in slides:
-            d = Label(text='●', font_size=sp(14),
-                      color=(0.7, 0.72, 0.80, 1))
+            d = Label(text='●', font_size=sp(13), color=(0.7, 0.72, 0.80, 1))
             dots.append(d)
             dots_row.add_widget(Widget())
             dots_row.add_widget(d)
         dots_row.add_widget(Widget())
 
-        # Navigasjonsknapper
-        btn_row = BoxLayout(orientation='horizontal',
-                            size_hint_y=None, height=dp(54),
-                            spacing=dp(8))
-        skip_btn  = mk_btn('Hopp over', hex_k('#9CA3AF'),
-                            h=dp(54), fs=13)
-        prev_btn  = mk_btn('Forrige',   hex_k('#78909C'),
-                            h=dp(54), fs=14)
-        next_btn  = mk_btn('Neste',     hex_k('#4D96FF'),
-                            h=dp(54), fs=15)
+        btn_row  = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(54), spacing=dp(8))
+        skip_btn = mk_btn('Hopp over', hex_k('#9CA3AF'), h=dp(54), fs=13)
+        prev_btn = mk_btn('Forrige',   hex_k('#78909C'), h=dp(54), fs=14)
+        next_btn = mk_btn('Neste',     hex_k('#4D96FF'), h=dp(54), fs=15)
         btn_row.add_widget(skip_btn)
         btn_row.add_widget(prev_btn)
         btn_row.add_widget(next_btn)
 
+        # Mappe-opprettingspanel (vises etter slide 6)
+        folder_panel = BoxLayout(orientation='vertical',
+                                 spacing=dp(8), size_hint_y=None, height=0,
+                                 opacity=0)
+        folder_panel.add_widget(Label(
+            text='Skriv inn et navn på mappen din:',
+            font_size=fsp(14), color=(0.2, 0.22, 0.32, 1),
+            size_hint_y=None, height=dp(28), halign='left'))
+        from kivy.uix.textinput import TextInput as _TI
+        folder_name_inp = _TI(
+            text='Min første mappe',
+            hint_text='Mappenavn',
+            multiline=False,
+            size_hint_y=None, height=dp(48),
+            font_size=fsp(15),
+        )
+        folder_panel.add_widget(folder_name_inp)
+        create_folder_btn = mk_btn(
+            'Opprett mappen', hex_k('#6BCB77'),
+            h=dp(50), fs=15)
+        folder_panel.add_widget(create_folder_btn)
+
+        outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(16))
+        outer.add_widget(step_lbl)
+        outer.add_widget(title_lbl)
+        outer.add_widget(body_lbl)
+        outer.add_widget(folder_panel)
+        outer.add_widget(BoxLayout())  # spacer
+        outer.add_widget(dots_row)
+        outer.add_widget(btn_row)
+
         def finish(*_):
+            _stop_pulse()
             self.data.setdefault('settings', {})['onboarding_done'] = True
             save_struct(self.data)
-            pop_ref[0].dismiss()
+            if pop_ref[0]:
+                pop_ref[0].dismiss()
+
+        def _show_done_slide():
+            """Erstatter innhold med «Du er klar!»-avslutning."""
+            _stop_pulse()
+            step_lbl.text  = ''
+            title_lbl.text = 'Du er klar!'
+            body_lbl.text  = (
+                'Flott! Mappen din er opprettet. '
+                'Utforsk gjerne resten av appen – '
+                'du kan alltid gå tilbake til omvisningen '
+                'via Innstillinger.')
+            folder_panel.height  = 0
+            folder_panel.opacity = 0
+            for d in dots:
+                d.color = (0.30, 0.58, 1.0, 1)
+            skip_btn.opacity  = 0; skip_btn.disabled  = True
+            prev_btn.opacity  = 0; prev_btn.disabled  = True
+            next_btn.text     = 'Start appen'
+            next_btn.btn_color = list(hex_k('#6BCB77'))
+
+        def _on_create_folder(*_):
+            nm = folder_name_inp.text.strip() or 'Min første mappe'
+            import uuid as _uuid
+            new_fo = {
+                'id':         str(_uuid.uuid4()),
+                'name':       nm,
+                'color':      FOLDER_COLORS[2] if len(FOLDER_COLORS) > 2 else '#6BCB77',
+                'image':      None,
+                'items':      [],
+                'subfolders': [],
+                'opens':      0,
+            }
+            self.data.setdefault('folders', []).append(new_fo)
+            save_struct(self.data)
+            _show_done_slide()
+
+        create_folder_btn.bind(on_release=_on_create_folder)
 
         def render(*_):
             i = idx[0]
-            icon, title, body = slides[i]
-            icon_lbl.text  = icon
+            step, title, body = slides[i]
+            step_lbl.text  = step
             title_lbl.text = title
             body_lbl.text  = body
             for k, d in enumerate(dots):
@@ -7467,23 +7796,41 @@ INNSTILLINGER
                            else (0.7, 0.72, 0.80, 1))
             prev_btn.opacity  = 0 if i == 0 else 1
             prev_btn.disabled = (i == 0)
-            if i == len(slides) - 1:
-                next_btn.text     = 'Ferdig'
-                next_btn.btn_color = list(hex_k('#6BCB77'))
-                skip_btn.opacity   = 0
-                skip_btn.disabled  = True
+            is_last = (i == len(slides) - 1)
+
+            # Vis/skjul mappe-opprettingspanel på siste slide
+            if is_last:
+                folder_panel.height  = dp(148)
+                folder_panel.opacity = 1.0
             else:
-                next_btn.text     = 'Neste'
+                folder_panel.height  = 0
+                folder_panel.opacity = 0
+
+            if is_last:
+                next_btn.text       = 'Ferdig uten mappe'
+                next_btn.btn_color  = list(hex_k('#9CA3AF'))
+                skip_btn.opacity    = 0
+                skip_btn.disabled   = True
+                # Start pulsering på Red.-knappen
+                _start_pulse()
+            else:
+                next_btn.text      = 'Neste'
                 next_btn.btn_color = list(hex_k('#4D96FF'))
                 skip_btn.opacity   = 1
                 skip_btn.disabled  = False
+                _stop_pulse()
 
         def go_next(*_):
+            if next_btn.text == 'Start appen':
+                finish()
+                return
             if idx[0] >= len(slides) - 1:
+                # «Ferdig uten mappe» på siste slide
                 finish()
                 return
             idx[0] += 1
             render()
+
         def go_prev(*_):
             if idx[0] > 0:
                 idx[0] -= 1
@@ -7493,19 +7840,12 @@ INNSTILLINGER
         prev_btn.bind(on_release=go_prev)
         next_btn.bind(on_release=go_next)
 
-        outer = BoxLayout(orientation='vertical',
-                          spacing=dp(8), padding=dp(16))
-        outer.add_widget(icon_lbl)
-        outer.add_widget(title_lbl)
-        outer.add_widget(body_lbl)
-        outer.add_widget(BoxLayout())  # spacer
-        outer.add_widget(dots_row)
-        outer.add_widget(btn_row)
-
         pop = Popup(title='', content=outer,
                     size_hint=POPUP_LARGE,
                     separator_height=0)
         pop_ref[0] = pop
+        # Stopp puls ved manuell popup-lukking
+        pop.bind(on_dismiss=lambda *_: _stop_pulse())
         render()
         pop.open()
 
