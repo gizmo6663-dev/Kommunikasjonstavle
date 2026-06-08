@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    kt_widget_info.xml – AppWidget metadata
+    Oppdatert: støtter resize i begge retninger, minResizeWidth/Height
+    er redusert for å tillate minimal størrelse. targetCellWidth/Height
+    definerer standard-størrelse (3x2 celler).
+-->
 <appwidget-provider
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="180dp"
     android:minHeight="110dp"
-    android:minResizeWidth="120dp"
-    android:minResizeHeight="80dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="70dp"
     android:targetCellWidth="3"
     android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
     android:resizeMode="horizontal|vertical"
-    android:widgetCategory="home_screen" />
+    android:widgetCategory="home_screen"
+    android:previewImage="@mipmap/ic_launcher" />
