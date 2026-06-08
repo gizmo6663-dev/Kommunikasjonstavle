@@ -237,16 +237,28 @@ public class KtWidget extends AppWidgetProvider {
             if (bmp != null) {
                 views.setImageViewBitmap(R.id.kt_img, bmp);
                 views.setViewVisibility(R.id.kt_img, View.VISIBLE);
-                // Dempet bilde i pending-tilstand (~40% alpha) for å antyde
-                // at aktiviteten kommer, men er ikke i gang ennå.
-                // Full alpha (255) når aktiviteten er aktiv.
-                views.setInt(R.id.kt_img, "setImageAlpha",
-                             data.pending ? 100 : 255);
+                // Bildets alpha avhenger av tilstand:
+                //   - aktiv aktivitet:        255 (full)
+                //   - imminent (snart start): 200 (lett dempet, men oppmerksom)
+                //   - pending (venter):       100 (tydelig dempet)
+                int alpha = data.pending
+                          ? (data.imminent ? 200 : 100)
+                          : 255;
+                views.setInt(R.id.kt_img, "setImageAlpha", alpha);
                 hasImage = true;
             }
             if (!hasImage) {
                 views.setViewVisibility(R.id.kt_img, View.GONE);
             }
+
+            // Imminent-varsel: gjør tekstene oransje for å tiltrekke
+            // oppmerksomhet. Argb-verdi: 0xFFE65100 ≈ deep orange.
+            // Normal-tilstand: la teksten beholde XML-definert farge ved å
+            // sette en nøytral farge (mørkeblå, samme som vår vanlige).
+            int line1Color = data.imminent ? 0xFFE65100 : 0xFF0A1A5C;
+            int line2Color = data.imminent ? 0xFFE65100 : 0xFF505B70;
+            views.setInt(R.id.kt_line1, "setTextColor", line1Color);
+            views.setInt(R.id.kt_line2, "setTextColor", line2Color);
 
             // Klikk åpner appen
             Intent open = new Intent(ctx,
@@ -366,6 +378,7 @@ public class KtWidget extends AppWidgetProvider {
                 String nextStart = "";
                 String nextEnd   = "";
                 String nextImg   = "";
+                int    nextStartMin = -1;
                 for (JSONObject e : entries) {
                     int s = toMin(e.optString("start",""));
                     if (s > nowMin) {
@@ -373,6 +386,7 @@ public class KtWidget extends AppWidgetProvider {
                         nextStart = e.optString("start", "");
                         nextEnd   = e.optString("end",   "");
                         nextImg   = e.optString("image", "");
+                        nextStartMin = s;
                         break;
                     }
                 }
@@ -381,9 +395,17 @@ public class KtWidget extends AppWidgetProvider {
                     l1 = "Ingen aktivitet nå";
                     l2 = "";
                 } else {
-                    l1 = "Neste: " + nextName;
-                    l2 = "kl. " + nextStart
-                         + (nextEnd.isEmpty() ? "" : " – " + nextEnd);
+                    // Imminent: neste aktivitet starter innen 2 min.
+                    // Da legger vi til et tydelig varselssymbol og tid igjen.
+                    int minutesUntil = nextStartMin - nowMin;
+                    if (minutesUntil >= 0 && minutesUntil <= 2) {
+                        l1 = "⚠  Starter snart: " + nextName;
+                        l2 = "kl. " + nextStart + "  (om " + minutesUntil + " min)";
+                    } else {
+                        l1 = "Neste: " + nextName;
+                        l2 = "kl. " + nextStart
+                             + (nextEnd.isEmpty() ? "" : " – " + nextEnd);
+                    }
                 }
                 WidgetLog.w(ctx, "[JSON] pending. Neste: \"" + nextName
                     + "\" " + nextStart
@@ -391,6 +413,9 @@ public class KtWidget extends AppWidgetProvider {
                 String img = nextImg.isEmpty() ? null : nextImg;
                 WidgetData wd = new WidgetData(l1, l2, img, dr);
                 wd.pending = (img != null);
+                wd.imminent = (!nextName.isEmpty()
+                               && nextStartMin >= 0
+                               && (nextStartMin - nowMin) <= 2);
                 return wd;
             }
 
@@ -443,10 +468,14 @@ public class KtWidget extends AppWidgetProvider {
         // pending=true betyr at vi venter på en aktivitet (før første eller i mellomrom).
         // Brukes til å vise bildet dempet (alpha) for å antyde at det kommer.
         boolean   pending;
+        // imminent=true når neste aktivitet starter innen 2 min. Gir et tydelig
+        // visuelt varsel så personalet kan begynne å forberede overgangen.
+        boolean   imminent;
         WidgetData(String l1, String l2, String img, JSONArray dr) {
             line1 = l1; line2 = l2; imagePath = img; dagsrytme = dr;
-            imgB64 = null;  // Eksplisitt: vi bruker imagePath nå, ikke base64
+            imgB64 = null;
             pending = false;
+            imminent = false;
         }
     }
 }
