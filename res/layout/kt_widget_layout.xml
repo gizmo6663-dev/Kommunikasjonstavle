@@ -1,31 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    kt_widget_layout.xml – Kommunikasjonstavle Widget
+    Modernisert: avrundede hjørner, skygge-effect, gradient bakgrunn.
+    kt_line1 økt til 16sp. Støtter resize i begge retninger.
+-->
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#F4F5FA">
+    android:background="@drawable/kt_widget_bg"
+    android:padding="2dp">
 
-    <!-- Bilde fyller tilgjengelig plass, centerCrop for å fylle flaten -->
+    <!-- Bilde fyller tilgjengelig plass -->
     <ImageView
         android:id="@+id/kt_img"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:scaleType="fitCenter"
-        android:padding="8dp"
+        android:padding="6dp"
         android:visibility="gone" />
 
-    <!-- Tekstboks + oppdater-knapp nederst -->
+    <!-- Tekstboks + oppdater-knapp -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:background="#E8EAF2"
-        android:paddingStart="10dp"
-        android:paddingEnd="6dp"
-        android:paddingTop="5dp"
-        android:paddingBottom="5dp"
+        android:background="#DDE8EAF2"
+        android:paddingStart="12dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp"
         android:gravity="center_vertical">
 
         <LinearLayout
@@ -34,16 +40,18 @@
             android:layout_weight="1"
             android:orientation="vertical">
 
+            <!-- Primær aktivitetslinje – økt til 16sp -->
             <TextView
                 android:id="@+id/kt_line1"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 android:textColor="#12183A"
                 android:maxLines="1"
                 android:ellipsize="end" />
 
+            <!-- Sekundær linje (tid / neste) -->
             <TextView
                 android:id="@+id/kt_line2"
                 android:layout_width="match_parent"
@@ -60,10 +68,10 @@
             android:id="@+id/kt_refresh"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="↻"
-            android:textSize="20sp"
+            android:text="&#8635;"
+            android:textSize="22sp"
             android:textColor="#4D96FF"
-            android:paddingStart="8dp"
+            android:paddingStart="10dp"
             android:paddingEnd="4dp" />
 
     </LinearLayout>
