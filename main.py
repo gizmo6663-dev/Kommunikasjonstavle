@@ -4401,16 +4401,26 @@ class KommunikasjonstavleApp(App):
         pick_pop.open()
 
     def _seq_pick_from_device(self, seq_items, refresh_fn):
-        """Åpner Android-bildevelger for å legge bilde til i handlingsrekken."""
-        def on_picked(dst):
-            if not dst:
+        """Åpner Android-bildevelger for å legge bilde(r) til i handlingsrekken."""
+        def on_picked(result):
+            if not result:
                 return
-            fname    = os.path.basename(dst)
-            name_sug = os.path.splitext(fname)[0].replace('_', ' ')
-            seq_items.append({'id': str(uuid.uuid4()), 'name': name_sug, 'image': dst})
-            refresh_fn()
-            self._toast(f'Lagt til: {fname}')
-            logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
+            # Normaliser: støtter enkeltbilde (str) og flervalg (list)
+            paths = result if isinstance(result, list) else [result]
+            added = 0
+            for dst in paths:
+                if not dst:
+                    continue
+                fname    = os.path.basename(dst)
+                name_sug = os.path.splitext(fname)[0].replace('_', ' ')
+                seq_items.append({'id': str(uuid.uuid4()), 'name': name_sug, 'image': dst})
+                logging.info('Sekvens: bilde lagt til fra enhet: %s', dst)
+                added += 1
+            if added:
+                refresh_fn()
+                msg = (f'Lagt til: {added} bilder' if added > 1
+                       else f'Lagt til: {os.path.basename(paths[0])}')
+                self._toast(msg)
         _open_android_picker(on_picked)
 
     def _init_tts(self):
@@ -6714,7 +6724,12 @@ INNSTILLINGER
         def do_pick(*_):
             """Åpner bildevelger og oppdaterer forhåndsvisning + etikett."""
             if platform == 'android':
-                def on_picked(dst):
+                def on_picked(result):
+                    if not result:
+                        self._toast('Ingen bilde valgt.')
+                        return
+                    # Normaliser: ta første bilde ved flervalg
+                    dst = result[0] if isinstance(result, list) else result
                     if dst:
                         chosen_img[0]      = dst
                         img_lbl.text       = 'Bilde: ' + os.path.basename(dst)
@@ -7143,7 +7158,12 @@ INNSTILLINGER
         På ikke-Android brukes FileChooserListView som fallback.
         """
         if platform == 'android':
-            def on_picked(dst):
+            def on_picked(result):
+                if not result:
+                    self._toast('Ingen bilde valgt.')
+                    return
+                # Normaliser: ta første bilde ved flervalg
+                dst = result[0] if isinstance(result, list) else result
                 if dst:
                     chosen_img_ref[0] = dst
                     label_widget.text = 'Bilde: ' + os.path.basename(dst)
