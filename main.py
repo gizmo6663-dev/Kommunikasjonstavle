@@ -2918,7 +2918,8 @@ class KommunikasjonstavleApp(App):
         # Plassen der Søk-knappen lå tidligere holdes åpen for fremtidig
         # bruk. Søk-funksjonen er flyttet til tittellinjen oppe til høyre
         # for bedre tilgjengelighet (synlig på alle skjermer).
-        self._btn_search = Widget(**btn_kw)
+        search_kw = {k: v for k, v in btn_kw.items() if k != 'radius'}
+        self._btn_search = Widget(**search_kw)
         self._btn_edit = mk_btn(
             'Red.', hex_k('#C77DFF'), fs=13,
             cb=self.toggle_edit, **btn_kw,
