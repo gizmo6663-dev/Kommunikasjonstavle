@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     kt_widget_layout.xml – Kommunikasjonstavle Widget
-    Modernisert: avrundede hjørner, skygge-effect, gradient bakgrunn.
-    kt_line1 økt til 16sp. Støtter resize i begge retninger.
+    Modernisert: solid bakgrunn inlinet direkte (ingen ekstern drawable).
+    kt_line1 økt til 16sp.
 -->
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@drawable/kt_widget_bg"
+    android:background="#F4F5FA"
     android:padding="2dp">
 
     <!-- Bilde fyller tilgjengelig plass -->
@@ -27,7 +27,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:background="#DDE8EAF2"
+        android:background="#E8EAF2"
         android:paddingStart="12dp"
         android:paddingEnd="8dp"
         android:paddingTop="7dp"
@@ -63,7 +63,7 @@
 
         </LinearLayout>
 
-        <!-- Oppdater-knapp -->
+        <!-- Oppdater-knapp – ↻ (U+21BB) -->
         <TextView
             android:id="@+id/kt_refresh"
             android:layout_width="wrap_content"
