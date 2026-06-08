@@ -19,6 +19,7 @@ Endringslogg v1.1:
 """
 
 import os
+import re
 import sys
 import json
 import uuid
@@ -508,6 +509,7 @@ DEFAULT_STRUCT = {
     "sequences": [],
     "dagsrytme": [],
     "dagsplaner": {c: [] for c in DAY_CODES},
+    "dagsoppsett": [],
     "notater":    {c: "" for c in DAY_CODES},
     "kategorier": list(DEFAULT_CATEGORIES),
     "pause":      None,    # {"since": "ISO timestamp"} eller None
@@ -753,8 +755,16 @@ def _update_widget(data):
                     nxt_start = upcoming.get('start','')
                     line2 += '   ·   Neste: ' + upcoming.get('name','') + ' kl. ' + nxt_start
             elif upcoming:
-                line1 = 'Neste: ' + upcoming.get('name','')
-                line2 = 'kl. ' + upcoming.get('start','')
+                # Sjekk om aktiviteten starter veldig snart (innen 2 min) –
+                # da signaliserer vi det tydelig i teksten.
+                nxt_start_min = to_min(upcoming.get('start',''))
+                minutes_until = nxt_start_min - now_total if nxt_start_min >= 0 else 99
+                if 0 <= minutes_until <= 2:
+                    line1 = '⚠  Starter snart: ' + upcoming.get('name','')
+                    line2 = 'kl. ' + upcoming.get('start','') + '  (om ' + str(minutes_until) + ' min)'
+                else:
+                    line1 = 'Neste: ' + upcoming.get('name','')
+                    line2 = 'kl. ' + upcoming.get('start','')
                 # Dempet bilde av kommende aktivitet
                 img_b64 = _encode_img_b64(upcoming.get('image', ''))
             else:
@@ -1026,6 +1036,10 @@ def load_struct():
             # Pause-status: None når ingen pause er aktiv.
             if 'pause' not in d:
                 d['pause'] = None
+            # Dagsoppsett (templates) – starter tomme, brukeren kan
+            # lagre dagsplaner som maler å bytte til senere.
+            if 'dagsoppsett' not in d:
+                d['dagsoppsett'] = []
             if 'settings' not in d:
                 d['settings'] = {'tts_enabled': False, 'font_scale': 1.0, 'high_contrast': False, 'swipe_nav': False, 'onboarding_done': False}
             else:
@@ -1284,6 +1298,109 @@ def _scale_image(path):
             _plog(f'Skalert: {W}x{H} → {img.size}')
     except Exception as e:
         _plog(f'Skalering feilet: {e}')
+
+
+def _suggest_from_image(path):
+    """
+    Heuristikk-basert auto-tagging av nye bilder.
+
+    Returnerer (foreslått navn, foreslått kategori-id). Begge kan være
+    None hvis vi ikke har grunnlag for et godt forslag.
+
+    Strategien er bevisst enkel og lokal – ingen ML-modell, ingen
+    nettverkskall. Det reduserer kompleksitet, energibruk og
+    personvernrisiko. Forslag er kun forslag: brukeren godkjenner
+    før noe lagres.
+
+    Navn-heuristikk: Cleaner opp filnavn (strip prefiks som "img_",
+    erstatt understrek med mellomrom, capitalize første bokstav).
+
+    Kategori-heuristikk: Analyserer dominant farge i bildets midtparti.
+    HSV-mapping fra fargetone til kategorisom typisk passer det
+    visuelle uttrykket (varme farger → måltid, grønne → utetid, osv.).
+    Treffer ikke alltid, men er rimelig presis for typiske AAC-symboler
+    som er fargesterke og enkle.
+    """
+    name = None
+    cat  = None
+    if not path or not os.path.exists(path):
+        return (None, None)
+
+    # ── Navn-forslag fra filnavn ─────────────────────────────────────
+    try:
+        base = os.path.basename(path)
+        stem, _ = os.path.splitext(base)
+        # Fjern vanlige prefiks fra galleri-apper og kameraer
+        for prefix in ('img_', 'image_', 'photo_', 'pic_', 'screenshot_',
+                       'IMG_', 'PHOTO_'):
+            if stem.lower().startswith(prefix.lower()):
+                stem = stem[len(prefix):]
+                break
+        # Drop trailing tall fra duplikater ("Spise(2)" → "Spise")
+        stem = re.sub(r'\s*\(\d+\)\s*$', '', stem)
+        # Erstatt understrek og bindestrek med mellomrom
+        stem = stem.replace('_', ' ').replace('-', ' ').strip()
+        # Drop rene tallnavn (typisk fra kamera: "20240501_125930")
+        if re.match(r'^\d[\d\s:]*$', stem):
+            name = None
+        elif stem:
+            # Capitalize første bokstav, behold resten
+            name = stem[0].upper() + stem[1:]
+    except Exception:
+        pass
+
+    # ── Kategori-forslag fra dominant farge ──────────────────────────
+    try:
+        if PIL_OK:
+            img = PILImage.open(path).convert('RGB')
+            # Krymp til en liten samplet versjon for hastighet,
+            # analyser midtparti (unngå hvit/transparent kant typisk
+            # i ARASAAC-symboler).
+            img.thumbnail((64, 64), PILImage.LANCZOS)
+            w, h = img.size
+            # Midtområde: 50% midten av bildet
+            cx0 = w // 4
+            cy0 = h // 4
+            crop = img.crop((cx0, cy0, cx0 + w//2, cy0 + h//2))
+            # Hent dominante piksler ved å la PIL kvantisere
+            pal = crop.quantize(colors=4).convert('RGB')
+            pixels = list(pal.getdata())
+            if pixels:
+                # Tell og finn vanligste farge
+                from collections import Counter
+                most_common = Counter(pixels).most_common(1)[0][0]
+                r, g, b = most_common
+                # Konverter til HSV
+                import colorsys
+                h_, s_, v_ = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+                # Lav metning = grå/hvit/svart → uklart, ingen kategori
+                if s_ < 0.20:
+                    cat = None
+                else:
+                    h_deg = h_ * 360
+                    # Mapping basert på fargetone:
+                    #  rød/oransje (0-45)        → måltid (varm, mat-assosiasjon)
+                    #  gul (45-65)               → lek (energisk, lekent)
+                    #  grønn (65-160)            → utetid (natur)
+                    #  cyan/blå (160-260)        → samling/hvile (rolig)
+                    #  lilla/rosa (260-330)      → hvile
+                    #  rosa/magenta (330-360)    → måltid (rosa frukt etc.)
+                    if h_deg < 45:
+                        cat = 'maltid'
+                    elif h_deg < 65:
+                        cat = 'lek'
+                    elif h_deg < 160:
+                        cat = 'utetid'
+                    elif h_deg < 260:
+                        cat = 'samling'
+                    elif h_deg < 330:
+                        cat = 'hvile'
+                    else:
+                        cat = 'maltid'
+    except Exception:
+        pass
+
+    return (name, cat)
 
 
 def _open_android_picker(callback):
@@ -4457,6 +4574,229 @@ INNSTILLINGER
         Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
         self._build_dagsrytme_ui()
 
+    def _dagsoppsett_popup(self):
+        """
+        Forvaltning av dagsoppsett – maler for hele dagsplaner som kan
+        aktiveres med ett tap. Brukbart f.eks. "Skogstur", "Sykebarn-modus",
+        "Bursdag".
+
+        Listen viser alle lagrede oppsett med "Bruk"- og "Slett"-knapper.
+        Nederst er det en knapp for å lagre nåværende dag som nytt oppsett.
+        """
+        sel       = getattr(self, '_dr_selected_day', today_code())
+        oppsett   = self.data.get('dagsoppsett', [])
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(8), padding=dp(12))
+        outer.add_widget(Label(
+            text=f'Bruk et oppsett for {DAY_FULL_NO[sel].lower()}.\n'
+                 f'Eksisterende aktiviteter på dagen overskrives.',
+            size_hint_y=None, height=dp(50),
+            font_size=fsp(13), color=(0.25, 0.27, 0.40, 1),
+            halign='center', valign='middle'))
+        outer.children[-1].bind(size=outer.children[-1].setter('text_size'))
+
+        pop_ref = [None]
+
+        # Liste over eksisterende oppsett
+        if not oppsett:
+            outer.add_widget(self._empty_state(
+                glyph='🎭',
+                msg='Ingen lagrede oppsett ennå.\n'
+                    'Lag ditt første nederst.'))
+        else:
+            sv = ScrollView(size_hint_y=None, height=dp(280))
+            list_box = BoxLayout(orientation='vertical',
+                                 spacing=dp(6), size_hint_y=None)
+            list_box.bind(minimum_height=list_box.setter('height'))
+            for op in oppsett:
+                op_ref = op
+                row = RBox(orientation='horizontal',
+                           size_hint_y=None, height=dp(58),
+                           spacing=dp(6), padding=(dp(8), dp(4)),
+                           box_color=(0.97, 0.97, 1.0, 1.0), radius=dp(14))
+                # Ikon + navn
+                lbl = Label(text=f'{op.get("icon", "🎭")}  {op["name"]}',
+                            font_size=fsp(15), bold=True,
+                            color=(0.04, 0.10, 0.36, 1),
+                            halign='left')
+                lbl.bind(size=lbl.setter('text_size'))
+                row.add_widget(lbl)
+                # Antall aktiviteter
+                row.add_widget(Label(
+                    text=f'{len(op.get("activities", []))} akt.',
+                    size_hint_x=None, width=dp(60),
+                    font_size=fsp(11), color=(0.4, 0.4, 0.5, 1)))
+                # Bruk-knapp
+                row.add_widget(mk_btn(
+                    'Bruk', hex_k('#6BCB77'), h=dp(44), fs=12,
+                    size_hint_x=None, width=dp(56),
+                    cb=lambda *_, o=op_ref: self._apply_dagsoppsett(o, pop_ref)))
+                # Slett-knapp
+                row.add_widget(mk_btn(
+                    'Slett', hex_k('#FF6B6B'), h=dp(44), fs=12,
+                    size_hint_x=None, width=dp(58),
+                    cb=lambda *_, o=op_ref: self._delete_dagsoppsett(o, pop_ref)))
+                list_box.add_widget(row)
+            sv.add_widget(list_box)
+            outer.add_widget(sv)
+
+        # Lagre-knapp – fra nåværende dag
+        current_acts = get_day_plan(self.data, sel)
+        save_enabled = bool(current_acts)
+        save_btn = mk_btn(
+            '💾  Lagre dagens plan som nytt oppsett'
+            if save_enabled
+            else '💾  (ingen aktiviteter å lagre)',
+            hex_k('#4D96FF' if save_enabled else '#9CA3AF'),
+            h=dp(50), fs=14)
+        if save_enabled:
+            save_btn.bind(on_release=lambda *_:
+                self._save_as_dagsoppsett(sel, pop_ref))
+        outer.add_widget(save_btn)
+        outer.add_widget(mk_btn('Lukk', hex_k('#9CA3AF'), h=dp(50), fs=14,
+            cb=lambda *_: pop_ref[0].dismiss()))
+
+        pop = Popup(title='Dagsoppsett',
+                    content=outer, size_hint=POPUP_LARGE,
+                    title_size=fsp(16))
+        pop_ref[0] = pop
+        pop.open()
+
+    def _apply_dagsoppsett(self, oppsett, parent_pop_ref):
+        """
+        Bruker et oppsett på den valgte dagen. Eksisterende aktiviteter
+        overskrives. Aktivitets-ID-er regenereres så hver bruk gir
+        uavhengige forekomster (slett på dag A skal ikke ramme dag B).
+        """
+        sel = getattr(self, '_dr_selected_day', today_code())
+        self._confirm(
+            title='Bruk dagsoppsett?',
+            msg=f'Erstatte alle aktiviteter for {DAY_FULL_NO[sel].lower()} '
+                f'med oppsettet "{oppsett["name"]}"?\n\n'
+                f'Eksisterende aktiviteter på dagen vil bli fjernet.',
+            on_confirm=lambda: self._do_apply_dagsoppsett(oppsett, parent_pop_ref))
+
+    def _do_apply_dagsoppsett(self, oppsett, parent_pop_ref):
+        sel = getattr(self, '_dr_selected_day', today_code())
+        # Lag dyp kopi av aktivitetene med nye id-er
+        new_acts = []
+        for a in oppsett.get('activities', []):
+            copy_a = dict(a)
+            copy_a['id'] = str(uuid.uuid4())
+            new_acts.append(copy_a)
+        self.data.setdefault('dagsplaner', {})[sel] = new_acts
+        save_struct(self.data)
+        Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
+        self._toast(f'Oppsett "{oppsett["name"]}" brukt på '
+                    f'{DAY_FULL_NO[sel].lower()}.')
+        if parent_pop_ref[0]:
+            parent_pop_ref[0].dismiss()
+        self._build_dagsrytme_ui()
+
+    def _delete_dagsoppsett(self, oppsett, parent_pop_ref):
+        self._confirm(
+            title='Slett oppsett?',
+            msg=f'Vil du slette oppsettet "{oppsett["name"]}"?\n\n'
+                f'Dagsplaner som bruker dette oppsettet vil ikke bli '
+                f'påvirket – de beholder sine aktiviteter.',
+            on_confirm=lambda: self._do_delete_dagsoppsett(oppsett, parent_pop_ref))
+
+    def _do_delete_dagsoppsett(self, oppsett, parent_pop_ref):
+        self.data['dagsoppsett'] = [
+            o for o in self.data.get('dagsoppsett', [])
+            if o.get('id') != oppsett.get('id')
+        ]
+        save_struct(self.data)
+        self._toast('Oppsett slettet.')
+        if parent_pop_ref[0]:
+            parent_pop_ref[0].dismiss()
+        # Gjenåpne med oppdatert liste
+        Clock.schedule_once(lambda *_: self._dagsoppsett_popup(), 0.1)
+
+    def _save_as_dagsoppsett(self, source_day, parent_pop_ref):
+        """
+        Popup for å lagre nåværende dags aktiviteter som et nytt oppsett.
+        Brukeren velger navn og emoji-ikon.
+        """
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(10), padding=dp(14))
+        outer.add_widget(Label(
+            text=f'Lagre {DAY_FULL_NO[source_day].lower()}s plan '
+                 f'({len(get_day_plan(self.data, source_day))} aktiviteter) '
+                 f'som nytt oppsett.',
+            size_hint_y=None, height=dp(42),
+            font_size=fsp(13), color=(0.20, 0.22, 0.32, 1),
+            halign='center', valign='middle'))
+        outer.children[-1].bind(size=outer.children[-1].setter('text_size'))
+
+        name_inp = TextInput(hint_text='Navn på oppsettet…',
+                             multiline=False, size_hint_y=None, height=dp(48),
+                             font_size=fsp(15))
+        outer.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(22),
+            font_size=fsp(13), bold=True, color=(0.3,0.3,0.4,1),
+            halign='left'))
+        outer.add_widget(name_inp)
+
+        # Ikon-velger – noen passende emoji for typiske dagsoppsett
+        icon_state = ['🎭']
+        outer.add_widget(Label(text='Ikon:', size_hint_y=None, height=dp(22),
+            font_size=fsp(13), bold=True, color=(0.3,0.3,0.4,1),
+            halign='left'))
+        icon_row = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(48), spacing=dp(4))
+        icons = ['☀️','🌳','🏠','🌧️','❄️','🎂','🤒','🎉','🚌','📚']
+        icon_btns = []
+        def select_icon(em):
+            icon_state[0] = em
+            for b in icon_btns:
+                b.btn_color = list(hex_k('#4D96FF' if b.text == em else '#E0E0E0'))
+        for em in icons:
+            b = mk_btn(em, hex_k('#E0E0E0'), h=dp(48), fs=18,
+                       cb=lambda *_, e=em: select_icon(e))
+            icon_btns.append(b)
+            icon_row.add_widget(b)
+        outer.add_widget(icon_row)
+        # Sett default-ikon til markert
+        Clock.schedule_once(lambda *_: select_icon('🎭'), 0)
+
+        sub_pop_ref = [None]
+        def confirm(*_):
+            name = name_inp.text.strip()
+            if not name:
+                self._toast('Gi oppsettet et navn.')
+                return
+            new_op = {
+                'id':   str(uuid.uuid4()),
+                'name': name,
+                'icon': icon_state[0],
+                'activities': [
+                    {k: v for k, v in a.items()}
+                    for a in get_day_plan(self.data, source_day)
+                ],
+            }
+            self.data.setdefault('dagsoppsett', []).append(new_op)
+            save_struct(self.data)
+            self._toast(f'Oppsett "{name}" lagret.')
+            sub_pop_ref[0].dismiss()
+            if parent_pop_ref[0]:
+                parent_pop_ref[0].dismiss()
+            Clock.schedule_once(lambda *_: self._dagsoppsett_popup(), 0.1)
+
+        btn_row = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(54), spacing=dp(10))
+        btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(54), fs=15,
+            cb=lambda *_: sub_pop_ref[0].dismiss()))
+        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(54), fs=15,
+            cb=confirm))
+        outer.add_widget(btn_row)
+
+        pop = Popup(title='Nytt dagsoppsett',
+                    content=outer, size_hint=POPUP_LARGE,
+                    title_size=fsp(16))
+        sub_pop_ref[0] = pop
+        pop.open()
+
     def _build_dagsrytme_ui(self, animate=False):
         """
         Bygger dagsplan-skjermen for valgt ukedag. Kalles av bakgrunnsklokken.
@@ -4587,6 +4927,8 @@ INNSTILLINGER
                     cb=lambda *_: self._toggle_pause()))
             outer.add_widget(mk_btn('⎘  Kopier til andre dager', hex_k('#FF9F43'), h=dp(48),
                 cb=lambda *_: self._dr_copy_popup()))
+            outer.add_widget(mk_btn('🎭  Dagsoppsett (maler)', hex_k('#C77DFF'), h=dp(48),
+                cb=lambda *_: self._dagsoppsett_popup()))
             outer.add_widget(mk_btn('↗  Eksporter dagsplan', hex_k('#546E7A'), h=dp(48),
                 cb=lambda *_: self._export_popup('dagsrytme')))
 
@@ -4660,6 +5002,14 @@ INNSTILLINGER
             time_bar.bind(size=lambda tb, *_: _upd_bar(tb, elapsed),
                           pos=lambda  tb, *_: _upd_bar(tb, elapsed))
             outer.add_widget(time_bar)
+
+            # Knapp som starter tidsuret med gjenværende tid for denne
+            # aktiviteten. Pre-fyller varigheten og navigerer brukeren
+            # rett til tidsur-skjermen.
+            outer.add_widget(mk_btn(
+                f'⏱  Start tidsur ({self._dr_fmt(remaining)})',
+                hex_k('#4D96FF'), h=dp(48), fs=14,
+                cb=lambda *_, en=e, em=t_m: self._start_timer_for_activity(en, em)))
 
         elif is_today and upcoming:
             e, s_m = upcoming
@@ -5134,6 +5484,15 @@ INNSTILLINGER
 
         root = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
 
+        # Hvis tidsuret er knyttet til en aktivitet, vises navnet over
+        # disken så brukeren vet hva tidsuret gjelder.
+        if getattr(self, '_timer_label', ''):
+            root.add_widget(Label(
+                text=f'⏱  {self._timer_label}',
+                size_hint_y=None, height=dp(36),
+                font_size=fsp(18), bold=True,
+                color=(0.04, 0.10, 0.40, 1), halign='center'))
+
         # Rund disk-widget – PIL-tegnet sirkel som gradvis blir hvit
         self._timer_disk = Image(
             size_hint=(1, None), height=dp(220),
@@ -5184,10 +5543,35 @@ INNSTILLINGER
         self._tidsur_refresh_display()
         self._set_content(root)
 
-    def _tidsur_set(self, seconds):
+    def _tidsur_set(self, seconds, label=None):
+        """
+        Setter tidsur til 'seconds' sekunder. Hvis label er gitt, vises
+        den over telleren – brukes når tidsuret startes fra en aktivitet
+        i dagsplan, så brukeren ser hva tidsuret gjelder.
+        """
         self._tidsur_stop()
         self._timer_sek = self._timer_total_sek = seconds
+        self._timer_label = label or ''
         self._tidsur_refresh_display()
+
+    def _start_timer_for_activity(self, entry, end_minute):
+        """
+        Starter tidsuret med gjenstående tid for en aktivitet, og
+        navigerer til tidsur-skjermen. Hvis aktiviteten er over, fyrer
+        ikke noe.
+        """
+        now   = datetime.now()
+        now_m = now.hour * 60 + now.minute
+        remaining_min = end_minute - now_m
+        if remaining_min <= 0:
+            self._toast('Aktiviteten er allerede ferdig.')
+            return
+        seconds = remaining_min * 60
+        # Bytt skjerm og pre-fyll tidsuret. Starter ikke automatisk –
+        # brukeren får mulighet til å se det og starte selv.
+        self._push('home')
+        self._show_tidsur()
+        self._tidsur_set(seconds, label=entry.get('name', ''))
 
     def _tidsur_toggle(self, *_):
         if self._timer_running:
@@ -5726,6 +6110,70 @@ INNSTILLINGER
         pick_btn.bind(on_release=do_pick)
         layout.add_widget(pick_btn)
 
+        # ── Auto-foreslag fra bildet ──────────────────────────────
+        # Liten knapp som analyserer bildet og foreslår navn + kategori
+        # basert på filnavn og dominant farge. Brukeren godkjenner før
+        # noe lagres.
+        def suggest_now(*_):
+            if not chosen_img[0]:
+                self._toast('Velg et bilde først.')
+                return
+            sug_name, sug_cat = _suggest_from_image(chosen_img[0])
+            if not sug_name and not sug_cat:
+                self._toast('Ingen forslag kunne genereres.')
+                return
+            # Bygg en bekreftelses-popup som viser forslagene
+            inner = BoxLayout(orientation='vertical',
+                              spacing=dp(10), padding=dp(14))
+            inner.add_widget(Label(
+                text='Foreslått basert på bildet:',
+                size_hint_y=None, height=dp(28),
+                font_size=fsp(14), bold=True,
+                color=(0.04, 0.10, 0.36, 1), halign='center'))
+            if sug_name:
+                inner.add_widget(Label(
+                    text=f'Navn: [b]{sug_name}[/b]',
+                    markup=True, size_hint_y=None, height=dp(26),
+                    font_size=fsp(14),
+                    color=(0.1, 0.1, 0.3, 1), halign='center'))
+            if sug_cat:
+                cat = get_category(self.data, sug_cat)
+                if cat:
+                    inner.add_widget(Label(
+                        text=f'Kategori (om aktiviteter): [b]{cat["name"]}[/b]',
+                        markup=True, size_hint_y=None, height=dp(26),
+                        font_size=fsp(14),
+                        color=(0.1, 0.1, 0.3, 1), halign='center'))
+            sub_ref = [None]
+            def apply_sug(*_):
+                if sug_name:
+                    name_inp.text = sug_name
+                if sug_cat:
+                    # I item-popup setter vi ikke kategori (bilder har ikke
+                    # kategori), men vi viser den slik at brukeren kan
+                    # huske kategorien hvis de senere bruker bildet i en
+                    # aktivitet. Lagrer ikke noe nå.
+                    pass
+                sub_ref[0].dismiss()
+                self._toast('Forslag brukt.')
+            br = BoxLayout(orientation='horizontal',
+                           size_hint_y=None, height=dp(54), spacing=dp(10))
+            br.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'),
+                h=dp(54), fs=14,
+                cb=lambda *_: sub_ref[0].dismiss()))
+            br.add_widget(mk_btn('Bruk forslag', hex_k('#6BCB77'),
+                h=dp(54), fs=14, cb=apply_sug))
+            inner.add_widget(br)
+            sub_pop = Popup(title='Forslag', content=inner,
+                            size_hint=POPUP_SMALL, title_size=fsp(16))
+            sub_ref[0] = sub_pop
+            sub_pop.open()
+
+        layout.add_widget(mk_btn(
+            '✨  Foreslå navn fra bildet',
+            hex_k('#9C7DCE'), h=dp(46), fs=13,
+            cb=suggest_now))
+
         # ── Lagre / Avbryt ────────────────────────────────────────
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
 
@@ -6142,36 +6590,111 @@ INNSTILLINGER
         sv = ScrollView(); sv.add_widget(grid); layout.add_widget(sv)
 
         def search_local(*_):
+            """
+            Søker på tvers av alle datalag: mapper, bilder i mapper,
+            aktiviteter (per ukedag), sekvenser og notater. Resultater
+            grupperes visuelt med en type-emoji som viser hva treffer er.
+            """
             term = inp.text.strip().lower()
             grid.clear_widgets()
             if not term:
                 return
-            hits = [(fo, it)
-                    for fo in self.data.get('folders', [])
-                    for it in fo.get('items', [])
-                    if term in it.get('name','').lower()]
-            status.text = f'{len(hits)} lokale treff'
-            for fo, it in hits[:24]:
-                cell = BoxLayout(orientation='vertical',
-                                 size_hint_y=None, height=dp(112))
-                if it.get('image') and os.path.exists(it['image']):
-                    from kivy.uix.image import Image as KImg
-                    cell.add_widget(KImg(
-                        source=it['image'], allow_stretch=True,
-                        keep_ratio=True, size_hint_y=None, height=dp(82)))
-                lbl = Label(text=it['name'], font_size=sp(11),
-                            size_hint_y=None, height=dp(22),
-                            color=(0.1,0.1,0.2,1),
-                            shorten=True, shorten_from='right')
-                lbl.bind(size=lbl.setter('text_size'))
-                cell.add_widget(lbl)
-                def _tap(w, t, _fo=fo):
-                    if w.collide_point(*t.pos):
-                        pop_ref[0].dismiss()
-                        self._open_folder(_fo)
-                        return True
-                cell.bind(on_touch_down=_tap)
-                grid.add_widget(cell)
+
+            # Bygg en flat resultatliste med (type, tittel, undertittel,
+            # callback). Vi viser maks 30 treff totalt.
+            hits = []
+
+            # 1. Bildemapper – navn
+            for fo in self.data.get('folders', []):
+                if term in fo.get('name', '').lower():
+                    fo_ref = fo
+                    hits.append(('📁', fo['name'], 'Mappe',
+                                 lambda _fo=fo_ref: self._open_folder(_fo)))
+
+            # 2. Bilder i mapper – item-navn
+            for fo in self.data.get('folders', []):
+                for it in fo.get('items', []):
+                    if term in it.get('name', '').lower():
+                        fo_ref = fo
+                        hits.append(('🖼️', it['name'],
+                                     f'I mappe: {fo["name"]}',
+                                     lambda _fo=fo_ref: self._open_folder(_fo)))
+
+            # 3. Aktiviteter – på tvers av ukedager
+            for code in DAY_CODES:
+                for act in get_day_plan(self.data, code):
+                    if term in act.get('name', '').lower():
+                        hits.append((
+                            '📅', act['name'],
+                            f'{DAY_FULL_NO[code]} {act.get("start","")}–{act.get("end","")}',
+                            lambda c=code: (
+                                setattr(self, '_dr_selected_day', c),
+                                self._nav_dagsrytme()
+                            )))
+
+            # 4. Sekvenser (rekker) – navn
+            for seq in self.data.get('sequences', []):
+                if term in seq.get('name', '').lower():
+                    hits.append(('🔗', seq['name'], 'Rekke',
+                                 lambda: self._show_sequences()))
+
+            # 5. Notater – søk i tekstinnholdet
+            for code, txt in (self.data.get('notater') or {}).items():
+                if txt and term in txt.lower():
+                    # Vis et utdrag rundt treffet
+                    idx = txt.lower().find(term)
+                    a = max(0, idx - 20)
+                    b = min(len(txt), idx + len(term) + 30)
+                    snippet = ('…' if a > 0 else '') + txt[a:b] + ('…' if b < len(txt) else '')
+                    hits.append((
+                        '📝', f'Notat: {DAY_FULL_NO[code]}', snippet,
+                        lambda c=code: (
+                            setattr(self, '_dr_selected_day', c),
+                            self._nav_dagsrytme()
+                        )))
+
+            status.text = f'{len(hits)} treff' if hits else 'Ingen treff.'
+
+            # Bygg resultatene som vertikal liste (ikke grid) for å gi
+            # plass til undertittel og type-ikon.
+            # Vi bytter ut grid-en med en vertikal box for denne typen
+            # resultater.
+            grid.cols = 1
+            for emoji, title, subtitle, on_tap in hits[:30]:
+                row = RBox(orientation='horizontal',
+                           size_hint_y=None, height=dp(58),
+                           padding=(dp(8), dp(4)), spacing=dp(8),
+                           box_color=(0.97, 0.97, 1.0, 1.0), radius=dp(12))
+                # Emoji-kolonne
+                row.add_widget(Label(text=emoji, size_hint_x=None, width=dp(36),
+                    font_size=sp(20), color=(0.1, 0.1, 0.3, 1),
+                    halign='center'))
+                # Tekst-kolonne
+                col = BoxLayout(orientation='vertical', spacing=dp(2))
+                t = Label(text=title, font_size=fsp(14), bold=True,
+                          color=(0.04, 0.10, 0.36, 1),
+                          size_hint_y=None, height=dp(24),
+                          halign='left',
+                          shorten=True, shorten_from='right')
+                t.bind(size=lambda l, sz: setattr(l, 'text_size', sz))
+                s = Label(text=subtitle, font_size=fsp(11),
+                          color=(0.45, 0.48, 0.55, 1),
+                          size_hint_y=None, height=dp(22),
+                          halign='left',
+                          shorten=True, shorten_from='right')
+                s.bind(size=lambda l, sz: setattr(l, 'text_size', sz))
+                col.add_widget(t); col.add_widget(s)
+                row.add_widget(col)
+
+                def _bind_tap(w, callback):
+                    def on_tap(widget, touch):
+                        if widget.collide_point(*touch.pos):
+                            pop_ref[0].dismiss()
+                            callback()
+                            return True
+                    w.bind(on_touch_down=on_tap)
+                _bind_tap(row, on_tap)
+                grid.add_widget(row)
 
         def search_arasaac(*_):
             term = inp.text.strip()
