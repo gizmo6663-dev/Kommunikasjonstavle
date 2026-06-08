@@ -40,6 +40,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.slider import Slider
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.widget import Widget
+from kivy.uix.floatlayout import FloatLayout
 from kivy.animation import Animation
 from kivy.graphics.texture import Texture
 from kivy.core.window import Window
@@ -2219,6 +2220,301 @@ def launch_confetti(duration=3.0):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  KALENDER-DAGVISNING (redigeringsmodus)
+# ══════════════════════════════════════════════════════════════════
+
+class ActivityBlock(BoxLayout):
+    """
+    En enkelt aktivitets-blokk i CalendarDayView. Stilt med rundet
+    bakgrunn og kategorifarge-stripe på venstre kant. Håndterer
+    egne touch-events for å skille mellom tap (åpne redigerings-popup)
+    og drag (flytte i tid).
+    """
+    def __init__(self, activity, calendar_view, **kw):
+        super().__init__(**kw)
+        self.orientation     = 'horizontal'
+        self.activity        = activity
+        self.calendar        = calendar_view
+        self.padding         = (dp(6), dp(4))
+        self.spacing         = dp(4)
+        # Touch-state for drag-and-drop og long-press
+        self._touch_start_x = None
+        self._touch_start_y = None
+        self._is_dragging   = False
+        self._long_press_ev = None
+        self._original_y    = 0
+        # Bakgrunn (kategori-tonet) + stripe
+        cat = get_category(calendar_view.app.data, activity.get('category'))
+        if cat:
+            cr, cg, cb, _ = hex_k(cat['color'])
+            bg = (0.85 + cr*0.15, 0.88 + cg*0.12, 0.96 + cb*0.04, 0.95)
+            stripe_col = hex_k(cat['color'])
+        else:
+            bg = (0.78, 0.86, 0.96, 0.95)
+            stripe_col = hex_k('#4D96FF')
+        from kivy.graphics import Color as KColor, RoundedRectangle, Rectangle
+        with self.canvas.before:
+            KColor(*bg)
+            self._bg_rect = RoundedRectangle(pos=self.pos, size=self.size,
+                                              radius=[dp(8)])
+            KColor(*stripe_col)
+            self._stripe = Rectangle(pos=self.pos, size=(dp(4), self.height))
+        self.bind(pos=self._redraw, size=self._redraw)
+        # Tekst-etikett – navn på en linje, tid på neste hvis høyt nok
+        self._lbl = Label(
+            text=self._make_label_text(),
+            font_size=fsp(12), color=(0.04, 0.10, 0.36, 1),
+            halign='left', valign='top',
+            markup=False,
+        )
+        self._lbl.bind(size=self._update_text_size)
+        self.add_widget(Widget(size_hint_x=None, width=dp(4)))  # stripe-spacer
+        self.add_widget(self._lbl)
+
+    def _make_label_text(self):
+        start = self.activity.get('start', '')
+        end   = self.activity.get('end',   '')
+        name  = self.activity.get('name',  '')
+        return f'{name}\n{start} – {end}'
+
+    def _update_text_size(self, lbl, sz):
+        lbl.text_size = (sz[0] - dp(6), sz[1])
+
+    def _redraw(self, *_):
+        self._bg_rect.pos  = self.pos
+        self._bg_rect.size = self.size
+        self._stripe.pos   = self.pos
+        self._stripe.size  = (dp(4), self.height)
+
+    # ── Touch ───────────────────────────────────────────────────────
+    # Long-press for å gå inn i drag-modus. Korte tap åpner
+    # redigerings-popup. Sveip = scroll i parent ScrollView. Slik
+    # konkurrerer ikke drag-gesten med scrolling.
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos):
+            return False
+        # Lagre startposisjon og start 300 ms timer for å aktivere drag.
+        self._touch_start_x = touch.x
+        self._touch_start_y = touch.y
+        self._is_dragging   = False
+        self._long_press_ev = Clock.schedule_once(
+            lambda *_: self._activate_drag(touch), 0.3)
+        # Ikke grip touch ennå – lar ScrollView håndtere scroll inntil
+        # vi eventuelt aktiverer drag-modus.
+        return False
+
+    def _activate_drag(self, touch):
+        """Etter long-press: gå inn i drag-modus og grip touch."""
+        # Hvis brukeren allerede har sluppet fingeren, hopp over
+        if self._long_press_ev is None:
+            return
+        self._is_dragging   = True
+        self._original_y    = self.y
+        touch.grab(self)
+        # Visuell tilbakemelding: lett opacity-endring og litt løft
+        Animation(opacity=0.85, duration=0.10).start(self)
+        # Tilbake-skyv litt opp så det er åpenbart blokken er "tatt"
+        self._long_press_ev = None
+
+    def on_touch_move(self, touch):
+        if self._long_press_ev is not None:
+            # Drag-aktivering pågår – sjekk om brukeren beveger fingeren
+            # før timeren fyrer. Hvis ja, kanseller drag og la scroll skje.
+            dx = abs(touch.x - self._touch_start_x)
+            dy = abs(touch.y - self._touch_start_y)
+            if dx > dp(10) or dy > dp(10):
+                self._long_press_ev.cancel()
+                self._long_press_ev = None
+            return False
+        if touch.grab_current is not self:
+            return False
+        if self._is_dragging:
+            new_y = max(0, min(self.calendar.height - self.height,
+                               self._original_y + (touch.y - self._touch_start_y)))
+            self.y = new_y
+            return True
+        return False
+
+    def on_touch_up(self, touch):
+        if self._long_press_ev is not None:
+            self._long_press_ev.cancel()
+            self._long_press_ev = None
+            # Rask tap (uten langt trykk) – åpne redigerings-popup
+            if (self.collide_point(*touch.pos)
+                and abs(touch.x - self._touch_start_x) < dp(10)
+                and abs(touch.y - self._touch_start_y) < dp(10)):
+                self.calendar.app._dr_entry_popup(self.activity)
+                return True
+            return False
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            if self._is_dragging:
+                Animation(opacity=1.0, duration=0.10).start(self)
+                self.calendar._commit_block_move(self)
+                self._is_dragging = False
+                return True
+        return False
+
+
+class CalendarDayView(FloatLayout):
+    """
+    Vertikal tidsakse med aktiviteter som flyttbare fargede blokker.
+    Brukes i redigeringsmodus istedenfor liste-visningen. Tap åpner
+    redigering, drag flytter aktiviteten i tid (snap til 5 min).
+
+    Tidsakse: H_START til H_END (06–23 dekker en typisk barnehage-dag
+    inkludert ettermiddag, men kan utvides hvis behov).
+    """
+    HOUR_PX  = None  # settes i __init__ for å bruke dp()
+    H_START  = 6
+    H_END    = 23
+
+    def __init__(self, app, day_code, activities, **kw):
+        super().__init__(**kw)
+        self.HOUR_PX     = dp(64)
+        self.app         = app
+        self.day_code    = day_code
+        self.activities  = list(activities)
+        self.size_hint_y = None
+        self.height      = (self.H_END - self.H_START) * self.HOUR_PX + dp(12)
+        self._gutter     = dp(36)   # bredde på time-etiketts-kolonnen
+        self._build()
+
+    def _build(self):
+        from kivy.graphics import Color as KColor, Line as KLine, Rectangle
+        # Bakgrunns-rutenett – horisontale linjer for hver time
+        with self.canvas.before:
+            KColor(0.97, 0.97, 0.99, 1)
+            self._bg_rect = Rectangle(pos=self.pos, size=self.size)
+            KColor(0.85, 0.86, 0.92, 1)
+            self._hour_lines = []
+            for h in range(self.H_START, self.H_END + 1):
+                self._hour_lines.append(KLine(width=0.7))
+            # Halv-time-linjer (lysere)
+            KColor(0.92, 0.93, 0.97, 1)
+            self._half_lines = []
+            for h in range(self.H_START, self.H_END):
+                self._half_lines.append(KLine(width=0.5))
+            # "Nå"-linje (rød) – kun for i dag
+            self._now_line = None
+            if self.day_code == today_code():
+                KColor(0.93, 0.25, 0.20, 1)
+                self._now_line = KLine(width=1.5)
+        self.bind(pos=self._redraw_grid, size=self._redraw_grid)
+
+        # Time-etiketter
+        self._hour_labels = []
+        for h in range(self.H_START, self.H_END + 1):
+            lbl = Label(
+                text=f'{h:02d}', font_size=fsp(11),
+                color=(0.4, 0.42, 0.55, 1),
+                size_hint=(None, None), size=(dp(30), dp(20)),
+                halign='right', valign='top',
+            )
+            lbl.bind(size=lbl.setter('text_size'))
+            self.add_widget(lbl)
+            self._hour_labels.append((h, lbl))
+
+        # Aktivitets-blokker
+        self._blocks = []
+        for act in self.activities:
+            self._add_block(act)
+
+        # Plasser alt ved første layout
+        self.bind(size=lambda *_: self._layout(),
+                  pos=lambda  *_: self._layout())
+        Clock.schedule_once(lambda *_: self._layout(), 0)
+
+    def _redraw_grid(self, *_):
+        x0 = self.x + self._gutter
+        x1 = self.right - dp(4)
+        self._bg_rect.pos  = self.pos
+        self._bg_rect.size = self.size
+        for i, h in enumerate(range(self.H_START, self.H_END + 1)):
+            y = self._time_to_y(h, 0)
+            self._hour_lines[i].points = [x0, y, x1, y]
+        for i, h in enumerate(range(self.H_START, self.H_END)):
+            y = self._time_to_y(h, 30)
+            self._half_lines[i].points = [x0 + dp(10), y, x1, y]
+        # Nå-linje
+        if self._now_line is not None:
+            now = datetime.now()
+            ny = self._time_to_y(now.hour, now.minute)
+            self._now_line.points = [self.x + dp(2), ny, x1, ny]
+
+    def _time_to_y(self, hour, minute):
+        """Konverterer (hour, minute) til absolutt Y i widget-koordinater."""
+        offset_min = (hour - self.H_START) * 60 + minute
+        return self.top - dp(8) - (offset_min / 60) * self.HOUR_PX
+
+    def _y_to_time(self, y, snap=5):
+        """Konverterer Y til (hour, minute), snappet til 5-min-grid."""
+        offset_px = (self.top - dp(8)) - y
+        total_min = (offset_px / self.HOUR_PX) * 60
+        if snap:
+            total_min = round(total_min / snap) * snap
+        total_min = max(0, min((self.H_END - self.H_START) * 60, total_min))
+        h = self.H_START + int(total_min // 60)
+        m = int(total_min % 60)
+        return (h, m)
+
+    def _add_block(self, act):
+        block        = ActivityBlock(activity=act, calendar_view=self,
+                                      size_hint=(None, None))
+        block.act_id = act.get('id')
+        self.add_widget(block)
+        self._blocks.append(block)
+
+    def _layout(self):
+        """Plasserer time-etiketter og aktivitets-blokker."""
+        for h, lbl in self._hour_labels:
+            y = self._time_to_y(h, 0)
+            lbl.pos = (self.x, y - dp(10))
+        x0 = self.x + self._gutter
+        block_width = max(dp(80), self.width - self._gutter - dp(8))
+        for block in self._blocks:
+            act = block.activity
+            try:
+                sh, sm = (int(p) for p in act['start'].split(':'))
+                eh, em = (int(p) for p in act['end'].split(':'))
+            except Exception:
+                continue
+            y_top = self._time_to_y(sh, sm)
+            y_bot = self._time_to_y(eh, em)
+            block.size = (block_width, max(dp(28), y_top - y_bot))
+            block.pos  = (x0, y_bot)
+            # Original-Y brukes som referanse for drag
+            block._original_y = block.y
+        self._redraw_grid()
+
+    def _commit_block_move(self, block):
+        """Beregner ny start/slutt fra blokkens nåværende Y, snapper og lagrer."""
+        try:
+            sh, sm = (int(p) for p in block.activity['start'].split(':'))
+            eh, em = (int(p) for p in block.activity['end'].split(':'))
+        except Exception:
+            return
+        duration_min = (eh*60 + em) - (sh*60 + sm)
+        # Blokkens nedre kant = sluttid, øvre kant = starttid
+        new_start_h, new_start_m = self._y_to_time(block.top, snap=5)
+        new_total_start = new_start_h * 60 + new_start_m
+        new_total_end   = new_total_start + duration_min
+        # Sørg for at slutt ikke faller utenfor tidsaksen
+        if new_total_end > self.H_END * 60:
+            new_total_end   = self.H_END * 60
+            new_total_start = new_total_end - duration_min
+        new_eh = new_total_end // 60
+        new_em = new_total_end %  60
+        block.activity['start'] = f'{new_start_h:02d}:{new_start_m:02d}'
+        block.activity['end']   = f'{new_eh:02d}:{new_em:02d}'
+        # Oppdater datastruktur og lagre
+        save_struct(self.app.data)
+        Clock.schedule_once(lambda *_: _update_widget(self.app.data), 0.2)
+        # Re-layout for å snappe blokken til riktig posisjon
+        self._layout()
+
+
+# ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
 
@@ -2619,10 +2915,10 @@ class KommunikasjonstavleApp(App):
             'Hjem', hex_k('#6BCB77'), fs=13,
             cb=self.go_home, **btn_kw,
         )
-        self._btn_search = mk_btn(
-            'Søk', hex_k('#9B59B6'), fs=13,
-            cb=lambda *_: self._global_search_popup(), **btn_kw,
-        )
+        # Plassen der Søk-knappen lå tidligere holdes åpen for fremtidig
+        # bruk. Søk-funksjonen er flyttet til tittellinjen oppe til høyre
+        # for bedre tilgjengelighet (synlig på alle skjermer).
+        self._btn_search = Widget(**btn_kw)
         self._btn_edit = mk_btn(
             'Red.', hex_k('#C77DFF'), fs=13,
             cb=self.toggle_edit, **btn_kw,
@@ -2639,8 +2935,10 @@ class KommunikasjonstavleApp(App):
 
     def _build_bottombar(self):
         """
-        Slim mørk tittellinje øverst – viser kun skjermnavnet.
-        Innstillinger er flyttet til navbar-knappen.
+        Slim mørk tittellinje øverst med tittel sentrert og søke-ikon
+        oppe til høyre. Søke-ikonet åpner samme globale søk som det
+        gamle Søk-knappen i navbar – men mer tilgjengelig fordi det er
+        synlig fra hvilken som helst skjerm.
         Høyde: 46dp – kompakt men lesbar.
         """
         bar = BottomBar(
@@ -2648,13 +2946,33 @@ class KommunikasjonstavleApp(App):
             padding=(dp(14), dp(6)),
             spacing=dp(0),
         )
+        # Tittel-label tar all bredden, mens søk-ikonet ligger absolutt
+        # plassert på høyre side. Det gjør at tittelen forblir sentrert
+        # på skjermen uavhengig av om søk-ikonet er der eller ei.
+        outer = FloatLayout()
         self._lbl_title = Label(
             text=APP_TITLE, bold=True, font_size=sp(17),
             color=(1.0, 1.0, 1.0, 0.95),
             halign='center', valign='middle',
+            size_hint=(1, 1), pos_hint={'x': 0, 'y': 0},
         )
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
-        bar.add_widget(self._lbl_title)
+        outer.add_widget(self._lbl_title)
+
+        # Søk-ikon helt til høyre. Transparent bakgrunn, hvit lupe.
+        search_btn = Button(
+            text='🔍',
+            background_normal='', background_down='',
+            background_color=(0, 0, 0, 0),
+            color=(1, 1, 1, 0.85),
+            font_size=sp(20),
+            size_hint=(None, None), size=(dp(46), dp(38)),
+            pos_hint={'right': 1, 'center_y': 0.5},
+        )
+        search_btn.bind(on_release=lambda *_: self._global_search_popup())
+        outer.add_widget(search_btn)
+
+        bar.add_widget(outer)
         return bar
 
     def _set_title(self, t):
@@ -4672,7 +4990,7 @@ INNSTILLINGER
         sel = getattr(self, '_dr_selected_day', today_code())
         self._confirm(
             title='Bruk dagsoppsett?',
-            msg=f'Erstatte alle aktiviteter for {DAY_FULL_NO[sel].lower()} '
+            message=f'Erstatte alle aktiviteter for {DAY_FULL_NO[sel].lower()} '
                 f'med oppsettet "{oppsett["name"]}"?\n\n'
                 f'Eksisterende aktiviteter på dagen vil bli fjernet.',
             on_confirm=lambda: self._do_apply_dagsoppsett(oppsett, parent_pop_ref))
@@ -4697,7 +5015,7 @@ INNSTILLINGER
     def _delete_dagsoppsett(self, oppsett, parent_pop_ref):
         self._confirm(
             title='Slett oppsett?',
-            msg=f'Vil du slette oppsettet "{oppsett["name"]}"?\n\n'
+            message=f'Vil du slette oppsettet "{oppsett["name"]}"?\n\n'
                 f'Dagsplaner som bruker dette oppsettet vil ikke bli '
                 f'påvirket – de beholder sine aktiviteter.',
             on_confirm=lambda: self._do_delete_dagsoppsett(oppsett, parent_pop_ref))
@@ -4799,14 +5117,30 @@ INNSTILLINGER
 
     def _build_dagsrytme_ui(self, animate=False):
         """
-        Bygger dagsplan-skjermen for valgt ukedag. Kalles av bakgrunnsklokken.
-        animate=True ved navigering inn / dagbytte for myk overgang;
-        animate=False fra Clock-refresh så skjermen ikke blinker hvert 30. sek.
+        Bygger dagsplan-skjermen for valgt ukedag.
+
+        I visningsmodus:
+          - Pause-banner hvis aktivert
+          - Ukedag-faner
+          - Tittel med fullføringsstatus inline
+          - "Forrige | Nåværende | Neste"-trio (bilder)
+          - Aktivitetsinfo + ÉN fargevarierende fremdriftslinje
+          - Start tidsur-knapp
+          - Plan-liste under
+
+        I redigeringsmodus:
+          - Primær handling (Legg til) + 2x2 sekundære handlinger
+          - Kalender-stil dagvisning med dra-og-slipp
+          - Notat-felt nederst
+
+        animate=True ved navigering inn / dag-bytte; animate=False fra
+        bakgrunns-refresh så skjermen ikke blinker hvert 30. sek.
         """
         if self._cur_scr != 'dagsrytme':
             return
         if not getattr(self, '_dr_selected_day', None):
             self._dr_selected_day = today_code()
+
         sel       = self._dr_selected_day
         today_c   = today_code()
         is_today  = (sel == today_c)
@@ -4815,26 +5149,35 @@ INNSTILLINGER
                            key=lambda e: e.get('start', '00:00'))
         now       = datetime.now()
         now_m     = now.hour * 60 + now.minute
+        edit      = self.edit_mode
 
-        current = upcoming = None
-        # NÅ/KOMMENDE er bare meningsfullt for i dag, og blir suspendert
-        # når dagsrytmen er på pause.
+        # Finn forrige / nåværende / kommende aktivitet (kun for i dag, ikke pauset)
+        previous_act = current = upcoming = None
         if is_today and not paused:
             for e in entries:
-                s = self._dr_parse(e.get('start', '00:00'))
-                t = self._dr_parse(e.get('end',   '23:59'))
-                if s <= now_m < t:
+                s = self._dr_parse(e.get('start','00:00'))
+                t = self._dr_parse(e.get('end',  '23:59'))
+                if t <= now_m:
+                    previous_act = (e, s, t)
+                elif s <= now_m < t:
                     current = (e, s, t)
                 elif s > now_m and upcoming is None:
                     upcoming = (e, s)
 
-        outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10),
+        # Dagsfullføringen brukes inline i tittellinjen, ikke som egen progressbar
+        completed_count = 0
+        if is_today and entries:
+            completed_count = sum(
+                1 for e in entries
+                if self._dr_parse(e.get('end','23:59')) <= now_m
+            )
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(12), padding=(dp(10), dp(8)),
                           size_hint_y=None)
         outer.bind(minimum_height=outer.setter('height'))
 
-        # ── Pause-banner ─────────────────────────────────────────
-        # Vises kun på dagens fane når pause er aktiv. Trykkbar for
-        # å gjenoppta direkte (sparer brukeren for en omvei).
+        # ── 1. Pause-banner ──────────────────────────────────────
         if paused:
             banner = RBox(orientation='horizontal',
                           size_hint_y=None, height=dp(52),
@@ -4844,7 +5187,6 @@ INNSTILLINGER
                 text='[b]⏸  Dagsrytme på pause[/b] – trykk for å gjenoppta',
                 markup=True, font_size=fsp(15),
                 color=(0.15, 0.10, 0.05, 1), halign='left', valign='middle'))
-            # Hele banneret er trykkbart via on_touch_down
             def _banner_tap(w, touch):
                 if w.collide_point(*touch.pos):
                     self._toggle_pause()
@@ -4853,7 +5195,7 @@ INNSTILLINGER
             banner.bind(on_touch_down=_banner_tap)
             outer.add_widget(banner)
 
-        # ── Ukedag-faner ─────────────────────────────────────────
+        # ── 2. Ukedag-faner ──────────────────────────────────────
         tabs = BoxLayout(orientation='horizontal',
                          size_hint_y=None, height=dp(48), spacing=dp(4))
         for code in DAY_CODES:
@@ -4870,212 +5212,150 @@ INNSTILLINGER
                 cb=lambda *_, c=code: self._dr_switch_day(c)))
         outer.add_widget(tabs)
 
-        # ── Dagstittel ───────────────────────────────────────────
-        title_text = DAY_FULL_NO[sel] + (' (i dag)' if is_today else '')
-        outer.add_widget(Label(text=title_text, size_hint_y=None, height=dp(30),
-            font_size=fsp(17), bold=True, color=(0.04, 0.10, 0.36, 1),
+        # ── 3. Dagstittel med fullføringsstatus inline ───────────
+        if is_today and entries and not paused:
+            title_text = (f'{DAY_FULL_NO[sel]} (i dag)   ·   '
+                          f'{completed_count} av {len(entries)} fullført')
+        else:
+            title_text = DAY_FULL_NO[sel] + (' (i dag)' if is_today else '')
+        outer.add_widget(Label(text=title_text, size_hint_y=None, height=dp(28),
+            font_size=fsp(16), bold=True, color=(0.04, 0.10, 0.36, 1),
             halign='center'))
 
-        # ── Dagsfremdrift ────────────────────────────────────────
-        # Tynn linje som viser hvor langt vi er kommet i dagens plan.
-        # Fullført = end-tid har passert klokken. Bare meningsfullt
-        # på i dag og når vi har minst én aktivitet.
-        if is_today and not paused and entries:
-            total = len(entries)
-            completed_count = sum(
-                1 for e in entries
-                if self._dr_parse(e.get('end', '23:59')) <= now_m
-            )
-            done_pct = completed_count / total if total else 0
-            prog_row = BoxLayout(orientation='horizontal',
-                                 size_hint_y=None, height=dp(22),
-                                 spacing=dp(8))
-            prog_row.add_widget(Label(
-                text=f'Fullført: {completed_count} av {total}',
-                size_hint_x=None, width=dp(130),
-                font_size=fsp(12), color=(0.35, 0.35, 0.45, 1),
-                halign='left'))
-            prog_bar = BoxLayout(size_hint_y=None, height=dp(8))
-            with prog_bar.canvas.before:
-                from kivy.graphics import Color as KColor, Rectangle, Line as KLine
-                # Spor (lys)
-                KColor(0.85, 0.86, 0.92, 1)
-                track = Rectangle(pos=prog_bar.pos, size=prog_bar.size)
-                # Fyll (grønn)
-                KColor(0.30, 0.70, 0.40, 1)
-                fill = Rectangle(pos=prog_bar.pos,
-                                 size=(prog_bar.width * done_pct, prog_bar.height))
-            def _u(pb, *_):
-                track.pos  = pb.pos
-                track.size = pb.size
-                fill.pos   = pb.pos
-                fill.size  = (pb.width * done_pct, pb.height)
-            prog_bar.bind(size=_u, pos=_u)
-            prog_row.add_widget(prog_bar)
-            outer.add_widget(prog_row)
-
-        # ── Edit-mode-knapper ────────────────────────────────────
-        if self.edit_mode:
-            outer.add_widget(mk_btn('+  Legg til aktivitet', hex_k('#6BCB77'), h=dp(50),
+        # ── 4. Edit-mode-knapper (kompakt: 1 + 2x2) ──────────────
+        if edit:
+            outer.add_widget(mk_btn('+  Legg til aktivitet',
+                hex_k('#6BCB77'), h=dp(52), fs=15,
                 cb=lambda *_: self._dr_entry_popup(None)))
+            row1 = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(44),
+                             spacing=dp(6))
             if is_today:
-                # Pause-knappen vises kun for dagens fane (det er der den
-                # faktisk har en effekt).
-                p_label = '▶  Gjenoppta dagsrytme' if paused else '⏸  Sett på pause'
+                p_label = '▶  Gjenoppta' if paused else '⏸  Sett på pause'
                 p_color = '#6BCB77' if paused else '#FF9F43'
-                outer.add_widget(mk_btn(p_label, hex_k(p_color), h=dp(48),
+                row1.add_widget(mk_btn(p_label, hex_k(p_color),
+                    h=dp(44), fs=13,
                     cb=lambda *_: self._toggle_pause()))
-            outer.add_widget(mk_btn('⎘  Kopier til andre dager', hex_k('#FF9F43'), h=dp(48),
+            row1.add_widget(mk_btn('⎘  Kopier dag', hex_k('#FF9F43'),
+                h=dp(44), fs=13,
                 cb=lambda *_: self._dr_copy_popup()))
-            outer.add_widget(mk_btn('🎭  Dagsoppsett (maler)', hex_k('#C77DFF'), h=dp(48),
+            outer.add_widget(row1)
+            row2 = BoxLayout(orientation='horizontal',
+                             size_hint_y=None, height=dp(44),
+                             spacing=dp(6))
+            row2.add_widget(mk_btn('🎭  Dagsoppsett', hex_k('#C77DFF'),
+                h=dp(44), fs=13,
                 cb=lambda *_: self._dagsoppsett_popup()))
-            outer.add_widget(mk_btn('↗  Eksporter dagsplan', hex_k('#546E7A'), h=dp(48),
+            row2.add_widget(mk_btn('↗  Eksporter', hex_k('#546E7A'),
+                h=dp(44), fs=13,
                 cb=lambda *_: self._export_popup('dagsrytme')))
+            outer.add_widget(row2)
 
-        # ── Nåværende/kommende blokk ─────────────────────────────
-        if paused:
+        # ── 5. Hovedinnhold ──────────────────────────────────────
+        if edit:
+            # Kalender-stil dagvisning med dra-og-slipp.
+            # Bildet skjules her – fokuset er strukturen i dagen.
             outer.add_widget(Label(
-                text='Dagsrytmen er pauset. Den vil ikke vise nåværende\n'
-                     'eller neste aktivitet før du gjenopptar.',
-                size_hint_y=None, height=dp(54),
+                text='Trykk en blokk for å redigere, dra for å flytte.',
+                size_hint_y=None, height=dp(22),
+                font_size=fsp(12), color=(0.45, 0.48, 0.55, 1),
+                halign='center'))
+            cal = CalendarDayView(self, sel, entries)
+            outer.add_widget(cal)
+        elif paused:
+            outer.add_widget(Label(
+                text='Dagsrytmen er pauset. Nåværende og neste vises ikke.',
+                size_hint_y=None, height=dp(40),
                 font_size=fsp(14), color=(0.4, 0.4, 0.5, 1),
                 halign='center', valign='middle'))
             outer.children[-1].bind(size=outer.children[-1].setter('text_size'))
-        elif is_today and current:
-            e, s_m, t_m = current
-            remaining = t_m - now_m
-            elapsed   = now_m - s_m
-            duration  = max(t_m - s_m, 1)
-            badge_row = BoxLayout(orientation='horizontal',
-                                   size_hint_y=None, height=dp(28),
-                                   spacing=dp(6))
-            badge_row.add_widget(Widget())
-            badge = RBox(orientation='horizontal',
-                         size_hint=(None, None), height=dp(26),
-                         padding=(dp(10), dp(2)),
-                         box_color=(0.15, 0.65, 0.30, 1.0), radius=dp(13))
-            blbl = Label(text='Pågår nå', font_size=fsp(12), bold=True,
-                         color=(1, 1, 1, 1), size_hint=(None, None),
-                         height=dp(22))
-            blbl.bind(texture_size=lambda l, ts: setattr(l, 'width', ts[0]))
-            badge.add_widget(blbl)
-            badge.width = dp(86)
-            badge_row.add_widget(badge)
-            badge_row.add_widget(Widget())
-            outer.add_widget(badge_row)
-
-            if e.get('image') and os.path.exists(e['image']):
-                outer.add_widget(self._make_framed_image(e['image'], dp(260)))
-            outer.add_widget(Label(text=e['name'], size_hint_y=None, height=dp(52),
-                font_size=fsp(26), bold=True, color=(0.04, 0.10, 0.36, 1), halign='center'))
+        elif current:
+            # PREV | NÅ | NEXT image trio
+            outer.add_widget(self._build_activity_trio(
+                prev_act=previous_act[0] if previous_act else None,
+                center_act=current[0],
+                next_act=upcoming[0] if upcoming else None,
+                center_label='Pågår nå',
+                center_color='#1FAB3A'))
+            # Aktivitetsnavn (stort)
+            outer.add_widget(Label(text=current[0]['name'],
+                size_hint_y=None, height=dp(46),
+                font_size=fsp(24), bold=True,
+                color=(0.04, 0.10, 0.36, 1), halign='center'))
+            # Tidspunkter
             outer.add_widget(Label(
-                text=f'{e.get("start","")}  -  {e.get("end","")}',
-                size_hint_y=None, height=dp(28), font_size=fsp(14),
-                color=(0.4, 0.44, 0.55, 1), halign='center'))
-            outer.add_widget(Label(
-                text=f'Slutter om {self._dr_fmt(remaining)}',
-                size_hint_y=None, height=dp(34), font_size=fsp(16),
-                color=(0.25, 0.35, 0.55, 1), halign='center'))
-            pb = ProgressBar(max=duration, value=elapsed,
-                             size_hint_y=None, height=dp(18))
-            outer.add_widget(pb)
-
-            pct = elapsed / duration if duration > 0 else 0
-            if pct < 0.6:
-                prog_col = (0.15, 0.65, 0.20, 1)
-            elif pct < 0.85:
-                prog_col = (0.85, 0.62, 0.05, 1)
-            else:
-                prog_col = (0.80, 0.15, 0.12, 1)
-
-            time_bar = BoxLayout(size_hint_y=None, height=dp(8))
-            with time_bar.canvas.before:
-                from kivy.graphics import Color as KColor, Rectangle
-                KColor(*prog_col)
-                prog_rect = Rectangle(
-                    pos=time_bar.pos,
-                    size=(time_bar.width * (elapsed / duration), time_bar.height)
-                )
-            def _upd_bar(tb, val, pr=prog_rect, dur=duration):
-                pr.pos  = tb.pos
-                pr.size = (tb.width * (val / dur), tb.height)
-            time_bar.bind(size=lambda tb, *_: _upd_bar(tb, elapsed),
-                          pos=lambda  tb, *_: _upd_bar(tb, elapsed))
-            outer.add_widget(time_bar)
-
-            # Knapp som starter tidsuret med gjenværende tid for denne
-            # aktiviteten. Pre-fyller varigheten og navigerer brukeren
-            # rett til tidsur-skjermen.
+                text=f'{current[0].get("start","")}  –  {current[0].get("end","")}',
+                size_hint_y=None, height=dp(24),
+                font_size=fsp(13), color=(0.4, 0.44, 0.55, 1),
+                halign='center'))
+            # "Slutter om X"
+            remaining = current[2] - now_m
+            outer.add_widget(Label(text=f'Slutter om {self._dr_fmt(remaining)}',
+                size_hint_y=None, height=dp(28),
+                font_size=fsp(15), color=(0.25, 0.35, 0.55, 1),
+                halign='center'))
+            # ENESTE fremdriftslinje – fargevariert (grønn → gul → rød)
+            outer.add_widget(self._make_time_bar(
+                current[1], current[2], now_m))
+            # Start tidsur-knapp
             outer.add_widget(mk_btn(
                 f'⏱  Start tidsur ({self._dr_fmt(remaining)})',
                 hex_k('#4D96FF'), h=dp(48), fs=14,
-                cb=lambda *_, en=e, em=t_m: self._start_timer_for_activity(en, em)))
-
-        elif is_today and upcoming:
-            e, s_m = upcoming
-            wait = s_m - now_m
-            badge_row = BoxLayout(orientation='horizontal',
-                                   size_hint_y=None, height=dp(28),
-                                   spacing=dp(6))
-            badge_row.add_widget(Widget())
-            badge = RBox(orientation='horizontal',
-                         size_hint=(None, None), width=dp(70), height=dp(26),
-                         padding=(dp(10), dp(2)),
-                         box_color=(0.30, 0.58, 1.0, 1.0), radius=dp(13))
-            badge.add_widget(Label(text='Neste', font_size=fsp(12), bold=True,
-                                    color=(1, 1, 1, 1)))
-            badge_row.add_widget(badge)
-            badge_row.add_widget(Widget())
-            outer.add_widget(badge_row)
-
-            outer.add_widget(Label(text='Ingen aktiv aktivitet nå',
-                size_hint_y=None, height=dp(30), font_size=fsp(15),
-                color=(0.5, 0.5, 0.5, 1), halign='center'))
-            if e.get('image') and os.path.exists(e['image']):
-                outer.add_widget(self._make_framed_image(
-                    e['image'], dp(160), faded=True))
-            outer.add_widget(Label(text=e['name'],
-                size_hint_y=None, height=dp(44), font_size=fsp(22), bold=True,
+                cb=lambda *_, en=current[0], em=current[2]:
+                    self._start_timer_for_activity(en, em)))
+        elif upcoming and is_today:
+            # Venter på neste aktivitet – samme trio men sentrum er
+            # neste-aktiviteten med dempet visning. Tidligere vises også
+            # for kontekst.
+            outer.add_widget(self._build_activity_trio(
+                prev_act=previous_act[0] if previous_act else None,
+                center_act=upcoming[0],
+                next_act=None,
+                center_label='Neste',
+                center_color='#4D96FF',
+                center_faded=True))
+            outer.add_widget(Label(text=upcoming[0]['name'],
+                size_hint_y=None, height=dp(40),
+                font_size=fsp(22), bold=True,
                 color=(0.04, 0.10, 0.36, 1), halign='center'))
+            wait = upcoming[1] - now_m
             outer.add_widget(Label(
-                text=f'Starter om {self._dr_fmt(wait)}  (kl. {e.get("start","")})',
-                size_hint_y=None, height=dp(32), font_size=fsp(16),
-                color=(0.3, 0.4, 0.5, 1), halign='center'))
+                text=f'Starter om {self._dr_fmt(wait)}  (kl. {upcoming[0].get("start","")})',
+                size_hint_y=None, height=dp(30),
+                font_size=fsp(15), color=(0.3, 0.4, 0.5, 1),
+                halign='center'))
         elif is_today and entries:
-            outer.add_widget(Label(text='Alle aktiviteter for i dag er ferdige.',
-                font_size=fsp(17), color=(0.4, 0.4, 0.5, 1),
-                size_hint_y=None, height=dp(50),
+            outer.add_widget(Label(
+                text='✓  Alle aktiviteter for i dag er ferdige.',
+                size_hint_y=None, height=dp(60),
+                font_size=fsp(17), color=(0.30, 0.55, 0.30, 1),
                 halign='center', valign='middle'))
         elif not entries:
             outer.add_widget(BoxLayout(size_hint_y=None, height=dp(20)))
             outer.add_widget(self._empty_state(
                 glyph='📅',
-                msg='Ingen aktiviteter for ' + DAY_FULL_NO[sel].lower() + '.\n'
-                    'Trykk "Red." og "+" for å starte.'))
+                msg=f'Ingen aktiviteter for {DAY_FULL_NO[sel].lower()}.\n'
+                    f'Trykk "Red." og "+" for å starte.'))
 
-        # ── Aktivitetsliste med fargestripe + fullført-markering ──
-        if entries:
+        # ── 6. Plan-liste (kun i visningsmodus) ──────────────────
+        # I redigeringsmodus tar kalender-visningen rollen som liste.
+        if not edit and entries:
             outer.add_widget(Label(
                 text='Plan for ' + DAY_FULL_NO[sel].lower() + ':',
-                size_hint_y=None, height=dp(26),
-                font_size=fsp(14), bold=True, color=(0.3, 0.3, 0.4, 1),
+                size_hint_y=None, height=dp(22),
+                font_size=fsp(13), bold=True, color=(0.3, 0.3, 0.4, 1),
                 halign='left'))
-            list_sv  = ScrollView(size_hint_y=None, height=dp(176))
+            list_sv  = ScrollView(size_hint_y=None, height=dp(170))
             list_box = BoxLayout(orientation='vertical', spacing=dp(4),
                                  size_hint_y=None)
             list_box.bind(minimum_height=list_box.setter('height'))
             for e in entries:
                 is_cur = bool(current and current[0]['id'] == e['id'])
-                # Aktivitet anses fullført når slutten har passert klokken
-                # på i dag. På andre dager er begrepet ikke meningsfullt.
-                end_m = self._dr_parse(e.get('end', '23:59'))
+                end_m  = self._dr_parse(e.get('end', '23:59'))
                 completed = is_today and not paused and end_m <= now_m
-
-                # Kategorifarge – vises som tynn stripe til venstre.
                 cat = get_category(self.data, e.get('category'))
                 stripe_col = hex_k(cat['color']) if cat else None
 
-                # Bakgrunnsfarge for raden
                 if is_cur:
                     bg = (0.84, 0.96, 0.84, 1.0)
                 elif completed:
@@ -5083,13 +5363,13 @@ INNSTILLINGER
                 else:
                     bg = (0.97, 0.97, 1.0, 1.0)
 
-                row = RBox(orientation='horizontal', size_hint_y=None, height=dp(52),
-                    spacing=dp(6), padding=(dp(4), dp(4)),
-                    box_color=bg, radius=dp(14))
+                row = RBox(orientation='horizontal',
+                           size_hint_y=None, height=dp(48),
+                           spacing=dp(6), padding=(dp(4), dp(2)),
+                           box_color=bg, radius=dp(12))
 
-                # Kategoristripe
                 if stripe_col:
-                    stripe = BoxLayout(size_hint_x=None, width=dp(5))
+                    stripe = BoxLayout(size_hint_x=None, width=dp(4))
                     with stripe.canvas.before:
                         from kivy.graphics import Color as KColor, Rectangle
                         KColor(*stripe_col)
@@ -5099,11 +5379,9 @@ INNSTILLINGER
                     stripe.bind(size=_us, pos=_us)
                     row.add_widget(stripe)
                 else:
-                    # Liten spacer for justering
-                    row.add_widget(Widget(size_hint_x=None, width=dp(5)))
+                    row.add_widget(Widget(size_hint_x=None, width=dp(4)))
 
-                # Tekst – med strikethrough hvis fullført
-                txt = f'  {e.get("start","?")} - {e.get("end","?")}  {e["name"]}'
+                txt = f'  {e.get("start","?")} – {e.get("end","?")}   {e["name"]}'
                 if completed and not is_cur:
                     label_text = f'[s]{txt}[/s]'
                     text_col = (0.45, 0.48, 0.55, 1)
@@ -5115,33 +5393,24 @@ INNSTILLINGER
                     text=label_text, markup=True,
                     font_size=fsp(14), bold=is_cur,
                     color=text_col, halign='left'))
-
-                if self.edit_mode:
-                    row.add_widget(mk_btn('Red.', hex_k('#C77DFF'), h=dp(44), fs=12,
-                        size_hint_x=None, width=dp(52),
-                        cb=lambda *_, en=e: self._dr_entry_popup(en)))
-                    row.add_widget(mk_btn('Slett', hex_k('#FF6B6B'), h=dp(44), fs=12,
-                        size_hint_x=None, width=dp(58),
-                        cb=lambda *_, en=e: self._dr_delete(en)))
                 list_box.add_widget(row)
             list_sv.add_widget(list_box)
             outer.add_widget(list_sv)
 
-        # ── Daglige notater ──────────────────────────────────────
-        # Vises alltid, men i edit-mode blir det redigerbart.
-        note_text = self.data.get('notater', {}).get(sel, '')
+        # ── 7. Notater per ukedag ────────────────────────────────
         notes_section = BoxLayout(orientation='vertical',
                                   size_hint_y=None, spacing=dp(4))
         notes_section.bind(minimum_height=notes_section.setter('height'))
         notes_section.add_widget(Label(
             text=f'Notater for {DAY_FULL_NO[sel].lower()}:',
-            size_hint_y=None, height=dp(24),
+            size_hint_y=None, height=dp(22),
             font_size=fsp(13), bold=True, color=(0.3, 0.3, 0.4, 1),
             halign='left'))
-        if self.edit_mode:
+        if edit:
+            note_text = self.data.get('notater', {}).get(sel, '')
             note_inp = TextInput(
                 text=note_text, multiline=True,
-                size_hint_y=None, height=dp(96),
+                size_hint_y=None, height=dp(90),
                 font_size=fsp(14),
                 hint_text='Observasjoner, hendelser, kommunikasjon mellom skift…',
             )
@@ -5151,7 +5420,7 @@ INNSTILLINGER
             note_inp.bind(text=_save_note)
             notes_section.add_widget(note_inp)
         else:
-            # Visningsmodus: vis tekst i en RBox-lignende boks
+            note_text = self.data.get('notater', {}).get(sel, '')
             disp = RBox(orientation='vertical',
                         size_hint_y=None, padding=(dp(10), dp(8)),
                         box_color=(0.98, 0.98, 1.0, 1.0), radius=dp(10))
@@ -5175,8 +5444,125 @@ INNSTILLINGER
             self._content.add_widget(sv)
             Animation(opacity=1, duration=0.18, t='out_quad').start(sv)
         else:
-            sv.opacity = 1  # ingen fade for bakgrunnsoppdatering
+            sv.opacity = 1
             self._content.add_widget(sv)
+
+    def _build_activity_trio(self, prev_act, center_act, next_act,
+                             center_label='Pågår nå', center_color='#1FAB3A',
+                             center_faded=False):
+        """
+        Tre-kolonne layout for forrige | nåværende/neste | neste-aktivitet.
+        Sentrum får størst plass og full opasitet (med mindre faded=True),
+        sidene halvparten av høyden med dempet opasitet.
+
+        Hvis prev/next mangler, vises tomme plassholdere så layouten ikke
+        hopper rundt når aktivitets-strømmen endres.
+        """
+        TRIO_H = dp(200)
+        SIDE_H = dp(120)
+
+        trio = BoxLayout(orientation='horizontal',
+                         size_hint_y=None, height=TRIO_H,
+                         spacing=dp(8))
+
+        # Hjelpefunksjon for å lage en sidemarkør med bilde og dempet
+        # label over (Forrige / Neste)
+        def make_side_col(act, label_text):
+            col = BoxLayout(orientation='vertical',
+                            size_hint_x=0.25)
+            col.add_widget(Widget())  # toppspacer
+            if act and act.get('image') and os.path.exists(act['image']):
+                col.add_widget(Label(
+                    text=label_text,
+                    size_hint_y=None, height=dp(18),
+                    font_size=fsp(10),
+                    color=(0.45, 0.48, 0.58, 1),
+                    halign='center', bold=True))
+                img_wrap = BoxLayout(size_hint_y=None, height=SIDE_H)
+                img_wrap.add_widget(self._make_framed_image(
+                    act['image'], SIDE_H, faded=True))
+                col.add_widget(img_wrap)
+                col.add_widget(Label(
+                    text=act.get('name',''),
+                    size_hint_y=None, height=dp(20),
+                    font_size=fsp(11),
+                    color=(0.35, 0.40, 0.55, 1),
+                    halign='center', shorten=True, shorten_from='right'))
+                col.children[0].bind(
+                    size=col.children[0].setter('text_size'))
+            else:
+                # Tom plassholder så layout-bredden holdes
+                col.add_widget(Widget(size_hint_y=None, height=dp(20)))
+                col.add_widget(Widget(size_hint_y=None, height=SIDE_H))
+            col.add_widget(Widget())  # bunnspacer
+            return col
+
+        # Sentrum-kolonne med stor label-pille
+        def make_center_col():
+            col = BoxLayout(orientation='vertical', size_hint_x=0.5)
+            # Pille
+            badge_row = BoxLayout(orientation='horizontal',
+                                   size_hint_y=None, height=dp(28),
+                                   spacing=dp(6))
+            badge_row.add_widget(Widget())
+            badge = RBox(orientation='horizontal',
+                         size_hint=(None, None),
+                         width=dp(96), height=dp(26),
+                         padding=(dp(10), dp(2)),
+                         box_color=hex_k(center_color), radius=dp(13))
+            badge.add_widget(Label(text=center_label,
+                font_size=fsp(11), bold=True, color=(1,1,1,1)))
+            badge_row.add_widget(badge)
+            badge_row.add_widget(Widget())
+            col.add_widget(badge_row)
+            # Bilde
+            if center_act and center_act.get('image') and os.path.exists(center_act['image']):
+                img_wrap = BoxLayout(size_hint_y=None, height=TRIO_H - dp(28))
+                img_wrap.add_widget(self._make_framed_image(
+                    center_act['image'], TRIO_H - dp(28),
+                    faded=center_faded))
+                col.add_widget(img_wrap)
+            else:
+                col.add_widget(Widget(size_hint_y=None, height=TRIO_H - dp(28)))
+            return col
+
+        trio.add_widget(make_side_col(prev_act, 'Forrige'))
+        trio.add_widget(make_center_col())
+        trio.add_widget(make_side_col(next_act,  'Neste'))
+        return trio
+
+    def _make_time_bar(self, start_m, end_m, now_m):
+        """
+        Lager en flott fargevariert tidsbar:
+          grønn (god tid igjen) → gul (snart slutt) → rød (nesten ferdig)
+        Erstatter både den gamle Kivy ProgressBar og custom-bar-en.
+        """
+        duration = max(end_m - start_m, 1)
+        elapsed  = max(0, now_m - start_m)
+        pct      = elapsed / duration if duration > 0 else 0
+        if pct < 0.6:
+            col = (0.15, 0.65, 0.20, 1)
+        elif pct < 0.85:
+            col = (0.85, 0.62, 0.05, 1)
+        else:
+            col = (0.80, 0.15, 0.12, 1)
+        bar = BoxLayout(size_hint_y=None, height=dp(10))
+        from kivy.graphics import Color as KColor, Rectangle
+        with bar.canvas.before:
+            # Spor (lys grå)
+            KColor(0.88, 0.88, 0.93, 1)
+            track = Rectangle(pos=bar.pos, size=bar.size)
+            # Fyll (fargevariert)
+            KColor(*col)
+            fill = Rectangle(pos=bar.pos,
+                             size=(bar.width * pct, bar.height))
+        def _u(b, *_):
+            track.pos  = b.pos
+            track.size = b.size
+            fill.pos   = b.pos
+            fill.size  = (b.width * pct, b.height)
+        bar.bind(size=_u, pos=_u)
+        return bar
 
     def _dr_delete(self, entry):
         start = entry.get('start', '')
