@@ -64,12 +64,19 @@ jobs:
           done
 
           # Kan bare bruke snarvei om dists/ finnes og kun .py er endret
-          if [ "$PYTHON_ONLY" = "true" ] && [ "$DISTS_EXISTS" = "true" ]; then
+          # Sjekk at Android SDK faktisk finnes (ellers er cachen ufullstendig)
+          SDK_EXISTS=false
+          SDK_PATH=".buildozer/android/platform/android-sdk"
+          if [ -d "$SDK_PATH" ] && [ -f "$SDK_PATH/platform-tools/adb" ]; then
+            SDK_EXISTS=true
+          fi
+
+          if [ "$PYTHON_ONLY" = "true" ] && [ "$DISTS_EXISTS" = "true" ] && [ "$SDK_EXISTS" = "true" ]; then
             echo "python_only=true" >> $GITHUB_OUTPUT
-            echo "Modus: SNARVEI (kun Python-filer endret)"
+            echo "Modus: SNARVEI (kun Python-filer endret, SDK og dists bekreftet)"
           else
             echo "python_only=false" >> $GITHUB_OUTPUT
-            echo "Modus: FULL bygg"
+            echo "Modus: FULL bygg (python_only=$PYTHON_ONLY, dists=$DISTS_EXISTS, sdk=$SDK_EXISTS)"
           fi
 
       - name: Sett versjonsnummer fra git
@@ -89,6 +96,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             -v ~/.gradle:/root/.gradle \
+            -e ANDROID_HOME=/home/user/hostcwd/.buildozer/android/platform/android-sdk \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
@@ -112,6 +120,16 @@ jobs:
               done
               # Oppdater versjon
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
+
+              # Skriv local.properties med fast SDK-sti (alltid samme i Buildozer Docker).
+              # Buildozer lagrer alltid SDK under prosjektmappens .buildozer/android/platform/.
+              SDK_DIR="/home/user/hostcwd/.buildozer/android/platform/android-sdk"
+              NDK_DIR=\$(ls -d /home/user/hostcwd/.buildozer/android/platform/android-ndk-* 2>/dev/null | head -1 || true)
+              {
+                echo "sdk.dir=\$SDK_DIR"
+                [ -n "\$NDK_DIR" ] && echo "ndk.dir=\$NDK_DIR"
+              } > \$DIST/local.properties
+              echo "local.properties skrevet: \$(cat \$DIST/local.properties)"
 
               # Rydd Gradle-inkrementell cache så oppdaterte filer plukkes opp
               rm -rf \$DIST/build/intermediates/assets
