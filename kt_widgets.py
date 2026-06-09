@@ -373,6 +373,21 @@ def text_on(bg_hex):
         return (0.06, 0.07, 0.18, 1.0)   # nesten svart
     return (1.0, 1.0, 1.0, 1.0)           # hvit
 
+
+def time_of_day_tint():
+    """
+    Returnerer (r, g, b, a) for vindusbakgrunnen basert på klokkeslett.
+    Bittesmå skift – gir appen en «levende» følelse gjennom dagen.
+    """
+    from datetime import datetime as _dt
+    h = _dt.now().hour
+    if   6  <= h < 10: return (0.93, 0.95, 0.99, 1.0)   # morgen
+    elif 10 <= h < 14: return (0.94, 0.95, 0.98, 1.0)   # midt
+    elif 14 <= h < 18: return (0.97, 0.96, 0.94, 1.0)   # ettermiddag
+    elif 18 <= h < 22: return (0.92, 0.93, 0.96, 1.0)   # kveld
+    else:              return (0.90, 0.91, 0.94, 1.0)    # natt
+
+
 def haptic_feedback():
     """
     Haptisk feedback ved knappetrykk.
