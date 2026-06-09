@@ -9,10 +9,12 @@ Importeres i main.py:  from kt_widgets import *
 
 import os
 import math
+import logging
 
 from kivy.app import App
 from kivy.animation import Animation
 from kivy.clock import Clock
+from kivy.core.text import LabelBase
 from kivy.core.window import Window
 from kivy.graphics.texture import Texture
 from kivy.lang import Builder
@@ -21,6 +23,10 @@ from kivy.properties import ListProperty, NumericProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.image import Image
+from kivy.utils import platform
+
+# Popup-størrelse for fullskjerm-zoom (brukes i TappableImage._show_zoom_popup)
+POPUP_FULL = (0.97, 0.94)
 
 try:
     from PIL import Image as PILImage, ImageDraw
