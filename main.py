@@ -2961,24 +2961,8 @@ class KommunikasjonstavleApp(App):
     # ══════════════════════════════════════════════════════════════
 
     def _flip_to_image(self, path, name):
-        """
-        Animert overgang til fullskjermbilde:
-        innhold fades ut, så inn igjen med nytt innhold.
-        """
-        old = self._content.children[0] if self._content.children else None
-        if old:
-            def _show(*_):
-                self._show_image_full(path, name)
-                if self._content.children:
-                    new = self._content.children[0]
-                    new.opacity = 0
-                    Animation(opacity=1, duration=0.18, t='out_cubic').start(new)
-            # NB: Animation.bind() returnerer None i Kivy – ikke kjedbar
-            anim_out = Animation(opacity=0, duration=0.12, t='in_cubic')
-            anim_out.bind(on_complete=_show)
-            anim_out.start(old)
-        else:
-            self._show_image_full(path, name)
+        """Åpner fullskjermbilde. Slide-animasjon håndteres av _set_content."""
+        self._show_image_full(path, name)
 
     def _show_home(self, **_):
         self._cur_scr   = 'home'
@@ -3275,35 +3259,28 @@ class KommunikasjonstavleApp(App):
         """
         ASK-bilde-kort: kvadratisk bilde øverst + etikett-knapp under.
 
-        Designprinsipper:
-        - Kun ÉN ytre ramme (RBox på cell-nivå) – ingen nestet RBox for bildet
-        - Bildet er alltid kvadratisk (keep_ratio=False, allow_stretch=True)
-          fordi alle opplastede symbolbilder er kvadratiske
-        - Hvit bakgrunn bak bildet tegnes direkte i BoxLayout via canvas.before
-        - Ingen dobbel bakgrunn eller overflow
+        IMG_H beregnes dynamisk fra skjermbredde og kolonneantall slik at
+        bildeflaten alltid blir kvadratisk uavhengig av skjermstørrelse.
         """
         img_path = it.get('image') or ''
         has_img  = bool(img_path and os.path.exists(img_path))
         edit     = self.edit_mode
 
-        # Bilde nesten like bredt som etikett:
-        # cell har padding dp(4) på hver side → bilde-bredde = kolonne - dp(8)
-        # Vi gjør bildet kvadratisk ved å sette IMG_H lik forventet bredde.
-        # 4-kol grid, spacing dp(6), padding dp(4) → ca 82dp per kol på 360dp skjerm.
-        # Setter IMG_H litt over dette for store skjermer, justeres med size_hint.
-        IMG_H  = dp(110)  # 3-kol: fast høyde = kolonne-bredde ≈ 110dp
+        # Beregn kolonne-bredde fra skjermbredde:
+        # grid padding lr=dp(10), spacing=dp(10) → usable = W - dp(40)
+        barn = self.data.get('settings', {}).get('barn_modus', False)
+        n_cols = 2 if barn else 3
+        IMG_H  = (Window.width - dp(40)) / n_cols   # kvadratisk bildehøyde
         LBL_H  = dp(36)
         ACT_H  = dp(36)
-        TILE_H = (IMG_H + LBL_H + ACT_H + dp(6)) if edit else (IMG_H + LBL_H + dp(4))
+        TILE_H = (IMG_H + LBL_H + ACT_H + dp(6)) if edit else (IMG_H + LBL_H + dp(2))
 
         if edit:
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
-            # Flip-animasjon til fullskjerm-bilde
-            tap = lambda p=img_path, n=it['name']: self._flip_to_image(p, n)
+            # Direkte til fullskjerm – slide-animasjon håndteres av _set_content
+            tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
 
-        # Én enkelt ytre ramme – tonet mappefarge
-        # padding=0 på sidene så bildet fyller full bredde
         r, g, b, _ = hex_k(fo.get('color', '#4D96FF'))
         card_col   = (r*0.12 + 0.88, g*0.12 + 0.88, b*0.12 + 0.88, 1.0)
         cell = RBox(
@@ -3316,30 +3293,30 @@ class KommunikasjonstavleApp(App):
         )
 
         if has_img:
+            # Ingen padding – bildet går helt til toppen av kortet
             img_wrap = BoxLayout(
                 size_hint=(1, None), height=IMG_H,
-                padding=(dp(6), dp(6), dp(6), dp(2)),
+                padding=0,
             )
-            # Hvit bakgrunn bak bildet direkte i canvas
+            # Hvit bakgrunn bak bildet
             with img_wrap.canvas.before:
                 from kivy.graphics import Color as KC, RoundedRectangle as KRR
                 KC(1.0, 1.0, 1.0, 1.0)
-                self._last_img_rr = KRR(
+                _rr = KRR(
                     pos=img_wrap.pos,
                     size=img_wrap.size,
                     radius=[dp(10), dp(10), dp(2), dp(2)],
                 )
-            def _upd_rr(w, *_, rr=self._last_img_rr):
+            def _upd_rr(w, *_, rr=_rr):
                 rr.pos  = w.pos
                 rr.size = w.size
             img_wrap.bind(pos=_upd_rr, size=_upd_rr)
 
-            # Bruk thumbnail-cache for rask visning og lavt minnebruk
-            tile_sz = int(dp(110))
+            tile_sz   = int(IMG_H)
             thumb_tex = get_thumbnail(img_path, tile_sz, tile_sz)
             ti = TappableImage(
                 tap, source=img_path if thumb_tex is None else '',
-                allow_stretch=True, keep_ratio=False,
+                allow_stretch=True, keep_ratio=True,  # behold proporsjoner
             )
             if thumb_tex:
                 ti.texture = thumb_tex
