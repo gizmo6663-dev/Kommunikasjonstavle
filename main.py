@@ -3514,7 +3514,7 @@ class KommunikasjonstavleApp(App):
 
         outer = BoxLayout(
             orientation='vertical',
-            spacing=dp(8), padding=dp(10),
+            spacing=dp(8), padding=(0, dp(6), 0, 0),
         )
 
         if self.edit_mode:
@@ -3557,10 +3557,12 @@ class KommunikasjonstavleApp(App):
             outer.add_widget(sub_section)
 
         # ── ASK-bilder ────────────────────────────────────────────
+        # spacing=dp(10): mellomrom mellom kort
+        # padding=(dp(10), dp(4)): sidepadding = samme som spacing → jevn kant
         grid = GridLayout(
-            cols=3, spacing=dp(8), padding=(dp(6), dp(6)),
+            cols=3, spacing=dp(10),
+            padding=(dp(10), dp(4), dp(10), dp(10)),
             size_hint_y=None,
-            col_force_default=True, col_default_width=dp(108),
         )
         grid.bind(minimum_height=grid.setter('height'))
         # Lat innlasting – tilføyer fliser med 40ms forsinkelse mellom hver.
@@ -3616,7 +3618,7 @@ class KommunikasjonstavleApp(App):
             orientation='vertical',
             size_hint_y=None, height=TILE_H,
             spacing=0,
-            padding=(0, 0, 0, dp(3)),  # ingen sidepadding – bilde fyller full bredde
+            padding=(0, 0, 0, dp(4)),
             box_color=list(card_col),
             radius=dp(14),
         )
@@ -3624,6 +3626,7 @@ class KommunikasjonstavleApp(App):
         if has_img:
             img_wrap = BoxLayout(
                 size_hint=(1, None), height=IMG_H,
+                padding=(dp(6), dp(6), dp(6), dp(2)),
             )
             # Hvit bakgrunn bak bildet direkte i canvas
             with img_wrap.canvas.before:
