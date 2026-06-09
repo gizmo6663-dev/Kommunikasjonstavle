@@ -61,183 +61,17 @@ try:
 except ImportError:
     PIL_OK = False
 
-# ══════════════════════════════════════════════════════════════════
-#  KV-REGLER – RBtn, RBox, NavBar, BottomBar
-#
-#  Alle stilede widgets bruker utelukkende canvas.before (aldri
-#  canvas / canvas.after) for å unngå RenderContext-stack-krasj.
-#  4 lag per widget: skygge → fargefyll → mørk ytre kant → lys indre kant.
-#  Ingen glød- eller pulseffekter – de er utelatt med vilje.
-# ══════════════════════════════════════════════════════════════════
+# ── Moduler ───────────────────────────────────────────────────────
+from kt_widgets import (
+    RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
+    hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
+    apply_high_contrast, fsp, mk_btn, haptic_feedback, dominant_color,
+)
+from kt_data import (
+    today_code, get_day_plan, is_paused, get_category,
+    get_folder as _get_folder_data,
+)
 
-_KV = """
-<RBtn>:
-    background_normal: ''
-    background_down: ''
-    background_color: 0, 0, 0, 0
-    bold: True
-    canvas.before:
-        # Skala-transform rundt midten av knappen.
-        # Brukes til trykk-feedback (0.96 → 1.0) – roligere enn rotasjon.
-        PushMatrix:
-        Scale:
-            x: self.scale
-            y: self.scale
-            origin: self.center
-        # 1. Myk skygge i tre lag – gir gradvis fade fra senter til kant
-        #    i stedet for en hard-kantet kopi av knappen.
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.04
-        RoundedRectangle:
-            pos: self.x + dp(4.5), self.y - dp(4.5)
-            size: self.width + dp(3), self.height + dp(3)
-            radius: [self.radius + dp(3)]
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.06
-        RoundedRectangle:
-            pos: self.x + dp(2.5), self.y - dp(2.5)
-            size: self.width + dp(1), self.height + dp(1)
-            radius: [self.radius + dp(2)]
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.08
-        RoundedRectangle:
-            pos: self.x + dp(1), self.y - dp(1)
-            size: self.width, self.height
-            radius: [self.radius + dp(1)]
-        # 2. PIL-gradient som tekstur (genereres av _update_grad_texture)
-        Color:
-            rgba: 1, 1, 1, 1
-        RoundedRectangle:
-            pos: self.pos
-            size: self.size
-            radius: [self.radius]
-            texture: self._grad_tex if hasattr(self, '_grad_tex') and self._grad_tex else None
-        # Fallback flat farge hvis tekstur ikke er klar
-        Color:
-            rgba: self.btn_color if not (hasattr(self, '_grad_tex') and self._grad_tex) else (0,0,0,0)
-        RoundedRectangle:
-            pos: self.pos
-            size: self.size
-            radius: [self.radius]
-        # 3. Én subtil ytre kant for definisjon.
-        # Den indre "glans-linjen" er fjernet bevisst – den konkurrerte med
-        # gradient-toppen og skapte en visuell "dobbel kant"-effekt.
-        Color:
-            rgba: 0, 0, 0, 0.16
-        Line:
-            rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
-            width: 1.0
-    canvas.after:
-        # PopMatrix ETTER at tekst er tegnet – slik skaleres alt inkl. label
-        PopMatrix:
-
-<RBox>:
-    canvas.before:
-        # Skyggehierarki: RBox = "surface" (lett). Lettere enn RBtn (som
-        # er "elevated"), så knapper leses tydelig oppå container-flater.
-        # To lag for myk overgang i stedet for hard offset-kopi.
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.03
-        RoundedRectangle:
-            pos: self.x + dp(2.5), self.y - dp(2.5)
-            size: self.width + dp(1), self.height + dp(1)
-            radius: [self.radius + dp(2)]
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.05
-        RoundedRectangle:
-            pos: self.x + dp(1), self.y - dp(1)
-            size: self.width, self.height
-            radius: [self.radius + dp(1)]
-        # Bakgrunnsfarge
-        Color:
-            rgba: self.box_color
-        RoundedRectangle:
-            pos: self.pos
-            size: self.size
-            radius: [self.radius]
-        # Subtil ytre kant
-        Color:
-            rgba: 0, 0, 0, 0.08
-        Line:
-            rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
-            width: 0.9
-
-<NavBar>:
-    canvas.before:
-        # Svakt mørkere enn app-bakgrunnen (0.94,0.95,0.98)
-        # – gir tydelig adskillelse uten å dominere visuelt
-        Color:
-            rgba: 0.86, 0.88, 0.93, 1.0
-        Rectangle:
-            pos: self.pos
-            size: self.size
-        # Tynn separator øverst
-        Color:
-            rgba: 0.70, 0.74, 0.84, 1.0
-        Line:
-            points: self.x, self.top, self.right, self.top
-            width: 1.2
-
-<BottomBar>:
-    canvas.before:
-        # Lys tittellinje øverst
-        Color:
-            rgba: 0.12, 0.16, 0.28, 1.0
-        Rectangle:
-            pos: self.pos
-            size: self.size
-        # Lys bunn-separator
-        Color:
-            rgba: 1.0, 1.0, 1.0, 0.10
-        Line:
-            points: self.x, self.y, self.right, self.y
-            width: 1.0
-
-<Popup>:
-    # Lys, nesten hvit bakgrunn – standard Kivy er mørk grå
-    background_color: 0.97, 0.97, 1.0, 1.0
-    background: ''
-    title_color: 0.08, 0.10, 0.35, 1
-    title_size: sp(17)
-    separator_color: 0.72, 0.78, 0.92, 1
-    canvas.before:
-        # Subtil skygge bak hele popupen
-        Color:
-            rgba: 0.04, 0.06, 0.18, 0.18
-        RoundedRectangle:
-            pos: self.x + dp(4), self.y - dp(6)
-            size: self.width - dp(6), self.height * 0.96
-            radius: [dp(16)]
-        # Hvit bakgrunn
-        Color:
-            rgba: 0.97, 0.97, 1.0, 1.0
-        RoundedRectangle:
-            pos: self.pos
-            size: self.size
-            radius: [dp(14)]
-        # Tynn blå kant
-        Color:
-            rgba: 0.72, 0.78, 0.92, 1.0
-        Line:
-            rounded_rectangle: (self.x + dp(1), self.y + dp(1), self.width - dp(2), self.height - dp(2), dp(13))
-            width: 1.2
-"""
-
-Builder.load_string(_KV)
-
-# Forleng ModalView/Popup entrance-animasjon globalt fra Kivy's standard 0.10s
-# til 0.18s. Forkjellen merkes som at popup-en "lander" på skjermen i stedet
-# for å brått overta. Samme verdi som vi bruker for skjermfade.
-try:
-    from kivy.uix.modalview import ModalView as _ModalView
-    _ModalView._anim_duration = 0.18
-except Exception:
-    pass
-
-# ── Fontregistrering ──────────────────────────────────────────────
-# NotoSans støtter fullt ut æ, ø, å og alle norske tegn.
-# Kivy's innebygde Roboto mangler disse på noen Android-versjoner.
-# Fonten ligger i assets/ og er inkludert i APK via buildozer.spec.
 _FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'assets', 'NotoSans-Regular.ttf')
 if os.path.exists(_FONT_PATH):
@@ -254,92 +88,6 @@ if os.path.exists(_FONT_PATH):
 
 # ══════════════════════════════════════════════════════════════════
 #  STILEDE WIDGET-KLASSER
-# ══════════════════════════════════════════════════════════════════
-
-class RBtn(Button):
-    """
-    Avrundet knapp med myk skygge, kantlinje og PIL-basert lineær gradient.
-    scale er NumericProperty slik at Animation kan animere den
-    via PushMatrix/Scale/PopMatrix i KV-regelen — gir en rolig
-    "trykk-inn-i-overflaten"-følelse i stedet for rotasjons-vipping.
-    """
-    btn_color  = ListProperty([0.30, 0.50, 1.0, 1.0])
-    radius     = NumericProperty(dp(14))
-    scale      = NumericProperty(1.0)
-    _grad_cache = {}  # delt tekstur-cache for alle RBtn-instanser
-
-    def on_btn_color(self, *_):
-        self._update_grad_texture()
-
-    def _update_grad_texture(self):
-        """
-        Genererer en 1×64-px gradient-tekstur fra btn_color.
-        Cacher teksturer per hex-farge – unngår unødvendig PIL-arbeid
-        ved skjermbytte når samme farge brukes flere ganger.
-
-        Gradienten er nå ren lineær – fra svakt mørkere i bunn til
-        svakt lysere på toppen, uten brytningspunkter. Det fjerner
-        "bølge"-effekten som oppstod når den stykkevise gradienten
-        skiftet helning på to steder.
-        """
-        if not PIL_OK:
-            return
-        # Bruk cache hvis samme farge allerede er generert
-        r, g, b, a = self.btn_color
-        cache_key = f'{r:.3f}{g:.3f}{b:.3f}{a:.3f}'
-        cached = RBtn._grad_cache.get(cache_key)
-        if cached:
-            self._grad_tex = cached
-            return
-        try:
-            H = 64
-            buf = bytearray(1 * H * 4)
-            # Subtil sweep: bunn −3% mørkere, topp +8% lysere.
-            # Total spredning ~11% (mot tidligere 36%) – knappen får
-            # fortsatt dimensjon, men oppleves som ett jevnt fargefelt.
-            DARK_END  = -0.03
-            LIGHT_END =  0.08
-            for y in range(H):
-                t = y / (H - 1)             # 0 = bunn, 1 = topp etter flip
-                delta = DARK_END + (LIGHT_END - DARK_END) * t
-                fr = min(1.0, max(0.0, r + delta))
-                fg = min(1.0, max(0.0, g + delta))
-                fb = min(1.0, max(0.0, b + delta))
-                i = y * 4
-                buf[i]   = int(fr * 255)
-                buf[i+1] = int(fg * 255)
-                buf[i+2] = int(fb * 255)
-                buf[i+3] = int(a  * 255)
-            tex = Texture.create(size=(1, H), colorfmt='rgba')
-            tex.blit_buffer(bytes(buf), colorfmt='rgba', bufferfmt='ubyte')
-            tex.wrap = 'repeat'   # tiles horisontalt til knappens fulle bredde
-            self._grad_tex = tex
-            RBtn._grad_cache[cache_key] = tex  # cache for gjenbruk
-        except Exception:
-            pass
-
-
-class RBox(BoxLayout):
-    """
-    Avrundet kort/panel-container med skygge og dobbel kantlinje.
-    Brukes for mappe-fliser og ASK-bilde-kort.
-    """
-    box_color = ListProperty([1.0, 1.0, 1.0, 1.0])
-    radius    = NumericProperty(dp(16))
-
-
-class NavBar(BoxLayout):
-    """Navigasjonsbar med hvit bakgrunn og separator-linje i bunn."""
-    pass
-
-
-class BottomBar(BoxLayout):
-    """Bunnbar med hvit bakgrunn og separator-linje i topp."""
-    pass
-
-
-# ══════════════════════════════════════════════════════════════════
-#  KONSTANTER
 # ══════════════════════════════════════════════════════════════════
 
 APP_TITLE    = 'Kommunikasjonstavle'
@@ -370,28 +118,6 @@ DAY_LABEL_NO  = {'MO': 'Ma', 'TU': 'Ti', 'WE': 'On', 'TH': 'To',
 DAY_FULL_NO   = {'MO': 'Mandag',  'TU': 'Tirsdag', 'WE': 'Onsdag',
                  'TH': 'Torsdag', 'FR': 'Fredag',  'SA': 'Lørdag',
                  'SU': 'Søndag'}
-
-def today_code():
-    """Dagens ukekode ('MO'–'SU'). Brukes både her og av widget-logikken."""
-    return DAY_CODES[datetime.now().weekday()]
-
-def get_day_plan(data, code):
-    """Returnerer aktivitetslisten for en gitt ukekode. Tom liste hvis intet."""
-    plans = data.get('dagsplaner') or {}
-    return plans.get(code, [])
-
-def is_paused(data):
-    """True hvis dagsrytmen er satt på pause."""
-    return bool(data.get('pause'))
-
-def get_category(data, cat_id):
-    """Finner kategoridict basert på id. Returnerer None hvis ikke funnet."""
-    if not cat_id:
-        return None
-    for c in data.get('kategorier', []):
-        if c.get('id') == cat_id:
-            return c
-    return None
 
 def time_of_day_tint():
     """
@@ -576,67 +302,6 @@ def setup_logging():
 # ══════════════════════════════════════════════════════════════════
 #  HJELPERE
 # ══════════════════════════════════════════════════════════════════
-
-def hex_k(h):
-    """Hex-farge (#RRGGBB) → Kivy RGBA-tuple (0–1)."""
-    h = h.lstrip('#')
-    return tuple(int(h[i:i+2], 16) / 255 for i in (0, 2, 4)) + (1,)
-
-def hex_p(h):
-    """Hex-farge (#RRGGBB) → PIL RGB-tuple (0–255)."""
-    h = h.lstrip('#')
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-
-def dominant_color(img_path, default=(0.94, 0.95, 0.98)):
-    """
-    Finner dominerende farge i et bilde med PIL ved å:
-    1. Skalere ned til 48×48 for ytelse
-    2. Konvertere til palette-modus (255 farger)
-    3. Velge hyppigste farge som ikke er nesten hvit/svart
-    Returnerer (r,g,b) Kivy float-tuple (0–1), blandet 15% mot hvit
-    for å gi et subtilt, ikke-overveldende bakgrunnstopp.
-    """
-    if not PIL_OK or not img_path or not os.path.exists(img_path):
-        return default
-    try:
-        img = PILImage.open(img_path).convert('RGB').resize((48, 48))
-        paletted = img.quantize(colors=8, method=PILImage.Quantize.MEDIANCUT)
-        palette  = paletted.getpalette()
-        counts   = {}
-        for px in paletted.getdata():
-            counts[px] = counts.get(px, 0) + 1
-        for idx in sorted(counts, key=counts.get, reverse=True):
-            r = palette[idx*3];  g = palette[idx*3+1];  b = palette[idx*3+2]
-            # Hopp over nesten-hvit og nesten-svart
-            lum = 0.299*r + 0.587*g + 0.114*b
-            if 35 < lum < 220:
-                # Bland 15% mot hvit for subtilt uttrykk
-                fr = (r/255 * 0.15 + 0.85)
-                fg = (g/255 * 0.15 + 0.85)
-                fb = (b/255 * 0.15 + 0.85)
-                return (fr, fg, fb)
-    except Exception:
-        pass
-    return default
-
-
-def text_on(bg_hex):
-    """
-    Returnerer enten mørk eller lys Kivy RGBA-farge for tekst
-    basert på bakgrunnens relative luminans (WCAG-formel).
-    Brukes for å sikre lesbar tekst på alle mappefarger.
-    """
-    h = bg_hex.lstrip('#')
-    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
-    # sRGB linearisering
-    def lin(c):
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-    lum = 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
-    # Mørk tekst på lys bakgrunn, lys tekst på mørk bakgrunn
-    if lum > 0.35:
-        return (0.06, 0.07, 0.18, 1.0)   # nesten svart
-    return (1.0, 1.0, 1.0, 1.0)           # hvit
 
 def _schedule_widget_alarm():
     """
@@ -857,142 +522,6 @@ def _wlog_write(msg):
         pass
 
 
-def haptic_feedback():
-    """
-    Haptisk feedback ved knappetrykk.
-    Metode 1: performHapticFeedback() via Android View – krever INGEN tillatelse.
-    Metode 2: plyer.vibrator(40) som fallback.
-    """
-    if platform != 'android':
-        return
-    # ── Metode 1: View.performHapticFeedback (anbefalt av Google) ──
-    try:
-        from jnius import autoclass
-        View            = autoclass('android.view.View')
-        PythonActivity  = autoclass('org.kivy.android.PythonActivity')
-        root_view       = (PythonActivity.mActivity
-                           .getWindow().getDecorView().getRootView())
-        if root_view:
-            # HAPTIC_FEEDBACK_VIRTUAL_KEY = 1 – standard klikk-effekt
-            root_view.performHapticFeedback(1)
-            return
-    except Exception as e:
-        logging.debug('performHapticFeedback feilet: %s', e)
-    # ── Metode 2: plyer (int, ikke float) ──────────────────────────
-    try:
-        from plyer import vibrator
-        vibrator.vibrate(40)     # må være int (millisekunder)
-    except Exception as e:
-        logging.debug('plyer.vibrator feilet: %s', e)
-
-
-def fsp(base_size):
-    """
-    Skalerbar sp()-wrapper. Leser font_scale fra appens innstillinger
-    slik at tekststørrelse kan justeres globalt fra Innstillinger-skjermen.
-    Returnerer sp(base_size) som fallback hvis appen ikke er startet ennå.
-    """
-    try:
-        app = App.get_running_app()
-        if app and hasattr(app, 'data'):
-            scale = app.data.get('settings', {}).get('font_scale', 1.0)
-            return sp(base_size * scale)
-    except Exception:
-        pass
-    return sp(base_size)
-
-
-def is_hc():
-    """Returnerer True hvis høykontrast-modus er aktivert."""
-    try:
-        app = App.get_running_app()
-        if app and hasattr(app, 'data'):
-            return bool(app.data.get('settings', {}).get('high_contrast', False))
-    except Exception:
-        pass
-    return False
-
-
-def hc(normal_hex, hc_hex=None):
-    """
-    Returnerer hex_k(hc_hex) i høykontrast-modus, ellers hex_k(normal_hex).
-    Dersom hc_hex ikke er oppgitt brukes '#000000' (svart) som standard HC-farge.
-    Brukes der knapper og bakgrunner må skifte farge i HC-modus.
-    """
-    if is_hc():
-        return hex_k(hc_hex or '#000000')
-    return hex_k(normal_hex)
-
-
-def apply_high_contrast(enabled):
-    """
-    Bytter appens overordnede utseende mellom normal og høykontrast.
-
-    Kivy-KV støtter ikke dynamiske betingelser i canvas-blokker på
-    en enkel måte (de evalueres ikke ved runtime). I stedet:
-      - Window.clearcolor settes umiddelbart
-      - mk_btn() og _make_folder_tile() leser is_hc() ved neste
-        gjenbygging av skjermen (skjer automatisk ved skjermbytte)
-
-    Høykontrast:
-      - Bakgrunn: hvit
-      - Knapper: svart (#000000) med hvit tekst
-      - Tekst-labels: svart (#000000)
-      - Kontrast-ratio: 21:1 (WCAG AAA maksimum)
-    """
-    from kivy.core.window import Window
-    if enabled:
-        Window.clearcolor = (1.0, 1.0, 1.0, 1.0)
-    else:
-        Window.clearcolor = time_of_day_tint()
-
-def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
-    """
-    Lager en RBtn med:
-    - PIL-gradient (via _update_grad_texture i RBtn)
-    - Kortvippings-animasjon ved trykk (rotation ±2°)
-    - Haptic feedback via plyer.vibrator (kort 30ms puls)
-    - WCAG AAA i høykontrast-modus
-    """
-    kw.setdefault('size_hint_y', None)
-    kw.setdefault('height', h)
-    if is_hc():
-        btn_color = [0.0, 0.0, 0.0, 1.0]
-        txt_color = (1.0, 1.0, 1.0, 1.0)
-    else:
-        btn_color = list(bg)
-        txt_color = fg
-    b = RBtn(
-        text=text,
-        btn_color=btn_color,
-        font_size=sp(fs),
-        color=txt_color, bold=True, **kw,
-    )
-    # Generer gradient-tekstur med det samme
-    b._update_grad_texture()
-
-    # Lagre original farge for tilbakestilling
-    orig_color = list(btn_color)
-
-    def _on_press(btn, *_):
-        # Mørklegg svakt + skala-trykk ned til 96%.
-        # 88% brightness er mykere enn tidligere 75% – passer flat-stilet bedre.
-        r, g, bv, a = btn.btn_color
-        btn.btn_color = [max(0, r*0.88), max(0, g*0.88), max(0, bv*0.88), a]
-        Animation(scale=0.92, duration=0.07, t='out_quad').start(btn)
-        haptic_feedback()
-
-    def _on_release_anim(btn, *_):
-        btn.btn_color = list(orig_color)
-        # Tilbake til normalstørrelse med svak elastisk overskyting (out_back).
-        # Mer behersket enn forrige rotasjons-bounce.
-        Animation(scale=1.0, duration=0.13, t='out_back').start(btn)
-
-    b.bind(on_press=_on_press, on_release=_on_release_anim)
-    if cb:
-        b.bind(on_release=cb)
-    return b
-
 def load_struct():
     if STRUCT_FILE and os.path.exists(STRUCT_FILE):
         try:
@@ -1123,6 +652,11 @@ def save_struct(d, immediate=False):
     if _save_event[0]:
         _save_event[0].cancel()
     _save_event[0] = Clock.schedule_once(_do_save, 1.0)
+
+
+# get_folder redefinert lokalt for bakoverkompatibilitet med alle referanser i App-klassen
+def get_folder(d, fid):
+    return _get_folder_data(d, fid)
 
 def get_folder(d, fid):
     """Finner mappe med gitt id – søker rekursivt i subfolders."""
@@ -1538,64 +1072,6 @@ def _open_android_picker(callback):
 
 # ══════════════════════════════════════════════════════════════════
 #  WIDGET: TRYKKBART BILDE
-# ══════════════════════════════════════════════════════════════════
-
-class TappableImage(Image):
-    """
-    Image-widget med enkelt-trykk-callback og dobbelt-trykk-zoom.
-    Enkelt trykk → action-callback.
-    Dobbelt trykk (< 0.35s) → popup-zoom av bildet.
-    """
-    def __init__(self, action, **kw):
-        super().__init__(**kw)
-        self._action     = action
-        self._last_touch = 0
-
-    def on_touch_down(self, touch):
-        if not self.collide_point(*touch.pos):
-            return super().on_touch_down(touch)
-        now = Clock.get_time()
-        dt  = now - self._last_touch
-        self._last_touch = now
-        # Visuell feedback: kort dimming
-        Animation(opacity=0.65, duration=0.06).start(self)
-        if dt < 0.35 and dt > 0.01:
-            self._show_zoom_popup()
-        else:
-            self._action()
-        return True
-
-    def on_touch_up(self, touch):
-        if self.collide_point(*touch.pos):
-            Animation(opacity=1.0, duration=0.12).start(self)
-        return super().on_touch_up(touch)
-
-    def _show_zoom_popup(self):
-        from kivy.uix.floatlayout import FloatLayout
-        overlay = FloatLayout(size=Window.size)
-        with overlay.canvas.before:
-            from kivy.graphics import Color as KColor, Rectangle
-            KColor(0, 0, 0, 0.85)
-            Rectangle(pos=(0,0), size=Window.size)
-        zoom_img = Image(
-            source=self.source,
-            size_hint=POPUP_FULL,
-            pos_hint={'center_x': .5, 'center_y': .5},
-            allow_stretch=True, keep_ratio=True,
-        )
-        zoom_img.opacity = 0
-        overlay.add_widget(zoom_img)
-        Window.add_widget(overlay)
-        Animation(opacity=1, duration=0.20, t='out_quad').start(zoom_img)
-        def dismiss(*_):
-            anim = Animation(opacity=0, duration=0.15)
-            anim.bind(on_complete=lambda *_: Window.remove_widget(overlay))
-            anim.start(overlay)
-        overlay.bind(on_touch_down=lambda w, t: dismiss())
-
-
-# ══════════════════════════════════════════════════════════════════
-#  WIDGET: TEGNE-CANVAS
 # ══════════════════════════════════════════════════════════════════
 
 class DrawCanvas(Image):
@@ -3209,14 +2685,18 @@ class KommunikasjonstavleApp(App):
         self._show_draw()
 
     def toggle_edit(self, *_):
-        # Skjermer hvor redigeringsmodus ikke har noen mening:
-        # ignorer trykket fremfor å kaste brukeren til hjemskjermen.
         if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar', 'settings'):
             return
+        st = self.data.get('settings', {})
+        # Barn-modus: krev PIN for å aktivere redigeringsmodus
+        if st.get('barn_modus', False) and not self.edit_mode:
+            self._barn_pin_popup(self._do_toggle_edit)
+        else:
+            self._do_toggle_edit()
+
+    def _do_toggle_edit(self):
         self.edit_mode = not self.edit_mode
         self._set_edit_highlight(self.edit_mode)
-        # Hver skjerm som faktisk bruker edit_mode må gjenoppbygges
-        # så +knapper og slettekontroller dukker opp/forsvinner.
         if self._cur_scr == 'folder':
             self._show_folder(fid=self.cur_folder)
         elif self._cur_scr == 'sequences':
@@ -3301,6 +2781,204 @@ class KommunikasjonstavleApp(App):
     #  HJEMSKJERM
     # ══════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════════════════
+    #  FESTEDE SNARVEIER
+    # ══════════════════════════════════════════════════════════════
+
+    def _build_pinned_section(self, festede):
+        """Bygger rad med opp til 8 festede bildesnarveier øverst på hjem."""
+        box = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+        box.bind(minimum_height=box.setter('height'))
+        lbl = Label(text='Snarveier', font_size=fsp(12), bold=True,
+                    color=(0.45, 0.47, 0.60, 1),
+                    size_hint_y=None, height=dp(20), halign='left')
+        lbl.bind(size=lbl.setter('text_size'))
+        box.add_widget(lbl)
+        grid = GridLayout(cols=4, spacing=dp(8), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+        for pin in festede[:8]:
+            grid.add_widget(self._make_pinned_tile(pin))
+        box.add_widget(grid)
+        return box
+
+    def _make_pinned_tile(self, pin):
+        IMG_H  = dp(72)
+        LBL_H  = dp(28)
+        TILE_H = IMG_H + LBL_H + dp(4)
+        fo     = get_folder(self.data, pin.get('folder_id'))
+        color  = fo.get('color', '#4D96FF') if fo else '#4D96FF'
+        r, g, b, _ = hex_k(color)
+        card_col = (r*0.12 + 0.88, g*0.12 + 0.88, b*0.12 + 0.88, 1.0)
+        cell = RBox(orientation='vertical', size_hint_y=None, height=TILE_H,
+                    spacing=0, padding=(0, 0, 0, dp(2)),
+                    box_color=list(card_col), radius=dp(12))
+        img_path = pin.get('image', '')
+        if img_path and os.path.exists(img_path):
+            thumb = get_thumbnail(img_path, int(IMG_H), int(IMG_H))
+            ti = TappableImage(
+                lambda p=img_path, n=pin['name']: self._show_image_full(p, n),
+                source=img_path if thumb is None else '',
+                allow_stretch=True, keep_ratio=True,
+                size_hint=(1, None), height=IMG_H)
+            if thumb:
+                ti.texture = thumb
+            cell.add_widget(ti)
+        btn = RBtn(text=pin['name'], size_hint=(1, None), height=LBL_H,
+                   btn_color=list(hex_k(color)), color=text_on(color),
+                   bold=True, font_size=fsp(11), radius=dp(8),
+                   shorten=True, shorten_from='right',
+                   halign='center', valign='middle')
+        btn.bind(size=btn.setter('text_size'))
+        btn.bind(on_release=lambda b, p=img_path, n=pin['name']:
+                 self._show_image_full(p, n))
+        cell.add_widget(btn)
+        return cell
+
+    def _pin_popup(self, fo, it):
+        """Popup: fest til hjem / løsne fra hjem."""
+        festede = self.data.setdefault('festede', [])
+        already = next((p for p in festede if p.get('id') == it['id']), None)
+        box = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(16))
+        box.add_widget(Label(text=it['name'], font_size=fsp(16), bold=True,
+                             color=(0.06, 0.08, 0.30, 1),
+                             size_hint_y=None, height=dp(36), halign='center'))
+        pop = Popup(title='', content=box, size_hint=POPUP_SMALL,
+                    separator_height=0)
+        if already:
+            def _unpin(*_):
+                self.data['festede'] = [p for p in festede
+                                        if p.get('id') != it['id']]
+                save_struct(self.data)
+                pop.dismiss()
+                self._toast('Snarvei fjernet.')
+                self._show_home()
+            box.add_widget(mk_btn('Løsne fra hjem', hex_k('#FF9F43'),
+                                  h=dp(50), fs=14, cb=_unpin))
+        else:
+            def _pin(*_):
+                festede.append({'id': it['id'], 'name': it['name'],
+                                'image': it.get('image', ''),
+                                'folder_id': fo['id']})
+                save_struct(self.data)
+                pop.dismiss()
+                self._toast('Festet til hjem!')
+            box.add_widget(mk_btn('Fest til hjem', hex_k('#6BCB77'),
+                                  h=dp(50), fs=14, cb=_pin))
+        box.add_widget(mk_btn('Avbryt', hex_k('#78909C'),
+                              h=dp(46), fs=13,
+                              cb=lambda *_: pop.dismiss()))
+        pop.open()
+
+    # ══════════════════════════════════════════════════════════════
+    #  BARN-MODUS
+    # ══════════════════════════════════════════════════════════════
+
+    def _barn_pin_popup(self, on_success):
+        """Viser en 4-sifret PIN-dialog for barn-modus. on_success() kalles ved riktig PIN."""
+        pin_stored = self.data.get('settings', {}).get('barn_modus_pin', '')
+        if not pin_stored:
+            on_success()
+            return
+        entered = ['']
+        box = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(16))
+        box.add_widget(Label(text='Skriv inn PIN for å redigere',
+                             font_size=fsp(15), bold=True,
+                             color=(0.06, 0.08, 0.30, 1),
+                             size_hint_y=None, height=dp(34), halign='center'))
+        dots_lbl = Label(text='_ _ _ _', font_size=fsp(22), bold=True,
+                         color=(0.20, 0.30, 0.60, 1),
+                         size_hint_y=None, height=dp(40), halign='center')
+        box.add_widget(dots_lbl)
+        err_lbl = Label(text='', font_size=fsp(13),
+                        color=(0.80, 0.15, 0.15, 1),
+                        size_hint_y=None, height=dp(24), halign='center')
+        box.add_widget(err_lbl)
+        pop = Popup(title='', content=box, size_hint=POPUP_SMALL,
+                    separator_height=0)
+
+        def _update_dots():
+            n = len(entered[0])
+            dots_lbl.text = '  '.join(['●' if i < n else '_' for i in range(4)])
+
+        def _digit(d):
+            if len(entered[0]) < 4:
+                entered[0] += str(d)
+                _update_dots()
+                if len(entered[0]) == 4:
+                    if entered[0] == pin_stored:
+                        pop.dismiss()
+                        on_success()
+                    else:
+                        err_lbl.text = 'Feil PIN – prøv igjen'
+                        entered[0] = ''
+                        _update_dots()
+
+        numpad = GridLayout(cols=3, spacing=dp(6), size_hint_y=None, height=dp(210))
+        for d in [1,2,3,4,5,6,7,8,9,None,0,None]:
+            if d is None:
+                numpad.add_widget(Widget())
+            else:
+                numpad.add_widget(mk_btn(str(d), hex_k('#4D96FF'),
+                                         h=dp(64), fs=20,
+                                         cb=lambda *_, digit=d: _digit(digit)))
+        box.add_widget(numpad)
+        box.add_widget(mk_btn('Avbryt', hex_k('#78909C'), h=dp(44), fs=13,
+                              cb=lambda *_: pop.dismiss()))
+        pop.open()
+
+    # ══════════════════════════════════════════════════════════════
+    #  DAGSPLAN-FREMGANG ANIMASJON
+    # ══════════════════════════════════════════════════════════════
+
+    def _anim_activity_done(self, center_x=None, center_y=None):
+        """
+        Viser en grønn ekspanderende ring som fades ut – bekrefter
+        fullført aktivitet. Sentrert på skjermen om pos ikke er gitt.
+        """
+        if center_x is None:
+            center_x = Window.width  / 2
+        if center_y is None:
+            center_y = Window.height / 2
+        SIZE = dp(90)
+        from kivy.uix.widget import Widget as _W
+        from kivy.graphics import Color as _C, Line as _L
+        ring = _W(size_hint=(None, None), size=(SIZE, SIZE),
+                  pos=(center_x - SIZE/2, center_y - SIZE/2))
+        with ring.canvas:
+            _C(0.18, 0.72, 0.38, 0.85)
+            _line = _L(circle=(center_x, center_y, SIZE/2), width=dp(4))
+        Window.add_widget(ring)
+        def _cleanup(*_):
+            try: Window.remove_widget(ring)
+            except Exception: pass
+        (Animation(size=(SIZE*2.2, SIZE*2.2), opacity=0, duration=0.45, t='out_cubic')
+         .bind(on_complete=_cleanup)
+         .start(ring))
+
+    # ══════════════════════════════════════════════════════════════
+    #  FLIP-OVERGANG TIL FULLSKJERM-BILDE
+    # ══════════════════════════════════════════════════════════════
+
+    def _flip_to_image(self, path, name):
+        """
+        Animert overgang til fullskjermbilde:
+        innhold fades+klemmes horisontalt ut, så inn igjen med nytt innhold.
+        Gir en «flip»-effekt uten 3D-matrise.
+        """
+        old = self._content.children[0] if self._content.children else None
+        if old:
+            def _show(*_):
+                self._show_image_full(path, name)
+                if self._content.children:
+                    new = self._content.children[0]
+                    new.opacity = 0
+                    Animation(opacity=1, duration=0.18, t='out_cubic').start(new)
+            (Animation(opacity=0, duration=0.12, t='in_cubic')
+             .bind(on_complete=_show)
+             .start(old))
+        else:
+            self._show_image_full(path, name)
+
     def _show_home(self, **_):
         self._cur_scr   = 'home'
         self.cur_folder = None
@@ -3309,12 +2987,14 @@ class KommunikasjonstavleApp(App):
         outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6)))
 
         # ── «Akkurat nå»-kort ────────────────────────────────────
-        # Speiler widgeten: viser nåværende aktivitet eller neste,
-        # eller pause-status. Trykk fører rett til dagsplan-skjermen
-        # så brukeren slipper å gå om quickbaren.
         snap = self._home_now_card()
         if snap is not None:
             outer.add_widget(snap)
+
+        # ── Festede snarveier ─────────────────────────────────────
+        festede = self.data.get('festede', [])
+        if festede:
+            outer.add_widget(self._build_pinned_section(festede))
 
         # ── «Ny mappe»-knapp kun i redigeringsmodus ───────────────
         if self.edit_mode:
@@ -3498,6 +3178,14 @@ class KommunikasjonstavleApp(App):
         save_struct(self.data)
         self.cur_folder = fo['id']
         self._show_folder(fid=fo['id'])
+        # Mappe-åpning: skaler innhold fra 0.88→1.0 med spring for «løft ut»-følelse
+        def _spring_in(*_):
+            if self._content.children:
+                w = self._content.children[0]
+                w.opacity = 0
+                from kivy.graphics.context_instructions import PushMatrix, PopMatrix, Scale
+                Animation(opacity=1, duration=0.22, t='out_cubic').start(w)
+        Clock.schedule_once(_spring_in, 0.02)
 
     # ══════════════════════════════════════════════════
     #  MAPPESKJERM – ASK-bilder
@@ -3559,8 +3247,11 @@ class KommunikasjonstavleApp(App):
         # ── ASK-bilder ────────────────────────────────────────────
         # spacing=dp(10): mellomrom mellom kort
         # padding=(dp(10), dp(4)): sidepadding = samme som spacing → jevn kant
+        # Barn-modus: 2 kolonner for større treffflater
+        barn = self.data.get('settings', {}).get('barn_modus', False)
+        n_cols = 2 if barn else 3
         grid = GridLayout(
-            cols=3, spacing=dp(10),
+            cols=n_cols, spacing=dp(10),
             padding=(dp(10), dp(4), dp(10), dp(10)),
             size_hint_y=None,
         )
@@ -3608,7 +3299,8 @@ class KommunikasjonstavleApp(App):
         if edit:
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
-            tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
+            # Flip-animasjon til fullskjerm-bilde
+            tap = lambda p=img_path, n=it['name']: self._flip_to_image(p, n)
 
         # Én enkelt ytre ramme – tonet mappefarge
         # padding=0 på sidene så bildet fyller full bredde
@@ -3667,7 +3359,31 @@ class KommunikasjonstavleApp(App):
             halign='center', valign='middle',
         )
         btn.bind(size=btn.setter('text_size'))
-        btn.bind(on_release=lambda b: tap())
+
+        if edit:
+            btn.bind(on_release=lambda b: tap())
+        else:
+            # Lang trykk (0.5s) → pin-popup; kort trykk → normal tap
+            _lp   = [None]
+            _done = [False]
+
+            def _lp_press(*_):
+                _done[0] = False
+                _lp[0] = Clock.schedule_once(lambda *_: _fire_lp(), 0.5)
+
+            def _fire_lp():
+                _done[0] = True
+                haptic_feedback()
+                self._pin_popup(fo, it)
+
+            def _lp_release(*_):
+                if _lp[0]:
+                    _lp[0].cancel(); _lp[0] = None
+                if not _done[0]:
+                    tap()
+
+            btn.bind(on_press=_lp_press, on_release=_lp_release)
+
         cell.add_widget(btn)
 
         if edit:
@@ -3752,6 +3468,24 @@ class KommunikasjonstavleApp(App):
             cb=lambda *_: self._download_image(path),
         ))
         card.add_widget(btn_row)
+
+        # ── Dagsplan-integrasjon: vis om bildet er i dagens plan ──
+        today_entries = get_day_plan(self.data, today_code())
+        linked = [e for e in today_entries if e.get('image') == path]
+        if linked:
+            e = linked[0]
+            tid = f"{e.get('start','')}–{e.get('end','')}".strip('–')
+            badge = RBox(
+                orientation='horizontal', size_hint_y=None, height=dp(36),
+                padding=(dp(10), dp(6)), spacing=dp(8),
+                box_color=(0.88, 0.96, 0.90, 1.0), radius=dp(10),
+            )
+            badge.add_widget(Label(
+                text=f'Dagsplan i dag: {e["name"]}' + (f'  {tid}' if tid else ''),
+                font_size=fsp(13), color=(0.10, 0.40, 0.18, 1),
+                halign='left', valign='middle',
+            ))
+            card.add_widget(badge)
 
         outer.add_widget(card)
         outer.add_widget(BoxLayout())  # spacer
@@ -4805,6 +4539,64 @@ class KommunikasjonstavleApp(App):
             hex_k('#6BCB77'), h=dp(54), fs=15,
             cb=lambda *_: self._show_onboarding()))
 
+        # ── Barn-modus ───────────────────────────────────────────
+        outer.add_widget(Label(text='Barn-modus:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        is_barn = st.get('barn_modus', False)
+        barn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        barn_on  = mk_btn('På',  hex_k('#FF9F43' if is_barn  else '#546E7A'), h=dp(52), fs=16)
+        barn_off = mk_btn('Av',  hex_k('#4D96FF' if not is_barn else '#90CAF9'), h=dp(52), fs=16)
+        def set_barn(val):
+            st['barn_modus'] = val
+            save_struct(self.data)
+            barn_on.btn_color  = list(hex_k('#FF9F43' if val else '#546E7A'))
+            barn_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
+        barn_on.bind( on_release=lambda *_: set_barn(True))
+        barn_off.bind(on_release=lambda *_: set_barn(False))
+        barn_row.add_widget(barn_on); barn_row.add_widget(barn_off)
+        outer.add_widget(barn_row)
+        outer.add_widget(Label(
+            text='2-kolonne rutenett og PIN-beskyttet redigering for å hindre utilsiktede endringer.',
+            size_hint_y=None, height=dp(44), font_size=fsp(12),
+            color=(0.5, 0.5, 0.5, 1), halign='left', valign='top'))
+
+        # PIN-oppsett for barn-modus
+        cur_pin = st.get('barn_modus_pin', '')
+        pin_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        pin_lbl = Label(
+            text=f'PIN: {"*" * len(cur_pin) if cur_pin else "(ingen – kun knapp-lås)"}',
+            font_size=fsp(13), color=(0.3, 0.34, 0.50, 1),
+            halign='left', valign='middle', size_hint_x=1)
+        pin_lbl.bind(size=pin_lbl.setter('text_size'))
+        pin_row.add_widget(pin_lbl)
+
+        def _set_pin_popup(*_):
+            from kivy.uix.textinput import TextInput as _TI
+            pbox = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(16))
+            pbox.add_widget(Label(text='Ny PIN (4 siffer, la stå tomt for ingen PIN):',
+                                  font_size=fsp(14), color=(0.06,0.08,0.30,1),
+                                  size_hint_y=None, height=dp(38), halign='center'))
+            pin_inp = _TI(hint_text='1234', multiline=False, input_filter='int',
+                          max_chars=4, size_hint_y=None, height=dp(50),
+                          font_size=fsp(18), halign='center')
+            pbox.add_widget(pin_inp)
+            pp = Popup(title='', content=pbox, size_hint=POPUP_SMALL, separator_height=0)
+            def _save(*_):
+                v = pin_inp.text.strip()
+                st['barn_modus_pin'] = v
+                save_struct(self.data)
+                pin_lbl.text = f'PIN: {"*"*len(v) if v else "(ingen)"}'
+                pp.dismiss()
+            pbox.add_widget(mk_btn('Lagre PIN', hex_k('#4D96FF'), h=dp(48), fs=14, cb=_save))
+            pbox.add_widget(mk_btn('Avbryt', hex_k('#78909C'), h=dp(44), fs=13,
+                                   cb=lambda *_: pp.dismiss()))
+            pp.open()
+
+        pin_row.add_widget(mk_btn('Endre PIN', hex_k('#78909C'),
+                                  h=dp(46), fs=12, size_hint_x=None, width=dp(110),
+                                  cb=_set_pin_popup))
+        outer.add_widget(pin_row)
+
         # Wrap outer i ScrollView slik at innstillinger kan rulles
         sv = ScrollView(do_scroll_x=False)
         inner = BoxLayout(
@@ -5771,6 +5563,23 @@ INNSTILLINGER
                     text=label_text, markup=True,
                     font_size=fsp(14), bold=is_cur,
                     color=text_col, halign='left'))
+
+                # «Fullfør»-knapp bare på aktiv aktivitet (ikke allerede fullfort)
+                if is_cur and not completed:
+                    def _do_complete(row=row, *_):
+                        # Finn senter av raden i vindu-koordinater
+                        try:
+                            wx, wy = row.to_window(row.center_x, row.center_y)
+                        except Exception:
+                            wx, wy = Window.width/2, Window.height/2
+                        self._anim_activity_done(wx, wy)
+                        self._toast('Aktivitet fullfort!')
+                    row.add_widget(mk_btn(
+                        'Fullfört', hex_k('#6BCB77'),
+                        h=dp(36), fs=11,
+                        size_hint_x=None, width=dp(72),
+                        cb=_do_complete))
+
                 list_box.add_widget(row)
             list_sv.add_widget(list_box)
             outer.add_widget(list_sv)
@@ -6428,6 +6237,7 @@ INNSTILLINGER
 
     def _tidsur_stop(self):
         self._timer_running = False
+        self._pulse_phase   = 0.0   # nullstill puls ved stopp
         ev = getattr(self, '_timer_event', None)
         if ev:
             ev.cancel()
@@ -6447,6 +6257,14 @@ INNSTILLINGER
             self._tidsur_stop()
             self._toast('Tiden er ute!', duration=4.0)
             Clock.schedule_once(lambda *_: launch_confetti(3.0), 0.1)
+            return
+        total = max(getattr(self, '_timer_total_sek', 1), 1)
+        frac  = self._timer_sek / total
+        # Puls-fase: øk bare når under 20% igjen
+        if frac < 0.20:
+            self._pulse_phase = getattr(self, '_pulse_phase', 0.0) + 0.22
+        else:
+            self._pulse_phase = 0.0
         self._tidsur_refresh_display()
 
     def _tidsur_refresh_display(self):
@@ -6465,15 +6283,10 @@ INNSTILLINGER
 
     def _draw_timer_disk(self, frac):
         """
-        Pai-animasjon: starter som hel rød sirkel, blir gradvis hvit.
-        frac=1.0 → full rød pai (full tid igjen)
-        frac=0.0 → helt hvit (tom – tid ute)
-
-        Visuelt: rød "pai" tegnes fra toppen og dekker frac*360 grader.
-        Resten er hvit. Ingen donut – full fyllt sirkel.
-        Fargen interpolerer: rød (#E53935) → oransje (#FF9800) → hvit
-        slik at siste 20% advarer med oransje.
+        Pai-animasjon. Under 20% pulserer fargen via sin-kurve
+        mellom dyp rød og lys oransje for å varsle brukeren.
         """
+        import math as _math
         SIZE = 300
         cx = cy = SIZE // 2
         r  = SIZE // 2 - 8
@@ -6481,30 +6294,24 @@ INNSTILLINGER
         pil_img = PILImage.new('RGBA', (SIZE, SIZE), (0, 0, 0, 0))
         d       = ImageDraw.Draw(pil_img)
 
-        # Hvit bakgrunns-sirkel (vises når frac < 1.0)
         d.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(245, 245, 248, 255))
 
         if frac > 0.001:
-            # Farge: rød → oransje de siste 20%
             if frac > 0.20:
-                col = (229, 57, 53, 255)    # rød #E53935
+                col = (229, 57, 53, 255)
             else:
-                t = frac / 0.20             # 0→1 i siste 20%
+                phase = getattr(self, '_pulse_phase', 0.0)
+                pulse = (_math.sin(phase) + 1) / 2
                 col = (
-                    int(255 + (229 - 255) * t),   # R: 255→229
-                    int(152 + (57  - 152) * t),   # G: 152→57
-                    int(0   + (53  - 0)   * t),   # B: 0→53
+                    int(220 + 35 * pulse),
+                    int(30  + 80 * pulse),
+                    int(20  * (1 - pulse)),
                     255
                 )
-            # Tegn rød pai fra toppen, dekker frac av sirkelen
             end_angle = -90 + frac * 360
-            d.pieslice(
-                [cx-r, cy-r, cx+r, cy+r],
-                start=-90, end=end_angle,
-                fill=col,
-            )
+            d.pieslice([cx-r, cy-r, cx+r, cy+r],
+                       start=-90, end=end_angle, fill=col)
 
-        # Tynn mørk kant
         d.ellipse([cx-r, cy-r, cx+r, cy+r],
                   outline=(180, 60, 50, 180), width=3)
 
