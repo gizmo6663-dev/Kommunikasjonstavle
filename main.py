@@ -2590,6 +2590,111 @@ class KommunikasjonstavleApp(App):
                 Window.remove_widget(self._confetti_btn_widget)
                 self._confetti_btn_widget = None
 
+    def _init_bundled_assets(self):
+        """
+        Kopierer bilder som er bundlet med APK-en til appens IMG_DIR.
+
+        Struktur i repo:
+            assets/
+              bilder/
+                Spising/    ← mappenavn → automatisk opprettet som bildetavle-mappe
+                  spise.png
+                  drikke.png
+                Påkledning/
+                  bukse.png
+                  ...
+
+        Logikk:
+          • Kjøres én gang per install/oppdatering (styres av 'bundled_version'
+            i structure.json). Øk BUNDLE_VERSION i koden for å tvinge re-kopiering
+            ved neste apk-oppdatering.
+          • Bildene kopieres til IMG_DIR. Mappene legges til i structure.json
+            hvis de ikke allerede finnes (unngår duplikater).
+          • Eksisterende brukerdata overskrives IKKE.
+        """
+        BUNDLE_VERSION = 1  # øk denne når du endrer assets/-innholdet
+
+        already_done = self.data if hasattr(self, 'data') else {}
+        settings = already_done.get('settings', {}) if isinstance(already_done, dict) else {}
+        if settings.get('bundled_version', 0) >= BUNDLE_VERSION:
+            return
+
+        # Finn assets/-mappen relativt til main.py / APK resource-rot
+        candidates = [
+            os.path.join(os.path.dirname(__file__), 'assets', 'bilder'),
+            os.path.join(self.directory, 'assets', 'bilder'),
+        ]
+        assets_root = next((p for p in candidates if os.path.isdir(p)), None)
+        if not assets_root:
+            logging.info('_init_bundled_assets: ingen assets/bilder/-mappe funnet')
+            return
+
+        # Last inn (eller bruk allerede lastet) struktur
+        if not hasattr(self, 'data') or not isinstance(self.data, dict):
+            self.data = load_struct()
+
+        imported_folders = 0
+        imported_images  = 0
+
+        for folder_name in sorted(os.listdir(assets_root)):
+            src_folder = os.path.join(assets_root, folder_name)
+            if not os.path.isdir(src_folder):
+                continue
+
+            # Sjekk om mappe med dette navnet allerede finnes
+            existing = next(
+                (f for f in self.data.get('folders', [])
+                 if f.get('name', '').lower() == folder_name.lower()),
+                None)
+            if not existing:
+                color_idx = imported_folders % len(FOLDER_COLORS)
+                new_fo = {
+                    'id':         str(uuid.uuid4()),
+                    'name':       folder_name,
+                    'color':      FOLDER_COLORS[color_idx],
+                    'image':      None,
+                    'items':      [],
+                    'subfolders': [],
+                    'opens':      0,
+                }
+                self.data.setdefault('folders', []).append(new_fo)
+                existing = new_fo
+                imported_folders += 1
+
+            existing_imgs = {
+                os.path.basename(it.get('image', ''))
+                for it in existing.get('items', [])
+                if it.get('image')
+            }
+
+            for img_file in sorted(os.listdir(src_folder)):
+                if not img_file.lower().endswith(
+                        ('.png', '.jpg', '.jpeg', '.webp', '.gif')):
+                    continue
+                if img_file in existing_imgs:
+                    continue  # allerede importert
+
+                src_path = os.path.join(src_folder, img_file)
+                dst_path = os.path.join(IMG_DIR, img_file)
+                try:
+                    if not os.path.exists(dst_path):
+                        shutil.copy2(src_path, dst_path)
+                    name = os.path.splitext(img_file)[0].replace('_', ' ')
+                    existing.setdefault('items', []).append({
+                        'id':    str(uuid.uuid4()),
+                        'name':  name,
+                        'image': dst_path,
+                    })
+                    imported_images += 1
+                except Exception as _e:
+                    logging.warning('bundled asset copy feilet: %s', _e)
+
+        self.data.setdefault('settings', {})['bundled_version'] = BUNDLE_VERSION
+        save_struct(self.data, immediate=True)
+        if imported_images:
+            logging.info('Bundled assets: %d mapper, %d bilder importert',
+                         imported_folders, imported_images)
+
     def build(self):
         setup_logging()
         Window.clearcolor = time_of_day_tint()
@@ -2617,6 +2722,9 @@ class KommunikasjonstavleApp(App):
 
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
+
+        # Kopier bundlede bilder (fra repo assets/) til IMG_DIR ved første kjøring
+        self._init_bundled_assets()
 
         self.data        = load_struct()
         # Aktiver HC-modus hvis det var aktivert ved forrige kjøring
@@ -5642,14 +5750,7 @@ INNSTILLINGER
 
         sv = ScrollView()
         sv.add_widget(outer)
-        self._content.clear_widgets()
-        if animate:
-            sv.opacity = 0
-            self._content.add_widget(sv)
-            Animation(opacity=1, duration=0.18, t='out_quad').start(sv)
-        else:
-            sv.opacity = 1
-            self._content.add_widget(sv)
+        self._set_content(sv, animate=animate)
 
     def _build_activity_trio(self, prev_act, center_act, next_act,
                              center_label='Pågår nå', center_color='#1FAB3A',
@@ -6043,53 +6144,92 @@ INNSTILLINGER
 
         def _do():
             try:
-                W, ROW, PAD = 800, 88, 20
-                H = PAD*2 + 60 + ROW * len(entries)
-                img = PILImage.new('RGB', (W, H), (250, 251, 255))
-                d   = ImageDraw.Draw(img)
+                # ── Sideoppsett ───────────────────────────────────────────
+                MAX_PER_PAGE = 6          # maks aktiviteter per side
+                W            = 800
+                HEADER_H     = 62         # overskrift-blokk
+                PAGE_H       = 1050       # fast sidehøyde
+                PAD          = 18
+                AVAIL_H      = PAGE_H - HEADER_H - PAD * 2
+
                 try:
-                    fh = ImageFont.truetype(_FONT_PATH, 32)
-                    fr = ImageFont.truetype(_FONT_PATH, 22)
+                    fh = ImageFont.truetype(_FONT_PATH, 34)
+                    fr = ImageFont.truetype(_FONT_PATH, 24)
                     fs = ImageFont.truetype(_FONT_PATH, 18)
+                    fp = ImageFont.truetype(_FONT_PATH, 15)
                 except Exception:
-                    fh = fr = fs = ImageFont.load_default()
+                    fh = fr = fs = fp = ImageFont.load_default()
 
-                d.rectangle([0,0,W,58], fill=(21,28,68))
-                d.text((W//2, 29), title, font=fh,
-                       fill=(255,255,255), anchor='mm')
+                pages = [entries[i:i+MAX_PER_PAGE]
+                         for i in range(0, max(len(entries), 1), MAX_PER_PAGE)]
+                saved_files = []
 
-                for i, e in enumerate(entries):
-                    y  = PAD + 60 + i * ROW
-                    bg = (240,242,252) if i%2==0 else (248,249,255)
-                    d.rectangle([0,y,W,y+ROW-2], fill=bg)
-                    nx = PAD
-                    if mode == 'dagsrytme':
-                        tid = f"{e.get('start','')}–{e.get('end','')}"
-                        d.text((PAD, y+ROW//2), tid, font=fs,
-                               fill=(80,90,120), anchor='lm')
-                        nx = 190
-                    ip = e.get('image','')
-                    if ip and os.path.exists(ip):
-                        try:
-                            sym = PILImage.open(ip).convert('RGBA')
-                            sym.thumbnail((ROW-8, ROW-8))
-                            r, g, b, a = sym.split()
-                            sym_rgb = PILImage.merge('RGB', (r, g, b))
-                            img.paste(sym_rgb, (nx, y+4), mask=a)
-                            nx += ROW
-                        except Exception:
-                            pass
-                    d.text((nx+6, y+ROW//2), e.get('name',''),
-                           font=fr, fill=(20,24,60), anchor='lm')
+                for page_idx, page_entries in enumerate(pages):
+                    n_rows = max(len(page_entries), 1)
+                    ROW    = min(AVAIL_H // n_rows, 160)
+                    H      = HEADER_H + PAD * 2 + ROW * n_rows
 
-                dst = os.path.join(DOWNLOAD_DIR, fname)
-                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-                img.save(dst)
+                    img = PILImage.new('RGB', (W, H), (250, 251, 255))
+                    d   = ImageDraw.Draw(img)
+
+                    hdr_text = title if len(pages) == 1 else f'{title}  ({page_idx+1}/{len(pages)})'
+                    d.rectangle([0, 0, W, HEADER_H], fill=(21, 28, 68))
+                    d.text((W//2, HEADER_H//2), hdr_text, font=fh,
+                           fill=(255, 255, 255), anchor='mm')
+
+                    for i, e in enumerate(page_entries):
+                        y  = PAD + HEADER_H + i * ROW
+                        bg = (240, 242, 252) if i % 2 == 0 else (248, 249, 255)
+                        d.rectangle([0, y, W, y + ROW - 2], fill=bg)
+                        d.rectangle([0, y, 4, y + ROW - 2], fill=(77, 150, 255))
+
+                        nx = PAD + 8
+                        if mode == 'dagsrytme':
+                            tid = f"{e.get('start', '')}\u2013{e.get('end', '')}"
+                            d.text((nx, y + ROW // 2), tid, font=fs,
+                                   fill=(80, 90, 120), anchor='lm')
+                            nx = 190
+
+                        img_size = ROW - 10
+                        ip = e.get('image', '')
+                        if ip and os.path.exists(ip):
+                            try:
+                                sym = PILImage.open(ip).convert('RGBA')
+                                sym.thumbnail((img_size, img_size), PILImage.LANCZOS)
+                                r2, g2, b2, a2 = sym.split()
+                                sym_rgb = PILImage.merge('RGB', (r2, g2, b2))
+                                iy = y + (ROW - sym.height) // 2
+                                img.paste(sym_rgb, (nx, iy), mask=a2)
+                                nx += img_size + 8
+                            except Exception:
+                                pass
+
+                        d.text((nx + 4, y + ROW // 2), e.get('name', ''),
+                               font=fr, fill=(20, 24, 60), anchor='lm')
+
+                    if len(pages) > 1:
+                        d.text((W // 2, H - 10),
+                               f'Side {page_idx+1} av {len(pages)}',
+                               font=fp, fill=(140, 150, 170), anchor='mb')
+
+                    if len(pages) == 1:
+                        dst = os.path.join(DOWNLOAD_DIR, fname)
+                    else:
+                        base, ext = os.path.splitext(fname)
+                        dst = os.path.join(DOWNLOAD_DIR,
+                                           f'{base}_side{page_idx+1}{ext}')
+                    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+                    img.save(dst)
+                    saved_files.append(os.path.basename(dst))
 
                 def _done(*_):
                     _pb_event.cancel()
                     spin_pop.dismiss()
-                    self._toast(f'Lagret: {fname}')
+                    if len(saved_files) == 1:
+                        self._toast(f'Lagret: {saved_files[0]}')
+                    else:
+                        self._toast(f'Lagret {len(saved_files)} sider til Nedlastinger')
+                Clock.schedule_once(_done, 0)
                 Clock.schedule_once(_done, 0)
             except Exception as ex:
                 _msg = str(ex)
@@ -7710,16 +7850,43 @@ INNSTILLINGER
         body_lbl.bind(width=lambda l, w:
                       setattr(l, 'text_size', (w - dp(20), None)))
 
-        # Dotnav
+        # Dotnav – canvas-tegnet sirkler (ingen font-avhengighet)
+        # Aktiv: litt større og lysere; inaktiv: liten og mørkere enn bg.
+        class DotWidget(Widget):
+            """Enkel widget som tegner én rund dot via canvas."""
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                self._active  = False
+                self._r       = (0.72, 0.74, 0.82, 1.0)  # inaktiv farge
+                self._size_px = dp(8)
+                self.bind(pos=self._redraw, size=self._redraw)
+
+            def set_active(self, active):
+                self._active   = active
+                self._r        = (0.38, 0.60, 1.0, 1.0) if active else (0.68, 0.70, 0.78, 1.0)
+                self._size_px  = dp(11) if active else dp(8)
+                self._redraw()
+
+            def _redraw(self, *_):
+                from kivy.graphics import Color as _C, Ellipse as _E
+                self.canvas.clear()
+                cx = self.center_x
+                cy = self.center_y
+                r  = self._size_px / 2
+                with self.canvas:
+                    _C(*self._r)
+                    _E(pos=(cx - r, cy - r), size=(self._size_px, self._size_px))
+
         dots_row = BoxLayout(orientation='horizontal',
-                             size_hint_y=None, height=dp(20), spacing=dp(8))
+                             size_hint_y=None, height=dp(24), spacing=dp(10))
+        dots_row.add_widget(Widget())  # flex spacer
         dots = []
         for _ in slides:
-            d = Label(text='●', font_size=sp(13), color=(0.7, 0.72, 0.80, 1))
+            d = DotWidget(size_hint_x=None, width=dp(14),
+                          size_hint_y=None, height=dp(24))
             dots.append(d)
-            dots_row.add_widget(Widget())
             dots_row.add_widget(d)
-        dots_row.add_widget(Widget())
+        dots_row.add_widget(Widget())  # flex spacer
 
         btn_row  = BoxLayout(orientation='horizontal',
                              size_hint_y=None, height=dp(54), spacing=dp(8))
@@ -7781,7 +7948,7 @@ INNSTILLINGER
             folder_panel.height  = 0
             folder_panel.opacity = 0
             for d in dots:
-                d.color = (0.30, 0.58, 1.0, 1)
+                d.set_active(True)
             skip_btn.opacity  = 0; skip_btn.disabled  = True
             prev_btn.opacity  = 0; prev_btn.disabled  = True
             next_btn.text     = 'Start appen'
@@ -7812,8 +7979,7 @@ INNSTILLINGER
             title_lbl.text = title
             body_lbl.text  = body
             for k, d in enumerate(dots):
-                d.color = ((0.30, 0.58, 1.0, 1) if k == i
-                           else (0.7, 0.72, 0.80, 1))
+                d.set_active(k == i)
             prev_btn.opacity  = 0 if i == 0 else 1
             prev_btn.disabled = (i == 0)
             is_last = (i == len(slides) - 1)
