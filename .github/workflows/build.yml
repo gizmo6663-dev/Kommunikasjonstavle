@@ -14,29 +14,24 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      # ── CACHE 1: Gradle ──────────────────────────────────────────
+      # ── CACHE 1: Gradle wrapper og avhengigheter ─────────────────
+      # Sparer ~2 min ved cache-hit (ingen gradle-8.0.2-all.zip nedlasting).
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: ~/.gradle
-          key: gradle-${{ runner.os }}-${{ hashFiles('buildozer.spec', 'java/**/*.java') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ── CACHE 2: Prosjekt-spesifikt .buildozer (dists/, p4a) ─────
-      - name: Cache .buildozer (dists + p4a)
-        uses: actions/cache@v4
-        with:
-          path: .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
-
-      # ── CACHE 3: Buildozer SDK/NDK (lagres i /root/.buildozer) ───
-      # Android SDK og NDK lagres av buildozer under $HOME/.buildozer/
-      # inne i Docker (=/root/.buildozer/). Vi monterer denne mappen til
-      # workspace slik at den overlever mellom bygg.
-      - name: Cache buildozer SDK/NDK
+      # ── CACHE 2: Android SDK, NDK, ant og p4a-pakker ─────────────
+      # Disse lagres av buildozer til /root/.buildozer/ inne i Docker,
+      # som vi monterer fra .buildozer_sdk/ i workspace.
+      # Cache-miss (forste gang): buildozer laster ned alt (~3 GB), ~8 min.
+      # Cache-hit (neste gang): buildozer hopper over nedlasting, ~3-4 min.
+      # MERK: vi cacher IKKE .buildozer/dists/ siden det skaper stale state
+      # som feiler p4a-kompileringen pa neste bygg.
+      - name: Cache SDK, NDK og p4a-pakker
         uses: actions/cache@v4
         with:
           path: .buildozer_sdk
@@ -52,7 +47,6 @@ jobs:
 
       - name: Bygg APK med Buildozer + Gradle (Docker)
         run: |
-          # Opprett SDK-mappe om den ikke finnes (unngaar Docker mount-feil)
           mkdir -p ${{ github.workspace }}/.buildozer_sdk
 
           docker run --rm \
@@ -67,12 +61,15 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
-              # Gi git tilgang til alle kataloger uavhengig av eierskap.
-              # Nodvendig fordi cachede mapper eies av runner-brukeren (uid 1001)
-              # mens Docker kjorer som root.
+              # Gi git tilgang til alle kataloger (løser ownership-konflikt
+              # mellom runner uid 1001 og Docker root)
               git config --global --add safe.directory '*'
 
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
+
+              # Fjern stale python-for-android klon om den finnes.
+              # Dette hindrer buildozer i å feile med 'Detected old url/branch'.
+              rm -rf /home/user/hostcwd/.buildozer/android/platform/python-for-android
 
               echo '=== PASS 1: buildozer android debug ==='
               buildozer android debug 2>&1 | tee build_step1.log || true
@@ -84,6 +81,17 @@ jobs:
                 echo 'FEIL: dists-mappen ble ikke opprettet av buildozer'
                 cat build_step1.log > build.log
                 exit 1
+              fi
+
+              # Aksepter Android SDK-lisenser eksplisitt slik at Gradle
+              # kan installere build-tools og platform-pakker automatisk.
+              # Lisens-hashene er offisielle Google Android SDK-hashes.
+              SDK=/root/.buildozer/android/platform/android-sdk
+              if [ -d \"\$SDK\" ]; then
+                mkdir -p \"\$SDK/licenses\"
+                printf '8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n' > \"\$SDK/licenses/android-sdk-license\"
+                printf '84831b9409646a918e30573bab4c9c91346d8abd\n' > \"\$SDK/licenses/android-sdk-preview-license\"
+                echo 'SDK-lisenser akseptert'
               fi
 
               echo '=== Injiserer widget-filer ==='
@@ -120,7 +128,6 @@ jobs:
               rm -rf \$DIST/build/outputs/apk
               rm -rf \$DIST/build/intermediates
               rm -rf \$DIST/build/tmp
-              rm -rf ~/.gradle/caches/build-cache-*
               rm -rf /root/.gradle/caches/build-cache-*
 
               echo '=== PASS 2: Gradle assembleDebug ==='
