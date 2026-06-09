@@ -2282,7 +2282,7 @@ class KommunikasjonstavleApp(App):
         self._quickbar = self._build_quickbar()
         root.add_widget(self._quickbar)
         # Innholdsflate i midten (tar all gjenværende plass)
-        self._content = BoxLayout(orientation='vertical')
+        self._content = FloatLayout()
         root.add_widget(self._content)
         # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
         self._navbar = self._build_navbar()
@@ -2732,6 +2732,8 @@ class KommunikasjonstavleApp(App):
             Window.clearcolor = hc_bg
 
         self._content.clear_widgets()
+        # FloatLayout krever size_hint=(1,1) for å fylle hele flaten
+        widget.size_hint = (1, 1)
         self._content.add_widget(widget)
 
         if animate:
@@ -2949,9 +2951,10 @@ class KommunikasjonstavleApp(App):
         def _cleanup(*_):
             try: Window.remove_widget(ring)
             except Exception: pass
-        (Animation(size=(SIZE*2.2, SIZE*2.2), opacity=0, duration=0.45, t='out_cubic')
-         .bind(on_complete=_cleanup)
-         .start(ring))
+        anim_ring = Animation(size=(SIZE*2.2, SIZE*2.2), opacity=0,
+                              duration=0.45, t='out_cubic')
+        anim_ring.bind(on_complete=_cleanup)
+        anim_ring.start(ring)
 
     # ══════════════════════════════════════════════════════════════
     #  FLIP-OVERGANG TIL FULLSKJERM-BILDE
@@ -2960,8 +2963,7 @@ class KommunikasjonstavleApp(App):
     def _flip_to_image(self, path, name):
         """
         Animert overgang til fullskjermbilde:
-        innhold fades+klemmes horisontalt ut, så inn igjen med nytt innhold.
-        Gir en «flip»-effekt uten 3D-matrise.
+        innhold fades ut, så inn igjen med nytt innhold.
         """
         old = self._content.children[0] if self._content.children else None
         if old:
@@ -2971,9 +2973,10 @@ class KommunikasjonstavleApp(App):
                     new = self._content.children[0]
                     new.opacity = 0
                     Animation(opacity=1, duration=0.18, t='out_cubic').start(new)
-            (Animation(opacity=0, duration=0.12, t='in_cubic')
-             .bind(on_complete=_show)
-             .start(old))
+            # NB: Animation.bind() returnerer None i Kivy – ikke kjedbar
+            anim_out = Animation(opacity=0, duration=0.12, t='in_cubic')
+            anim_out.bind(on_complete=_show)
+            anim_out.start(old)
         else:
             self._show_image_full(path, name)
 
@@ -3181,7 +3184,6 @@ class KommunikasjonstavleApp(App):
             if self._content.children:
                 w = self._content.children[0]
                 w.opacity = 0
-                from kivy.graphics.context_instructions import PushMatrix, PopMatrix, Scale
                 Animation(opacity=1, duration=0.22, t='out_cubic').start(w)
         Clock.schedule_once(_spring_in, 0.02)
 
@@ -6872,8 +6874,8 @@ INNSTILLINGER
         if img and os.path.exists(img):
             try:
                 os.remove(img)
-                for k in [k for k in _thumb_cache if k[0] == img]:
-                    del _thumb_cache[k]
+                # lru_cache støtter ikke selektiv fjerning – tøm hele cachen
+                get_thumbnail.cache_clear()
             except Exception:
                 pass
         save_struct(self.data)
