@@ -2592,63 +2592,80 @@ class KommunikasjonstavleApp(App):
 
     def _init_bundled_assets(self):
         """
-        Kopierer bilder som er bundlet med APK-en til appens IMG_DIR.
+        Kopierer bilder bundlet i APK-en (assets/bilder/<Mappenavn>/*.png/jpg)
+        til appens IMG_DIR og oppretter tilsvarende bildetavle-mapper i
+        structure.json.
 
-        Struktur i repo:
-            assets/
-              bilder/
-                Spising/    ← mappenavn → automatisk opprettet som bildetavle-mappe
-                  spise.png
-                  drikke.png
-                Påkledning/
-                  bukse.png
-                  ...
+        Øk BUNDLE_VERSION når du legger til/endrer bilder i assets/-mappen
+        for å tvinge re-import ved neste APK-oppdatering.
 
-        Logikk:
-          • Kjøres én gang per install/oppdatering (styres av 'bundled_version'
-            i structure.json). Øk BUNDLE_VERSION i koden for å tvinge re-kopiering
-            ved neste apk-oppdatering.
-          • Bildene kopieres til IMG_DIR. Mappene legges til i structure.json
-            hvis de ikke allerede finnes (unngår duplikater).
-          • Eksisterende brukerdata overskrives IKKE.
+        Kjøres alltid ETTER load_struct() slik at self.data er tilgjengelig
+        og bundled_version-sjekken fungerer korrekt.
         """
-        BUNDLE_VERSION = 1  # øk denne når du endrer assets/-innholdet
+        BUNDLE_VERSION = 2   # ← økt til 2: reparerer tomme mapper fra forrige versjon
 
-        already_done = self.data if hasattr(self, 'data') else {}
-        settings = already_done.get('settings', {}) if isinstance(already_done, dict) else {}
-        if settings.get('bundled_version', 0) >= BUNDLE_VERSION:
+        # ── Sjekk om dette allerede er gjort ────────────────────────
+        done_ver = self.data.get('settings', {}).get('bundled_version', 0)
+        if done_ver >= BUNDLE_VERSION:
+            logging.debug('bundled assets: versjon %d allerede importert', done_ver)
             return
 
-        # Finn assets/-mappen relativt til main.py / APK resource-rot
-        candidates = [
-            os.path.join(os.path.dirname(__file__), 'assets', 'bilder'),
-            os.path.join(self.directory, 'assets', 'bilder'),
-        ]
-        assets_root = next((p for p in candidates if os.path.isdir(p)), None)
+        # ── Finn assets/bilder/-mappen – prøv alle kjente Android-stier ──
+        # På Android (p4a/Buildozer) hentes stier fra flere kilder fordi
+        # __file__ og self.directory ikke alltid er identiske.
+        app_dirs = []
+        try:
+            app_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        except Exception:
+            pass
+        try:
+            app_dirs.append(self.directory)
+        except Exception:
+            pass
+        try:
+            from kivy import kivy_data_dir as _kdd
+            app_dirs.append(os.path.dirname(_kdd))
+        except Exception:
+            pass
+        # Android-spesifikk: p4a legger alltid app-filer her
+        pkg = 'no.askapp.kommunikasjonstavle'
+        for base in [f'/data/user/0/{pkg}/files/app',
+                     f'/data/data/{pkg}/files/app']:
+            app_dirs.append(base)
+
+        assets_root = None
+        for d in app_dirs:
+            cand = os.path.join(d, 'assets', 'bilder')
+            logging.debug('bundled assets: prøver sti %s → finnes=%s', cand, os.path.isdir(cand))
+            if os.path.isdir(cand):
+                assets_root = cand
+                break
+
         if not assets_root:
-            logging.info('_init_bundled_assets: ingen assets/bilder/-mappe funnet')
+            logging.warning('bundled assets: ingen assets/bilder/-mappe funnet. '
+                            'Prøvde: %s', [os.path.join(d, 'assets', 'bilder') for d in app_dirs])
             return
 
-        # Last inn (eller bruk allerede lastet) struktur
-        if not hasattr(self, 'data') or not isinstance(self.data, dict):
-            self.data = load_struct()
+        logging.info('bundled assets: bruker rot %s', assets_root)
 
+        # ── Importer mapper og bilder ────────────────────────────────
         imported_folders = 0
         imported_images  = 0
+        failed_images    = 0
 
         for folder_name in sorted(os.listdir(assets_root)):
             src_folder = os.path.join(assets_root, folder_name)
             if not os.path.isdir(src_folder):
                 continue
 
-            # Sjekk om mappe med dette navnet allerede finnes
+            # Finn eller opprett mappe i structure.json
             existing = next(
                 (f for f in self.data.get('folders', [])
                  if f.get('name', '').lower() == folder_name.lower()),
                 None)
             if not existing:
                 color_idx = imported_folders % len(FOLDER_COLORS)
-                new_fo = {
+                existing = {
                     'id':         str(uuid.uuid4()),
                     'name':       folder_name,
                     'color':      FOLDER_COLORS[color_idx],
@@ -2657,28 +2674,58 @@ class KommunikasjonstavleApp(App):
                     'subfolders': [],
                     'opens':      0,
                 }
-                self.data.setdefault('folders', []).append(new_fo)
-                existing = new_fo
+                self.data.setdefault('folders', []).append(existing)
                 imported_folders += 1
+                logging.info('bundled assets: opprettet mappe "%s"', folder_name)
 
+            # Bygg sett av allerede importerte filnavn
+            # Inkluder kun items der bildet faktisk finnes på disk.
+            # Items med manglende filer hoppes IKKE over – de re-importeres.
             existing_imgs = {
                 os.path.basename(it.get('image', ''))
                 for it in existing.get('items', [])
-                if it.get('image')
+                if it.get('image') and os.path.exists(it['image'])
             }
+            # Fjern items med manglende bildefiler fra mappen (reparasjon)
+            before = len(existing.get('items', []))
+            existing['items'] = [
+                it for it in existing.get('items', [])
+                if not it.get('image') or os.path.exists(it['image'])
+            ]
+            if len(existing['items']) < before:
+                logging.info('bundled assets: fjernet %d items med manglende bilder fra "%s"',
+                             before - len(existing['items']), folder_name)
 
             for img_file in sorted(os.listdir(src_folder)):
                 if not img_file.lower().endswith(
                         ('.png', '.jpg', '.jpeg', '.webp', '.gif')):
                     continue
                 if img_file in existing_imgs:
-                    continue  # allerede importert
+                    logging.debug('bundled assets: %s allerede importert, hopper over', img_file)
+                    continue
 
                 src_path = os.path.join(src_folder, img_file)
                 dst_path = os.path.join(IMG_DIR, img_file)
+
+                # Kopier bare hvis kildefilen faktisk finnes
+                if not os.path.exists(src_path):
+                    logging.warning('bundled assets: kildefil finnes ikke: %s', src_path)
+                    failed_images += 1
+                    continue
+
                 try:
                     if not os.path.exists(dst_path):
                         shutil.copy2(src_path, dst_path)
+                        logging.debug('bundled assets: kopiert %s → %s', src_path, dst_path)
+                    else:
+                        logging.debug('bundled assets: %s finnes allerede i IMG_DIR', img_file)
+
+                    # Verifiser at filen faktisk er tilstede etter kopiering
+                    if not os.path.exists(dst_path):
+                        logging.error('bundled assets: kopiering feilet – dst finnes ikke: %s', dst_path)
+                        failed_images += 1
+                        continue
+
                     name = os.path.splitext(img_file)[0].replace('_', ' ')
                     existing.setdefault('items', []).append({
                         'id':    str(uuid.uuid4()),
@@ -2686,14 +2733,28 @@ class KommunikasjonstavleApp(App):
                         'image': dst_path,
                     })
                     imported_images += 1
-                except Exception as _e:
-                    logging.warning('bundled asset copy feilet: %s', _e)
+                except Exception as copy_err:
+                    logging.error('bundled assets: kopiering feilet for %s: %s',
+                                  img_file, copy_err)
+                    failed_images += 1
 
-        self.data.setdefault('settings', {})['bundled_version'] = BUNDLE_VERSION
+        logging.info('bundled assets: %d mapper, %d bilder importert, %d feilet',
+                     imported_folders, imported_images, failed_images)
+
+        # Merk som ferdig KUN hvis minst ett bilde ble importert ELLER
+        # det ikke fantes noen bilder å importere (assets-mappen er tom).
+        total_in_assets = sum(
+            1 for fn in os.listdir(assets_root) if os.path.isdir(os.path.join(assets_root, fn))
+            for f in os.listdir(os.path.join(assets_root, fn))
+            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
+        )
+        if failed_images == 0 or imported_images > 0:
+            self.data.setdefault('settings', {})['bundled_version'] = BUNDLE_VERSION
+        elif total_in_assets == 0:
+            # Ingen bilder å importere – sett versjon så vi ikke prøver igjen
+            self.data.setdefault('settings', {})['bundled_version'] = BUNDLE_VERSION
+
         save_struct(self.data, immediate=True)
-        if imported_images:
-            logging.info('Bundled assets: %d mapper, %d bilder importert',
-                         imported_folders, imported_images)
 
     def build(self):
         setup_logging()
@@ -2723,13 +2784,15 @@ class KommunikasjonstavleApp(App):
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
 
-        # Kopier bundlede bilder (fra repo assets/) til IMG_DIR ved første kjøring
-        self._init_bundled_assets()
-
         self.data        = load_struct()
         # Aktiver HC-modus hvis det var aktivert ved forrige kjøring
         if self.data.get('settings', {}).get('high_contrast', False):
             apply_high_contrast(True)
+
+        # Kopier bundlede bilder (fra repo assets/) til IMG_DIR.
+        # Kjøres etter load_struct() så self.data er satt og
+        # bundled_version-sjekken fungerer korrekt.
+        self._init_bundled_assets()
         self.nav_stack   = []
         self.cur_folder  = None
         self.edit_mode   = False
