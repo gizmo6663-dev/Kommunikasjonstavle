@@ -65,7 +65,7 @@ except ImportError:
 from kt_widgets import (
     RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
     hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
-    apply_high_contrast, fsp, mk_btn, haptic_feedback, dominant_color,
+    apply_high_contrast, fsp, rdp, mk_btn, haptic_feedback, dominant_color,
 )
 from kt_data import (
     today_code, get_day_plan, is_paused, get_category,
@@ -2548,7 +2548,7 @@ class KommunikasjonstavleApp(App):
         Rekker, Dagsplan, Tidsur, Spill – fire snarveier.
         """
         bar = BoxLayout(
-            size_hint_y=None, height=dp(52),
+            size_hint_y=None, height=rdp(52),
             spacing=dp(4), padding=(dp(4), dp(3), dp(4), dp(2)),
         )
         # Bakgrunnsfarge via canvas – import utenfor with-blokken
@@ -2566,7 +2566,7 @@ class KommunikasjonstavleApp(App):
             ('Tegn',     '#FFD93D', self.go_draw),
         ]
         for lbl, col, fn in _qcols:
-            bar.add_widget(mk_btn(lbl, hex_k(col), h=dp(46), fs=12,
+            bar.add_widget(mk_btn(lbl, hex_k(col), h=rdp(46), fs=12,
                 cb=lambda *_, f=fn: f()))
         return bar
 
@@ -2578,14 +2578,14 @@ class KommunikasjonstavleApp(App):
         """
         bar = NavBar(
             orientation='horizontal',
-            size_hint_y=None, height=dp(72),
+            size_hint_y=None, height=rdp(72),
             padding=(dp(8), dp(8)),
             spacing=dp(6),
         )
 
         # Pill-knapper med kategori-farger mot lys grå navbar-bakgrunn.
         # Tekstfargen velges automatisk via text_on() per knappefarge.
-        btn_kw = dict(size_hint_y=None, height=dp(56), radius=dp(14))
+        btn_kw = dict(size_hint_y=None, height=rdp(56), radius=dp(14))
 
         self._btn_back = mk_btn(
             'Tilbake', hex_k('#4D96FF'), fs=13,
@@ -2623,7 +2623,7 @@ class KommunikasjonstavleApp(App):
         Høyde: 46dp – kompakt men lesbar.
         """
         bar = BottomBar(
-            size_hint_y=None, height=dp(46),
+            size_hint_y=None, height=rdp(46),
             padding=(dp(14), dp(6)),
             spacing=dp(0),
         )
@@ -3016,13 +3016,19 @@ class KommunikasjonstavleApp(App):
 
     def _home_now_card(self):
         """
-        Bygger kortet øverst på hjemskjermen som speiler widgetens innhold.
-        Returnerer None hvis det ikke er noen meningsfull info å vise –
-        da slipper hjemskjermen et tomt kort som tar plass uten verdi.
+        Bygger «Akkurat nå»-kortet øverst på hjemskjermen.
+
+        Returnerer None i alle tilfeller der det ikke er noe meningsfylt å vise:
+          – ingen dagsplan for i dag
+          – alle aktiviteter er ferdige for dagen
+          – det er mer enn 4 timer til neste aktivitet (ingen umiddelbar verdi)
+
+        Dette sikrer at hjemskjermen IKKE har et tomt/usynlig mellomrom
+        når dagsplanen ikke er aktiv.
         """
         if is_paused(self.data):
             box = RBox(orientation='horizontal',
-                       size_hint_y=None, height=dp(72),
+                       size_hint_y=None, height=rdp(72),
                        padding=(dp(14), dp(8)),
                        box_color=(1.0, 0.86, 0.30, 1.0), radius=dp(16))
             box.add_widget(Label(
@@ -3030,19 +3036,20 @@ class KommunikasjonstavleApp(App):
                 markup=True, font_size=fsp(14),
                 color=(0.15, 0.10, 0.05, 1), halign='left', valign='middle'))
             box.children[-1].bind(size=box.children[-1].setter('text_size'))
-            def _tap(w, touch):
+            def _tap_pause(w, touch):
                 if w.collide_point(*touch.pos):
                     self._nav_dagsrytme()
                     return True
                 return False
-            box.bind(on_touch_down=_tap)
+            box.bind(on_touch_down=_tap_pause)
             return box
 
         # Finn nåværende/neste aktivitet for dagens plan
         entries = sorted(get_day_plan(self.data, today_code()),
                          key=lambda e: e.get('start', '00:00'))
         if not entries:
-            return None  # ingen aktiviteter i dag, ikke vis kort
+            return None  # ingen aktiviteter i dag
+
         now   = datetime.now()
         now_m = now.hour * 60 + now.minute
         current = upcoming = None
@@ -3053,38 +3060,30 @@ class KommunikasjonstavleApp(App):
                 current = (e, s, t); break
             elif s > now_m and upcoming is None:
                 upcoming = (e, s)
+
+        # Kollapser kortet:
+        #  – alle aktiviteter er ferdig for dagen
+        #  – neste aktivitet starter mer enn 4 timer frem i tid (ingen snart-verdi)
         if not current and not upcoming:
-            # Alle aktiviteter ferdige for dagen – minimalt kort
-            box = RBox(orientation='horizontal',
-                       size_hint_y=None, height=dp(54),
-                       padding=(dp(14), dp(6)),
-                       box_color=(0.92, 0.96, 0.92, 1.0), radius=dp(14))
-            box.add_widget(Label(
-                text='✓  Alle dagens aktiviteter er fullført.',
-                font_size=fsp(14), color=(0.20, 0.40, 0.25, 1),
-                halign='center'))
-            return box
+            return None
+        if not current and upcoming:
+            wait_min = upcoming[1] - now_m
+            if wait_min > 240:          # > 4 timer → ikke relevant enda
+                return None
 
         # Bygg kortet – horisontalt layout med (lite) bilde + tekst
         e, info = (current[0], 'NÅ') if current else (upcoming[0], 'NESTE')
-        cat = get_category(self.data, e.get('category'))
-        # Bakgrunnsfarge: tydelig hvit med lett kategori-tonet kant – kortet
-        # skal ALLTID skille seg fra sidens bakgrunn uavhengig av tidspunkt.
-        if cat:
-            cr, cg, cb, _ = hex_k(cat['color'])
-            border_col = hex_k(cat['color'])
-        else:
-            border_col = hex_k('#4D96FF')
         bg = (1.0, 1.0, 1.0, 1.0)   # alltid hvit kortbakgrunn
         card = RBox(orientation='horizontal',
-                    size_hint_y=None, height=dp(96),
+                    size_hint_y=None, height=rdp(96),
                     padding=(dp(10), dp(8)), spacing=dp(10),
                     box_color=bg, radius=dp(16))
-        # Bilde (mindre enn på dagsplan-skjermen)
+        # Bilde
         if e.get('image') and os.path.exists(e['image']):
-            img_wrap = BoxLayout(size_hint_x=None, width=dp(80))
+            img_h = rdp(80)
+            img_wrap = BoxLayout(size_hint_x=None, width=img_h)
             img_wrap.add_widget(self._make_framed_image(
-                e['image'], dp(80), faded=(info == 'NESTE')))
+                e['image'], img_h, faded=(info == 'NESTE')))
             card.add_widget(img_wrap)
         # Tekstkolonne
         col = BoxLayout(orientation='vertical', spacing=dp(2))
@@ -3094,7 +3093,7 @@ class KommunikasjonstavleApp(App):
                  f'[b]{e["name"]}[/b]',
             markup=True, font_size=fsp(17),
             color=(0.04, 0.10, 0.36, 1),
-            size_hint_y=None, height=dp(28), halign='left'))
+            size_hint_y=None, height=rdp(28), halign='left'))
         col.children[-1].bind(size=col.children[-1].setter('text_size'))
         sub = f'{e.get("start","")} – {e.get("end","")}'
         if info == 'NÅ':
@@ -3106,7 +3105,7 @@ class KommunikasjonstavleApp(App):
         col.add_widget(Label(
             text=sub, font_size=fsp(13),
             color=(0.35, 0.40, 0.55, 1),
-            size_hint_y=None, height=dp(22), halign='left'))
+            size_hint_y=None, height=rdp(22), halign='left'))
         col.children[-1].bind(size=col.children[-1].setter('text_size'))
         card.add_widget(col)
         # Trykk → naviger til dagsplan
@@ -3121,8 +3120,8 @@ class KommunikasjonstavleApp(App):
     def _make_folder_tile(self, fo):
         """Enkel farget flis med sentrert navn – ingen bilde."""
         edit   = self.edit_mode
-        TILE_H = dp(176) if edit else dp(142)
-        btn_h  = dp(138) if edit else dp(142)
+        TILE_H = rdp(176) if edit else rdp(142)
+        btn_h  = rdp(138) if edit else rdp(142)
 
         if edit:
             tap = lambda f=fo: self._folder_popup(f)

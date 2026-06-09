@@ -440,6 +440,44 @@ def fsp(base_size):
     return sp(base_size)
 
 
+def screen_scale():
+    """
+    Returnerer en dimensjonsløs skaleringsfaktor [0.80 – 1.20] basert på
+    skjermens fysiske høyde i tetthetsuavhengige piksler (dp).
+
+    Referanse: 780 dp – tilsvarer en typisk FHD+ Android-telefon (f.eks.
+    Pixel 7, Samsung A54, 6,1"–6,4" med ~420 dpi).
+
+    Eksempler:
+      650 dp  (liten/kompakt telefon)   → 0.83
+      780 dp  (referanse)               → 1.00
+      900 dp  (stor telefon, S25 Ultra) → 1.15
+      1000 dp (nettbrett)               → capped 1.20
+
+    Brukes av rdp() til å skalere høyde-kritiske UI-elementer proporsjonalt
+    med skjermstørrelsen slik at layouts ser konsistente ut på tvers av enheter.
+    """
+    h_dp = Window.height / dp(1)      # skjermhøyde i dp
+    return max(0.80, min(1.20, h_dp / 780.0))
+
+
+def rdp(base):
+    """
+    Responsiv dp: skalerer dp(base) etter skjermhøyde via screen_scale().
+
+    Bruk rdp(x) i stedet for dp(x) for alle høyde-kritiske elementer
+    (rader, knapper, kort, navigasjonsbarer) der proporsjonalitet mellom
+    skjermstørrelser er viktig. Horisontale bredder trenger normalt ikke
+    rdp() – de er allerede relative til Window.width.
+
+    Eksempel:
+      dp(72) på 780 dp-skjerm → 72 dp
+      dp(72) på 650 dp-skjerm → 58 dp  (0.80× ved nedre grense)
+      dp(72) på 900 dp-skjerm → 83 dp
+    """
+    return dp(int(base * screen_scale()))
+
+
 
 def is_hc():
     """Returnerer True hvis høykontrast-modus er aktivert."""
