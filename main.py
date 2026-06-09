@@ -2373,6 +2373,15 @@ class KommunikasjonstavleApp(App):
         # ellers ser det rart ut at popup-en dukker opp før appen.
         Clock.schedule_once(self._maybe_show_onboarding, 0.6)
 
+        # Første oppstart: _init_bundled_assets() kopierer bilder til IMG_DIR
+        # i build(), men filsystemet på Android kan bufre skrivene. En stille
+        # re-render 0,4 s etter oppstart sikrer at «Akkurat nå»-kortet og
+        # andre bilder lastes inn korrekt uten at brukeren ser noen animasjon.
+        def _silent_home_refresh(dt):
+            if self._cur_scr == 'home':
+                self._show_home(animate=False)
+        Clock.schedule_once(_silent_home_refresh, 0.4)
+
         if platform == 'android':
             try:
                 from android import mActivity
@@ -2964,7 +2973,7 @@ class KommunikasjonstavleApp(App):
         """Åpner fullskjermbilde. Slide-animasjon håndteres av _set_content."""
         self._show_image_full(path, name)
 
-    def _show_home(self, **_):
+    def _show_home(self, animate=True, **_):
         self._cur_scr   = 'home'
         self.cur_folder = None
         self._set_title(APP_TITLE)
@@ -3003,7 +3012,7 @@ class KommunikasjonstavleApp(App):
             sv = ScrollView()
             sv.add_widget(grid)
             outer.add_widget(sv)
-        self._set_content(outer)
+        self._set_content(outer, animate=animate)
 
     def _home_now_card(self):
         """
@@ -3059,13 +3068,14 @@ class KommunikasjonstavleApp(App):
         # Bygg kortet – horisontalt layout med (lite) bilde + tekst
         e, info = (current[0], 'NÅ') if current else (upcoming[0], 'NESTE')
         cat = get_category(self.data, e.get('category'))
-        # Bakgrunnsfarge: lett tonet etter kategori hvis tilgjengelig
+        # Bakgrunnsfarge: tydelig hvit med lett kategori-tonet kant – kortet
+        # skal ALLTID skille seg fra sidens bakgrunn uavhengig av tidspunkt.
         if cat:
             cr, cg, cb, _ = hex_k(cat['color'])
-            # Mix med hvit for myk bakgrunn
-            bg = (0.92 + cr * 0.08, 0.93 + cg * 0.07, 0.96 + cb * 0.04, 1.0)
+            border_col = hex_k(cat['color'])
         else:
-            bg = (0.94, 0.96, 1.0, 1.0)
+            border_col = hex_k('#4D96FF')
+        bg = (1.0, 1.0, 1.0, 1.0)   # alltid hvit kortbakgrunn
         card = RBox(orientation='horizontal',
                     size_hint_y=None, height=dp(96),
                     padding=(dp(10), dp(8)), spacing=dp(10),
@@ -5774,14 +5784,20 @@ INNSTILLINGER
             inner_bottom.points = [x+2, y+2, x+ww-2, y+2]
         wrap.bind(size=_u, pos=_u)
         wrap.add_widget(img)
-        # Fade-in: vent til teksturen er klar
+        # Fade-in: vent til teksturen er klar.
+        # På kald Android-oppstart kan texture-eventet noen ganger aldri
+        # fyre (race condition i Kivy-loaderen). Fallback-timeren sikrer
+        # at bildet alltid blir synlig etter maks 1,5 sekunder.
         target = 0.65 if faded else 1.0
         def _fade_when_ready(*_):
+            if img.opacity >= target * 0.9:
+                return  # allerede synlig
             Animation(opacity=target, duration=0.2, t='out_quad').start(img)
         if img.texture:
             _fade_when_ready()
         else:
             img.bind(texture=lambda *_: _fade_when_ready())
+            Clock.schedule_once(lambda dt: _fade_when_ready(), 1.5)
         return wrap
 
     def _empty_state(self, glyph, msg):
@@ -6106,7 +6122,7 @@ INNSTILLINGER
             self._timer_running   = False
             self._timer_event     = None
 
-        root = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
+        root = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
 
         # Hvis tidsuret er knyttet til en aktivitet, vises navnet over
         # disken så brukeren vet hva tidsuret gjelder.
@@ -6117,9 +6133,11 @@ INNSTILLINGER
                 font_size=fsp(18), bold=True,
                 color=(0.04, 0.10, 0.40, 1), halign='center'))
 
-        # Rund disk-widget – PIL-tegnet sirkel som gradvis blir hvit
+        # Rund disk-widget – fyller all gjenværende plass (size_hint_y=1)
+        # slik at Start-knappen og presettene alltid er synlige uansett
+        # skjermstørrelse.
         self._timer_disk = Image(
-            size_hint=(1, None), height=dp(220),
+            size_hint=(1, 1),
             allow_stretch=True, keep_ratio=True,
         )
         root.add_widget(self._timer_disk)
@@ -6129,31 +6147,8 @@ INNSTILLINGER
         self._timer_pb = ProgressBar(max=100, value=100, size_hint_y=None, height=dp(10))
         root.add_widget(self._timer_pb)
 
-        root.add_widget(Label(text='Velg tid:', size_hint_y=None, height=dp(26),
-            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1), halign='center'))
-
-        presets = [('1 min', 60), ('2 min', 120), ('3 min', 180),
-                   ('5 min', 300), ('10 min', 600), ('15 min', 900)]
-        pg = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(120))
-        for lbl, sek in presets:
-            pg.add_widget(mk_btn(lbl, hex_k('#4D96FF'), h=dp(56), fs=14,
-                cb=lambda *_, s=sek: self._tidsur_set(s)))
-        root.add_widget(pg)
-
-        cust = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
-        cust.add_widget(Label(text='Min:', size_hint_x=None, width=dp(44),
-            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1)))
-        self._timer_cust_sl  = Slider(min=1, max=60, value=5, step=1)
-        self._timer_cust_lbl = Label(text='5', size_hint_x=None, width=dp(34),
-            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1))
-        self._timer_cust_sl.bind(value=lambda sl, v:
-            setattr(self._timer_cust_lbl, 'text', str(int(v))))
-        cust.add_widget(self._timer_cust_sl); cust.add_widget(self._timer_cust_lbl)
-        cust.add_widget(mk_btn('Sett', hex_k('#FF9F43'), h=dp(52), fs=14,
-            size_hint_x=None, width=dp(76),
-            cb=lambda *_: self._tidsur_set(int(self._timer_cust_sl.value) * 60)))
-        root.add_widget(cust)
-
+        # Start/Nullstill – plassert HER (over presettene) slik at den
+        # alltid er synlig selv på mindre skjermer.
         ctrl = BoxLayout(size_hint_y=None, height=dp(64), spacing=dp(10))
         self._timer_start_btn = mk_btn(
             'Pause' if self._timer_running else 'Start',
@@ -6163,6 +6158,31 @@ INNSTILLINGER
         ctrl.add_widget(mk_btn('Nullstill', hex_k('#FF6B6B'), h=dp(60), fs=17,
             cb=self._tidsur_reset))
         root.add_widget(ctrl)
+
+        root.add_widget(Label(text='Velg tid:', size_hint_y=None, height=dp(24),
+            font_size=fsp(14), color=(0.2, 0.2, 0.3, 1), halign='center'))
+
+        presets = [('1 min', 60), ('2 min', 120), ('3 min', 180),
+                   ('5 min', 300), ('10 min', 600), ('15 min', 900)]
+        pg = GridLayout(cols=3, spacing=dp(6), size_hint_y=None, height=dp(114))
+        for lbl, sek in presets:
+            pg.add_widget(mk_btn(lbl, hex_k('#4D96FF'), h=dp(54), fs=14,
+                cb=lambda *_, s=sek: self._tidsur_set(s)))
+        root.add_widget(pg)
+
+        cust = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        cust.add_widget(Label(text='Min:', size_hint_x=None, width=dp(44),
+            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1)))
+        self._timer_cust_sl  = Slider(min=1, max=60, value=5, step=1)
+        self._timer_cust_lbl = Label(text='5', size_hint_x=None, width=dp(34),
+            font_size=fsp(15), color=(0.2, 0.2, 0.3, 1))
+        self._timer_cust_sl.bind(value=lambda sl, v:
+            setattr(self._timer_cust_lbl, 'text', str(int(v))))
+        cust.add_widget(self._timer_cust_sl); cust.add_widget(self._timer_cust_lbl)
+        cust.add_widget(mk_btn('Sett', hex_k('#FF9F43'), h=dp(48), fs=14,
+            size_hint_x=None, width=dp(76),
+            cb=lambda *_: self._tidsur_set(int(self._timer_cust_sl.value) * 60)))
+        root.add_widget(cust)
 
         self._tidsur_refresh_display()
         self._set_content(root)
