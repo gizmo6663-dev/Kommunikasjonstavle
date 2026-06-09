@@ -14,7 +14,6 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
-      # ── CACHE 1: Gradle ──────────────────────────────────────────
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -23,9 +22,7 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ── CACHE 2: .buildozer (Android SDK + NDK + p4a) ────────────
-      # Cache-miss (spec endret):  ~12 min
-      # Cache-hit (Python/XML/..): ~3–4 min
+      # Cacher hele .buildozer-mappen inkl. Android SDK/NDK og dists/
       - name: Cache .buildozer
         uses: actions/cache@v4
         with:
@@ -53,6 +50,10 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
+              # Fiks: git safe.directory slik at buildozer kan lese remote.origin.url
+              # inne i Docker-containeren (GitHub Actions checkout setter strict ownership).
+              git config --global --add safe.directory /home/user/hostcwd
+
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
 
               echo '=== PASS 1: buildozer android debug ==='
@@ -66,6 +67,36 @@ jobs:
                 cat build_step1.log > build.log
                 exit 1
               fi
+
+              # Skriv local.properties med riktig SDK-sti.
+              # Bygger stien dynamisk slik at den alltid er korrekt
+              # uavhengig av om SDK ligger i cachen vaar eller i Docker-imaget.
+              SDK_DIR=\$(find /root/.buildozer /home/user/.buildozer /home/user/hostcwd/.buildozer \
+                -maxdepth 6 -name platform-tools -type d 2>/dev/null \
+                | head -1 | xargs dirname 2>/dev/null || true)
+              if [ -z \"\$SDK_DIR\" ]; then
+                echo 'ADVARSEL: fant ikke Android SDK automatisk, prover standard stier'
+                for CAND in \
+                  /root/.buildozer/android/platform/android-sdk \
+                  /home/user/.buildozer/android/platform/android-sdk \
+                  /home/user/hostcwd/.buildozer/android/platform/android-sdk; do
+                  if [ -d \"\$CAND\" ]; then SDK_DIR=\$CAND; break; fi
+                done
+              fi
+              if [ -z \"\$SDK_DIR\" ]; then
+                echo 'FEIL: Android SDK ikke funnet i noen kjent sti'
+                echo 'Innhold i .buildozer/android/platform/:'
+                ls -la /home/user/hostcwd/.buildozer/android/platform/ 2>/dev/null || echo '(tom)'
+                ls -la /root/.buildozer/android/platform/ 2>/dev/null || echo '(tom)'
+                cat build_step1.log > build.log
+                exit 1
+              fi
+              echo \"Bruker SDK: \$SDK_DIR\"
+              printf 'sdk.dir=%s\n' \"\$SDK_DIR\" > \$DIST/local.properties
+              NDK_DIR=\$(find /root/.buildozer /home/user/.buildozer /home/user/hostcwd/.buildozer \
+                -maxdepth 5 -type d -name 'android-ndk-*' 2>/dev/null | head -1 || true)
+              [ -n \"\$NDK_DIR\" ] && printf 'ndk.dir=%s\n' \"\$NDK_DIR\" >> \$DIST/local.properties
+              echo \"local.properties: \$(cat \$DIST/local.properties)\"
 
               echo '=== Injiserer widget-filer ==='
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
@@ -144,7 +175,7 @@ jobs:
 
               mkdir -p bin
               cp \"\$APK\" bin/
-              echo \"APK lagt i bin/: \$(ls bin/)\"
+              echo \"APK: \$(ls bin/)\"
             "
 
       - name: Finn APK-fil
