@@ -654,10 +654,8 @@ def save_struct(d, immediate=False):
     _save_event[0] = Clock.schedule_once(_do_save, 1.0)
 
 
-# get_folder redefinert lokalt for bakoverkompatibilitet med alle referanser i App-klassen
-def get_folder(d, fid):
-    return _get_folder_data(d, fid)
-
+# get_folder: lokal implementasjon som wrapper rundt kt_data-versjonen,
+# sikrer bakoverkompatibilitet med alle referanser i App-klassen.
 def get_folder(d, fid):
     """Finner mappe med gitt id – søker rekursivt i subfolders."""
     for fo in d.get('folders', []):
