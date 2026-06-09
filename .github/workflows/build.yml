@@ -14,6 +14,7 @@ jobs:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
 
+      # ── CACHE 1: Gradle ──────────────────────────────────────────
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -22,14 +23,26 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # Cacher hele .buildozer-mappen inkl. Android SDK/NDK og dists/
-      - name: Cache .buildozer
+      # ── CACHE 2: Prosjekt-spesifikt .buildozer (dists/, p4a) ─────
+      - name: Cache .buildozer (dists + p4a)
         uses: actions/cache@v4
         with:
           path: .buildozer
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-
+
+      # ── CACHE 3: Buildozer SDK/NDK (lagres i /root/.buildozer) ───
+      # Android SDK og NDK lagres av buildozer under $HOME/.buildozer/
+      # inne i Docker (=/root/.buildozer/). Vi monterer denne mappen til
+      # workspace slik at den overlever mellom bygg.
+      - name: Cache buildozer SDK/NDK
+        uses: actions/cache@v4
+        with:
+          path: .buildozer_sdk
+          key: buildozer-sdk-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-sdk-${{ runner.os }}-
 
       - name: Sett versjonsnummer fra git
         id: version
@@ -39,9 +52,13 @@ jobs:
 
       - name: Bygg APK med Buildozer + Gradle (Docker)
         run: |
+          # Opprett SDK-mappe om den ikke finnes (unngaar Docker mount-feil)
+          mkdir -p ${{ github.workspace }}/.buildozer_sdk
+
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             -v ~/.gradle:/root/.gradle \
+            -v ${{ github.workspace }}/.buildozer_sdk:/root/.buildozer \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
@@ -50,9 +67,10 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
-              # Fiks: git safe.directory slik at buildozer kan lese remote.origin.url
-              # inne i Docker-containeren (GitHub Actions checkout setter strict ownership).
-              git config --global --add safe.directory /home/user/hostcwd
+              # Gi git tilgang til alle kataloger uavhengig av eierskap.
+              # Nodvendig fordi cachede mapper eies av runner-brukeren (uid 1001)
+              # mens Docker kjorer som root.
+              git config --global --add safe.directory '*'
 
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
 
@@ -67,36 +85,6 @@ jobs:
                 cat build_step1.log > build.log
                 exit 1
               fi
-
-              # Skriv local.properties med riktig SDK-sti.
-              # Bygger stien dynamisk slik at den alltid er korrekt
-              # uavhengig av om SDK ligger i cachen vaar eller i Docker-imaget.
-              SDK_DIR=\$(find /root/.buildozer /home/user/.buildozer /home/user/hostcwd/.buildozer \
-                -maxdepth 6 -name platform-tools -type d 2>/dev/null \
-                | head -1 | xargs dirname 2>/dev/null || true)
-              if [ -z \"\$SDK_DIR\" ]; then
-                echo 'ADVARSEL: fant ikke Android SDK automatisk, prover standard stier'
-                for CAND in \
-                  /root/.buildozer/android/platform/android-sdk \
-                  /home/user/.buildozer/android/platform/android-sdk \
-                  /home/user/hostcwd/.buildozer/android/platform/android-sdk; do
-                  if [ -d \"\$CAND\" ]; then SDK_DIR=\$CAND; break; fi
-                done
-              fi
-              if [ -z \"\$SDK_DIR\" ]; then
-                echo 'FEIL: Android SDK ikke funnet i noen kjent sti'
-                echo 'Innhold i .buildozer/android/platform/:'
-                ls -la /home/user/hostcwd/.buildozer/android/platform/ 2>/dev/null || echo '(tom)'
-                ls -la /root/.buildozer/android/platform/ 2>/dev/null || echo '(tom)'
-                cat build_step1.log > build.log
-                exit 1
-              fi
-              echo \"Bruker SDK: \$SDK_DIR\"
-              printf 'sdk.dir=%s\n' \"\$SDK_DIR\" > \$DIST/local.properties
-              NDK_DIR=\$(find /root/.buildozer /home/user/.buildozer /home/user/hostcwd/.buildozer \
-                -maxdepth 5 -type d -name 'android-ndk-*' 2>/dev/null | head -1 || true)
-              [ -n \"\$NDK_DIR\" ] && printf 'ndk.dir=%s\n' \"\$NDK_DIR\" >> \$DIST/local.properties
-              echo \"local.properties: \$(cat \$DIST/local.properties)\"
 
               echo '=== Injiserer widget-filer ==='
               KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
