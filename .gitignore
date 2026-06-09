@@ -1,0 +1,56 @@
+# ── Buildozer og Android-bygg ─────────────────────────────────────
+.buildozer/
+bin/
+build/
+*.apk
+*.aab
+
+# ── Bygglogger ─────────────────────────────────────────────────────
+build.log
+gradle.log
+build_step1.log
+*.log
+
+# ── Brukerdata som IKKE skal i repoet ──────────────────────────────
+# structure.json inneholder mapper, bilder og planer opprettet av brukeren.
+# Filen genereres automatisk av appen – skal aldri committes.
+structure.json
+
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtuelle miljøer ──────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+
+# ── Signering – ALDRI i repoet ────────────────────────────────────
+# Selv om du signerer debug-bygg nå, legg til disse for sikkerhets skyld.
+*.keystore
+*.jks
+*.p12
+*.pfx
+release.properties
+
+# ── Gradle-cache ──────────────────────────────────────────────────
+.gradle/
+local.properties
+
+# ── macOS og editor-filer ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+.vscode/
+
+# ── Midlertidige filer ────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
