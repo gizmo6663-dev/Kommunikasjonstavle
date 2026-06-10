@@ -102,7 +102,7 @@ public class KtAlarmReceiver extends BroadcastReceiver {
 
         b.setContentTitle(title)
          .setContentText(body)
-         .setSmallIcon(android.R.drawable.ic_alarm)
+         .setSmallIcon(android.R.drawable.ic_dialog_info)
          .setAutoCancel(true);
 
         if (pi != null) b.setContentIntent(pi);
