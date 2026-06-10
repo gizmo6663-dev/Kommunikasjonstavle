@@ -270,14 +270,7 @@ DEFAULT_CATEGORIES = [
 ]
 
 DEFAULT_STRUCT = {
-    "folders": [
-        {"id": "f1", "name": "Mat og drikke", "color": "#FFD93D", "image": None, "items": [], "subfolders": [], "opens": 0},
-        {"id": "f2", "name": "Aktiviteter",   "color": "#6BCB77", "image": None, "items": [], "subfolders": [], "opens": 0},
-        {"id": "f3", "name": "Følelser",     "color": "#4D96FF", "image": None, "items": [], "subfolders": [], "opens": 0},
-        {"id": "f4", "name": "Kropp",         "color": "#FF6B6B", "image": None, "items": [], "subfolders": [], "opens": 0},
-        {"id": "f5", "name": "Klær",         "color": "#C77DFF", "image": None, "items": [], "subfolders": [], "opens": 0},
-        {"id": "f6", "name": "Transport",     "color": "#FF9F43", "image": None, "items": [], "subfolders": [], "opens": 0},
-    ],
+    "folders": [],
     "sequences": [],
     "dagsrytme": [],
     "dagsplaner": {c: [] for c in DAY_CODES},
@@ -2154,7 +2147,7 @@ class KommunikasjonstavleApp(App):
         Kjøres alltid ETTER load_struct() slik at self.data er tilgjengelig
         og bundled_version-sjekken fungerer korrekt.
         """
-        BUNDLE_VERSION = 2   # ← økt til 2: reparerer tomme mapper fra forrige versjon
+        BUNDLE_VERSION = 3   # ← økt til 3: rydder opp ikke-bundlede mapper
 
         # ── Sjekk om dette allerede er gjort ────────────────────────
         done_ver = self.data.get('settings', {}).get('bundled_version', 0)
@@ -2339,6 +2332,26 @@ class KommunikasjonstavleApp(App):
 
         logging.info('bundled assets: %d mapper, %d bilder importert, %d feilet',
                      imported_folders, imported_images, failed_images)
+
+        # ── Synkroniser mappeliste ────────────────────────────────────────
+        # Behold mapper som enten finnes i assets/bilder/ (bundlede)
+        # eller har innhold (brukeren har lagt til items).
+        # Tomme mapper med ukjent opprinnelse fjernes – disse er artefakter
+        # fra DEFAULT_STRUCT, eldre app-versjoner eller debug-kjøringer.
+        bundled_names = {
+            n.lower() for n in os.listdir(assets_root)
+            if os.path.isdir(os.path.join(assets_root, n))
+        }
+        before_sync = len(self.data.get('folders', []))
+        self.data['folders'] = [
+            f for f in self.data.get('folders', [])
+            if f.get('name', '').lower() in bundled_names
+            or f.get('items')
+        ]
+        removed_sync = before_sync - len(self.data['folders'])
+        if removed_sync:
+            diag(f'SYNC: fjernet {removed_sync} tomme mapper utenfor bunten')
+            logging.info('bundled assets: ryddet opp %d foreldreløse mapper', removed_sync)
 
         # Merk som ferdig KUN hvis minst ett bilde ble importert ELLER
         # det ikke fantes noen bilder å importere (assets-mappen er tom).
@@ -6881,11 +6894,12 @@ INNSTILLINGER
                 return
             if new:
                 self.data['folders'].append({
-                    'id':    str(uuid.uuid4()),
-                    'name':  nm,
-                    'color': chosen_color[0],
-                    'image': chosen_img[0],
-                    'items': [],
+                    'id':          str(uuid.uuid4()),
+                    'name':        nm,
+                    'color':       chosen_color[0],
+                    'image':       chosen_img[0],
+                    'items':       [],
+                    'user_created': True,
                 })
             else:
                 fo.update({'name': nm, 'color': chosen_color[0], 'image': chosen_img[0]})
@@ -8093,14 +8107,15 @@ INNSTILLINGER
             nm = folder_name_inp.text.strip() or 'Min første mappe'
             import uuid as _uuid
             new_fo = {
-                'id':         str(_uuid.uuid4()),
-                'name':       nm,
-                'color':      FOLDER_COLORS[2] if len(FOLDER_COLORS) > 2 else '#6BCB77',
-                'image':      None,
-                'items':      [],
-                'subfolders': [],
-                'opens':      0,
-            }
+                    'id':          str(_uuid.uuid4()),
+                    'name':        nm,
+                    'color':       FOLDER_COLORS[2] if len(FOLDER_COLORS) > 2 else '#6BCB77',
+                    'image':       None,
+                    'items':       [],
+                    'subfolders':  [],
+                    'opens':       0,
+                    'user_created': True,
+                }
             self.data.setdefault('folders', []).append(new_fo)
             save_struct(self.data)
             _show_done_slide()
