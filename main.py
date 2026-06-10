@@ -23,6 +23,7 @@ import re
 import sys
 import json
 import uuid
+import time
 import shutil
 import logging
 import functools
@@ -99,6 +100,45 @@ IMG_DIR     = None
 DRAW_DIR    = None
 STRUCT_FILE = None
 LOG_FILE    = None
+DIAG_FILE   = None   # diagnoselogg – satt i build()
+
+
+# ══════════════════════════════════════════════════════════════════
+#  DIAGNOSELOGGING
+#  Separat fra crash.log – skriver detaljerte tidsstemplede
+#  hendelser for å diagnostisere oppstartsproblemer.
+#  Leses via "Vis diagnoselogg" i Innstillinger.
+# ══════════════════════════════════════════════════════════════════
+
+_DIAG_SESSION = 0   # økes i build() per oppstart
+
+def diag(msg: str) -> None:
+    """
+    Skriver én diagnoselinje til DIAG_FILE og til Python logging.
+
+    Format:  [HH:MM:SS.mmm S#N] melding
+    S#N = sesjonsnummer (1 = fersk installasjon/første start,
+          2 = andre oppstart, osv.)
+
+    Brukes i alle nøkkelfunksjoner for bildelasting og oppstart
+    slik at vi kan sammenligne sesjon 1 (bilder usynlige) mot
+    sesjon 2 (bilder synlige) og finne avviket.
+    """
+    ts   = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    line = f'[{ts} S#{_DIAG_SESSION}] {msg}\n'
+    if DIAG_FILE:
+        try:
+            with open(DIAG_FILE, 'a', encoding='utf-8') as _f:
+                _f.write(line)
+        except Exception:
+            pass
+    logging.debug('[DIAG] %s', msg)
+
+
+def diag_section(title: str) -> None:
+    """Skriver en tydelig seksjonsseparator i diagnoseloggen."""
+    sep = '─' * 60
+    diag(f'\n{sep}\n  {title}\n{sep}')
 
 CANVAS_W = 960
 CANVAS_H = 1280   # Portrettformat passer mobilskjerm
@@ -498,12 +538,24 @@ def get_thumbnail(path, w, h):
     """
     key = (path, int(w), int(h))
     if key in _THUMB_CACHE:
+        diag(f'THUMB CACHE_HIT {os.path.basename(path)}')
         return _THUMB_CACHE[key]
 
-    if not PIL_OK or not path or not os.path.exists(path):
+    # ── Diagnose: logg filstatus FØR PIL prøver å åpne ──────────
+    exists  = os.path.exists(path)
+    fsize   = os.path.getsize(path) if exists else -1
+    diag(f'THUMB START {os.path.basename(path)} exists={exists} size={fsize}B '
+         f'PIL_OK={PIL_OK}')
+
+    if not PIL_OK or not path or not exists:
+        diag(f'THUMB SKIP (PIL_OK={PIL_OK} path={bool(path)} exists={exists})')
         return None
+
+    t0 = time.time()
     try:
         img  = PILImage.open(path).convert('RGB')
+        diag(f'THUMB PIL_OPEN OK {os.path.basename(path)} '
+             f'src={img.width}×{img.height}')
         img.thumbnail((int(w), int(h)), PILImage.LANCZOS)
         # Pad til nøyaktig størrelse
         out  = PILImage.new('RGB', (int(w), int(h)), (255, 255, 255))
@@ -517,8 +569,11 @@ def get_thumbnail(path, w, h):
         if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
             _THUMB_CACHE.pop(next(iter(_THUMB_CACHE)))
         _THUMB_CACHE[key] = tex
+        diag(f'THUMB OK {os.path.basename(path)} t={time.time()-t0:.3f}s')
         return tex
-    except Exception:
+    except Exception as _te:
+        diag(f'THUMB FAIL {os.path.basename(path)} err={type(_te).__name__}: {_te} '
+             f't={time.time()-t0:.3f}s')
         return None  # IKKE cachet – tillater retry neste gang
 
 
@@ -2212,16 +2267,23 @@ class KommunikasjonstavleApp(App):
 
                 try:
                     if not os.path.exists(dst_path):
+                        t_copy = time.time()
                         shutil.copy2(src_path, dst_path)
                         # fsync sikrer at data er skrevet til disk – ikke bare
                         # til OS-bufferet. Uten dette kan Android returnere
                         # file-size=0 og PIL feiler å åpne filen noen ms
                         # etter at shutil.copy2 returnerte.
+                        size_after = os.path.getsize(dst_path) if os.path.exists(dst_path) else -1
                         try:
                             with open(dst_path, 'rb') as _f:
                                 os.fsync(_f.fileno())
-                        except Exception:
-                            pass
+                            fsync_ok = True
+                        except Exception as _fe:
+                            fsync_ok = False
+                            diag(f'COPY fsync FEIL {img_file}: {_fe}')
+                        diag(f'COPY {"OK" if size_after > 0 else "TOMT"} {img_file} '
+                             f'size={size_after}B fsync={fsync_ok} '
+                             f't={time.time()-t_copy:.3f}s')
                         logging.debug('bundled assets: kopiert %s → %s', src_path, dst_path)
                     else:
                         logging.debug('bundled assets: %s finnes allerede i IMG_DIR', img_file)
@@ -2280,17 +2342,30 @@ class KommunikasjonstavleApp(App):
 
         # Sett ALLE datastier fra user_data_dir – alltid skrivbar
         # uten tillatelser på alle Android-versjoner.
-        global DATA_DIR, IMG_DIR, DRAW_DIR, STRUCT_FILE, LOG_FILE
+        global DATA_DIR, IMG_DIR, DRAW_DIR, STRUCT_FILE, LOG_FILE, DIAG_FILE, _DIAG_SESSION
         DATA_DIR    = self.user_data_dir
         IMG_DIR     = os.path.join(DATA_DIR, 'images')
         DRAW_DIR    = os.path.join(DATA_DIR, 'drawings')
         STRUCT_FILE = os.path.join(DATA_DIR, 'structure.json')
         LOG_FILE    = os.path.join(DATA_DIR, 'crash.log')
+        DIAG_FILE   = os.path.join(DATA_DIR, 'diag.log')
 
         for d in [DATA_DIR, IMG_DIR, DRAW_DIR, DOWNLOAD_DIR]:
             os.makedirs(d, exist_ok=True)
 
         self.data        = load_struct()
+
+        # ── Sesjonsnummer – brukes i diagnoseloggen ───────────────
+        _DIAG_SESSION = self.data.get('settings', {}).get('run_count', 0) + 1
+        self.data.setdefault('settings', {})['run_count'] = _DIAG_SESSION
+
+        diag_section(f'SESJON #{_DIAG_SESSION} – APP START')
+        diag(f'PIL_OK={PIL_OK}  DATA_DIR={DATA_DIR}')
+        diag(f'Window={Window.width}×{Window.height}px  '
+             f'IMG_DIR_items={len(os.listdir(IMG_DIR)) if os.path.isdir(IMG_DIR) else "?"}')
+        diag(f'structure.json: {len(self.data.get("folders",[]))} mapper, '
+             f'bundled_version={self.data.get("settings",{}).get("bundled_version","(ingen)")}')
+
         # Aktiver HC-modus hvis det var aktivert ved forrige kjøring
         if self.data.get('settings', {}).get('high_contrast', False):
             apply_high_contrast(True)
@@ -2298,7 +2373,12 @@ class KommunikasjonstavleApp(App):
         # Kopier bundlede bilder (fra repo assets/) til IMG_DIR.
         # Kjøres etter load_struct() så self.data er satt og
         # bundled_version-sjekken fungerer korrekt.
+        diag('build() → kaller _init_bundled_assets()')
+        t_assets = time.time()
         self._init_bundled_assets()
+        diag(f'build() → _init_bundled_assets() ferdig t={time.time()-t_assets:.3f}s '
+             f'IMG_DIR_items={len(os.listdir(IMG_DIR))}')
+
         self.nav_stack   = []
         self.cur_folder  = None
         self.edit_mode   = False
@@ -2320,6 +2400,7 @@ class KommunikasjonstavleApp(App):
         self._navbar = self._build_navbar()
         root.add_widget(self._navbar)
 
+        diag('build() → kaller _show_home()')
         self._show_home()
         # Widget-oppdatering – pakket inn i try/except
         def _safe_widget_start(*_):
@@ -3236,6 +3317,16 @@ class KommunikasjonstavleApp(App):
         self.cur_folder = fo['id']
         self._set_title(fo['name'])
 
+        items     = fo.get('items', [])
+        has_img   = [it for it in items if it.get('image')]
+        on_disk   = [it for it in has_img if os.path.exists(it['image'])]
+        diag_section(f'MAPPE ÅPNET: {fo["name"]}')
+        diag(f'items={len(items)}  med_bilde={len(has_img)}  finnes_på_disk={len(on_disk)}')
+        for it in has_img[:8]:        # logg inntil 8 bilder
+            p  = it['image']
+            sz = os.path.getsize(p) if os.path.exists(p) else -1
+            diag(f'  bilde: {os.path.basename(p)}  size={sz}B  exists={os.path.exists(p)}')
+
         outer = BoxLayout(
             orientation='vertical',
             spacing=dp(8), padding=(0, dp(6), 0, 0),
@@ -3372,36 +3463,38 @@ class KommunikasjonstavleApp(App):
             )
             if thumb_tex:
                 ti.texture = thumb_tex
+                diag(f'TILE PIL_OK {os.path.basename(img_path)}')
             elif img_path:
+                diag(f'TILE PIL_FAIL {os.path.basename(img_path)} – starter retry')
                 # ── Retry med eksponentiell backoff ──────────────────────
-                # Rotårsak: på fersk installasjon kopierer _init_bundled_assets
-                # bilder til IMG_DIR med shutil.copy2(). Filene er lukket og
-                # ferdigskrevet i Python, men Android bufrer noen ganger
-                # selve inode-oppdateringen noen hundre millisekunder.
-                # I tillegg kan Kivy-loaderens tråd prøve å åpne filen
-                # FØR bufferflush, noe som gir stille feil uten exception.
-                # Manuell cache cacher IKKE feil, så get_thumbnail() prøves
-                # på nytt – og vi får riktig PIL-thumbnail (hvit bakgrunn,
-                # korrekt størrelse) hvis den lykkes, ikke bare Kivy-raw-laster.
-                # Etter 5 forsøk (totalt ~7,5 s) gir vi opp stille.
                 def _retry_load(attempt=1, ti=ti, p=img_path, tsz=tile_sz):
+                    fsize = os.path.getsize(p) if os.path.exists(p) else -1
+                    diag(f'RETRY #{attempt} {os.path.basename(p)} '
+                         f'size={fsize}B texture={ti.texture is not None}')
                     if ti.texture is not None:
-                        return                      # allerede lastet
+                        diag(f'RETRY #{attempt} ALLEREDE_LASTET – avbryter')
+                        return
                     # Prøv PIL-thumbnail igjen (ikke cachet ved feil)
                     new_tex = get_thumbnail(p, tsz, tsz)
                     if new_tex is not None:
                         ti.texture = new_tex
+                        diag(f'RETRY #{attempt} PIL_OK – texture satt')
                         return
                     # PIL feilet – prøv Kivy async-loader som sekundær strategi
                     if ti.source and os.path.exists(p):
                         try:
                             ti.reload()
-                        except Exception:
-                            pass
+                            diag(f'RETRY #{attempt} KIVY_RELOAD kalt')
+                        except Exception as _re:
+                            diag(f'RETRY #{attempt} KIVY_RELOAD FEIL: {_re}')
                     if attempt < 5:
+                        delay = 0.5 * attempt
+                        diag(f'RETRY #{attempt} neste om {delay}s')
                         Clock.schedule_once(
                             lambda dt, a=attempt: _retry_load(a + 1),
-                            0.5 * attempt)          # 0,5 · 1,0 · 1,5 · 2,0 s
+                            delay)
+                    else:
+                        diag(f'RETRY GITT_OPP etter 5 forsøk: {os.path.basename(p)}')
                 Clock.schedule_once(lambda dt: _retry_load(1), 0.5)
             img_wrap.add_widget(ti)
             cell.add_widget(img_wrap)
@@ -4577,6 +4670,8 @@ class KommunikasjonstavleApp(App):
             cb=lambda *_: self._show_help_popup()))
         outer.add_widget(mk_btn('Vis widget-logg', hex_k('#78909C'), h=dp(48), fs=14,
             cb=lambda *_: self._show_widget_log()))
+        outer.add_widget(mk_btn('Vis diagnoselogg', hex_k('#546E7A'), h=dp(48), fs=14,
+            cb=lambda *_: self._show_diag_log()))
 
         # ── Personvern ───────────────────────────────────────────────
         outer.add_widget(Label(
@@ -4789,6 +4884,70 @@ INNSTILLINGER
         layout.add_widget(sv)
 
         pop = Popup(title='Widget-logg', content=layout,
+                    size_hint=POPUP_LARGE)
+        pop_ref[0] = pop
+        pop.open()
+
+    def _show_diag_log(self):
+        """
+        Viser diag.log – detaljert diagnoselogg over oppstart og bildelasting.
+
+        Loggen inneholder sesjonsnummer (S#N) slik at sesjon 1 (fersk
+        installasjon, bilder usynlige) kan sammenlignes direkte med
+        sesjon 2 (bilder synlige) for å finne rotårsaken.
+
+        THUMB START/OK/FAIL – get_thumbnail()-kall med filstørrelse og timing
+        COPY OK/TOMT        – shutil.copy2 + fsync-resultat per bilde
+        TILE PIL_OK/FAIL    – om thumbnail ble satt direkte i _make_item_tile
+        RETRY #N            – hvert retry-forsøk med filstatus og resultat
+        """
+        diag_path = DIAG_FILE
+        if not diag_path or not os.path.exists(diag_path):
+            self._toast('Ingen diagnoselogg ennå – åpne en mappe først.')
+            return
+        try:
+            with open(diag_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            # Vis de 80 siste linjene, nyeste øverst
+            text = ''.join(reversed(lines[-80:]))
+            n_lines = len(lines)
+        except Exception as e:
+            text    = f'Feil ved lesing: {e}'
+            n_lines = 0
+
+        layout  = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        pop_ref = [None]
+
+        # ── Topprad ──────────────────────────────────────────────
+        top = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        top.add_widget(Label(
+            text=f'Diagnoselogg  [{n_lines} linjer, siste 80 vises]',
+            font_size=fsp(13), bold=True, color=(0.1, 0.1, 0.3, 1)))
+        def _clear(*_):
+            try:
+                open(diag_path, 'w').close()
+                self._toast('Diagnoselogg tømt.')
+                pop_ref[0].dismiss()
+            except Exception:
+                pass
+        top.add_widget(mk_btn('Tøm', hex_k('#EF5350'), h=dp(40), fs=12, cb=_clear))
+        layout.add_widget(top)
+
+        # ── Logginnhold ───────────────────────────────────────────
+        sv  = ScrollView()
+        lbl = Label(
+            text=text or '(tom)',
+            font_name='NotoSans', font_size=fsp(10),
+            color=(0.05, 0.12, 0.08, 1),
+            halign='left', valign='top',
+            size_hint_y=None,
+        )
+        lbl.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+        lbl.bind(texture_size=lambda w, v: setattr(w, 'height', v[1]))
+        sv.add_widget(lbl)
+        layout.add_widget(sv)
+
+        pop = Popup(title='Diagnoselogg', content=layout,
                     size_hint=POPUP_LARGE)
         pop_ref[0] = pop
         pop.open()
