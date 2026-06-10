@@ -3021,7 +3021,7 @@ class KommunikasjonstavleApp(App):
         haptic_feedback()
 
         actions = [
-            ('Ny aktivitet',      '#6BCB77', lambda: self._dr_entry_popup(None)),
+            ('Ny aktivitet',      '#6BCB77', self._dr_new_activity_flow),
             ('Rediger aktivitet', '#4D96FF', self._fab_edit_current_activity),
             ('Legg til bilde',    '#FF9F43', self._fab_add_image),
             ('Søk',               '#9B59B6', self._global_search_popup),
@@ -5934,7 +5934,7 @@ INNSTILLINGER
         if edit:
             outer.add_widget(mk_btn('+  Legg til aktivitet',
                 hex_k('#6BCB77'), h=dp(52), fs=15,
-                cb=lambda *_: self._dr_entry_popup(None)))
+                cb=lambda *_: self._dr_new_activity_flow()))
             row1 = BoxLayout(orientation='horizontal',
                              size_hint_y=None, height=dp(44),
                              spacing=dp(6))
@@ -6476,8 +6476,123 @@ INNSTILLINGER
         box.add_widget(lbl)
         return box
 
-    def _dr_entry_popup(self, entry):
-        """Popup for å opprette eller redigere en dagsrytme-aktivitet."""
+    def _dr_new_activity_flow(self):
+        """
+        Inngangspunkt for "Ny aktivitet" – erstatter direkte kall til
+        _dr_entry_popup(None).
+
+        Resonnement: en aktivitet i dagsplanen vises med et ASK-symbol,
+        og navnet på aktiviteten ER i praksis navnet på det symbolet.
+        Å skrive inn et navn manuelt er derfor unødvendig dobbeltarbeid
+        i de fleste tilfeller. I stedet vises symbolvelgeren FØRST:
+
+          • Velger brukeren et symbol → _dr_entry_popup åpnes med navn
+            OG bilde forhåndsutfylt fra symbolet (fortsatt redigerbart),
+            sammen med smarte tid-/kategori-standardverdier fra batch 2.
+            Da gjenstår normalt kun ett trykk: "Lagre".
+          • Trykker brukeren "Skriv navn manuelt i stedet" → vanlig
+            tom popup med auto-fokusert navnefelt, for aktiviteter uten
+            et bestemt symbol (f.eks. "Fri lek", "Samling").
+        """
+        self._pick_symbol_popup(
+            on_picked=lambda path, name: self._dr_entry_popup(
+                None, preset_image=path, preset_name=name),
+            on_cancel=lambda: self._dr_entry_popup(None))
+
+    def _pick_symbol_popup(self, on_picked, on_cancel=None):
+        """
+        Symbolvelger for "Ny aktivitet": viser alle ASK-symboler gruppert
+        per mappe (samme oversiktlige liste som _pick_from_folders), slik
+        at den ansatte raskt kan trykke seg ned til riktig symbol.
+
+        on_picked(image_path, name) kalles ved valg av symbol.
+        on_cancel() kalles hvis brukeren velger å skrive navn manuelt
+        i stedet (f.eks. for aktiviteter uten et bestemt symbol).
+        """
+        from kivy.uix.image import Image as KImg
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
+        layout.add_widget(Label(
+            text='Velg symbol for ny aktivitet:',
+            size_hint_y=None, height=dp(32),
+            font_size=fsp(15), bold=True, color=(0.1, 0.1, 0.3, 1)))
+
+        sv = ScrollView()
+        gl = GridLayout(cols=1, spacing=dp(6), size_hint_y=None)
+        gl.bind(minimum_height=gl.setter('height'))
+
+        has_any = False
+        for fo in self.data.get('folders', []):
+            items = fo.get('items', [])
+            if not items:
+                continue
+            has_any = True
+            gl.add_widget(Label(
+                text=fo['name'], size_hint_y=None, height=dp(28),
+                font_size=fsp(13), bold=True,
+                color=hex_k(fo.get('color', '#4D96FF'))[:3] + (1,),
+                halign='left'))
+            img_grid = GridLayout(cols=4, spacing=dp(4), size_hint_y=None)
+            img_grid.bind(minimum_height=img_grid.setter('height'))
+            for it in items:
+                ip = it.get('image', '')
+                if not ip or not os.path.exists(ip):
+                    continue
+                cell = BoxLayout(orientation='vertical',
+                                 size_hint_y=None, height=dp(90))
+                img_w = KImg(source=ip, allow_stretch=True, keep_ratio=True,
+                              size_hint_y=None, height=dp(72))
+                lbl = Label(text=it['name'], font_size=sp(10),
+                            size_hint_y=None, height=dp(16),
+                            color=(0.2, 0.2, 0.3, 1),
+                            shorten=True, shorten_from='right')
+                lbl.bind(size=lbl.setter('text_size'))
+                cell.add_widget(img_w)
+                cell.add_widget(lbl)
+
+                def _tap(w, t, _ip=ip, _name=it['name']):
+                    if w.collide_point(*t.pos):
+                        pop_ref[0].dismiss()
+                        Clock.schedule_once(
+                            lambda *_: on_picked(_ip, _name), 0.05)
+                        return True
+                cell.bind(on_touch_down=_tap)
+                img_grid.add_widget(cell)
+            gl.add_widget(img_grid)
+
+        if not has_any:
+            gl.add_widget(Label(
+                text='Ingen symboler ennå.\nLegg til bilder i mapper først.',
+                size_hint_y=None, height=dp(80),
+                font_size=fsp(14), color=(0.5, 0.5, 0.5, 1), halign='center'))
+
+        sv.add_widget(gl)
+        layout.add_widget(sv)
+
+        def _cancel(*_):
+            pop_ref[0].dismiss()
+            if on_cancel:
+                Clock.schedule_once(lambda *_: on_cancel(), 0.05)
+
+        layout.add_widget(mk_btn(
+            'Skriv navn manuelt i stedet', hex_k('#9CA3AF'), h=dp(46), fs=13,
+            cb=_cancel))
+
+        pop = Popup(title='Velg symbol', content=layout, size_hint=POPUP_LARGE)
+        pop_ref[0] = pop
+        pop.open()
+
+    def _dr_entry_popup(self, entry, preset_image=None, preset_name=None):
+        """
+        Popup for å opprette eller redigere en dagsrytme-aktivitet.
+
+        preset_image/preset_name: brukes når brukeren har valgt symbol
+        FØR denne popup-en åpnes (se _dr_new_activity_flow). Navn og
+        bilde forhåndsutfylles fra symbolet, men forblir redigerbare –
+        siden aktivitetens navn i praksis ER symbolets navn, trenger
+        brukeren da bare å bekrefte tid/kategori og trykke Lagre.
+        """
         new = entry is None
         pop_ref = [None]
         layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
@@ -6486,7 +6601,7 @@ INNSTILLINGER
             font_size=fsp(15), color=(0, 0, 0, 1), halign='left'))
         # on_save defineres nedenfor – bruk lambda for å unngå NameError
         name_inp = smart_input(
-            text='' if new else entry['name'],
+            text=(preset_name or '') if new else entry['name'],
             hint='Navn på aktivitet',
             on_save=lambda *_: on_save(),
         )
@@ -6496,10 +6611,24 @@ INNSTILLINGER
         time_row.add_widget(Label(text='Fra:', size_hint_x=None, width=dp(40),
             font_size=fsp(15), color=(0, 0, 0, 1)))
 
-        # Tidsstate holdes i dict så lambda-callbacks kan oppdatere via referanse.
-        # Knappene viser nåværende valg og åpner Android's rullerende tidsvelger.
-        initial_start = '08:00' if new else entry.get('start', '08:00')
-        initial_end   = '08:30' if new else entry.get('end',   '08:30')
+        # ── Smarte standardverdier for NY aktivitet ──────────────────
+        # Reduserer tastetrykk for det vanligste tilfellet: aktivitet
+        # som starter "nå" og varer en time.
+        #   • Starttid = neste hele time (eller inneværende time hvis
+        #     klokka akkurat NÅ er på en hel time).
+        #   • Sluttid  = starttid + 1 time.
+        #   • Kategori = sist brukte kategori (lagres i innstillinger
+        #     ved lagring, se on_save nedenfor).
+        # Brukeren kan justere alt med ett trykk hvis det ikke passer.
+        if new:
+            _now = datetime.now()
+            _start_h = _now.hour if _now.minute == 0 else (_now.hour + 1) % 24
+            _end_h   = (_start_h + 1) % 24
+            initial_start = f'{_start_h:02d}:00'
+            initial_end   = f'{_end_h:02d}:00'
+        else:
+            initial_start = entry.get('start', '08:00')
+            initial_end   = entry.get('end',   '08:30')
         time_state = {'start': initial_start, 'end': initial_end}
 
         start_btn = mk_btn(initial_start, hex_k('#4D96FF'), h=dp(50), fs=17,
@@ -6528,7 +6657,12 @@ INNSTILLINGER
         # ── Kategorivelger ───────────────────────────────────────
         # Knapp som viser nåværende kategori og åpner et utvalg.
         # Brukes til fargekoding i dagsplanen.
-        cat_state = [entry.get('category') if entry else None]
+        # For NY aktivitet brukes sist brukte kategori som standard
+        # (lagres i settings ved lagring) – ofte riktig siden ansatte
+        # gjerne legger inn flere aktiviteter i samme kategori etter
+        # hverandre (f.eks. flere måltider/aktiviteter på rad).
+        last_cat  = self.data.get('settings', {}).get('last_activity_category')
+        cat_state = [entry.get('category') if entry else last_cat]
         cat_btn   = mk_btn('Kategori', hex_k('#9CA3AF'),
                             h=dp(46), fs=14)
         def refresh_cat_label():
@@ -6561,9 +6695,16 @@ INNSTILLINGER
         refresh_cat_label()
         layout.add_widget(cat_btn)
 
-        chosen_img = [entry.get('image') if entry else None]
+        chosen_img = [preset_image if new else entry.get('image')]
+        if new and preset_image and preset_name:
+            # Symbolet er allerede valgt (se _dr_new_activity_flow) –
+            # vis symbolnavnet i stedet for det rå filnavnet.
+            _img_label_text = 'Bilde: ' + preset_name
+        else:
+            _img_label_text = 'Bilde: ' + (
+                os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen')
         img_lbl = Label(
-            text='Bilde: ' + (os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen'),
+            text=_img_label_text,
             size_hint_y=None, height=dp(26), font_size=fsp(13), color=(0.3, 0.3, 0.3, 1))
         layout.add_widget(img_lbl)
         layout.add_widget(mk_btn('Velg bilde', hex_k('#4D96FF'), h=dp(48),
@@ -6591,12 +6732,29 @@ INNSTILLINGER
                 entry.update({'name': nm, 'start': st, 'end': en,
                               'image': chosen_img[0],
                               'category': cat_state[0]})
+            # Husk kategorien til neste gang man oppretter en ny aktivitet
+            self.data.setdefault('settings', {})['last_activity_category'] = cat_state[0]
             save_struct(self.data)
             Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
             Clock.schedule_once(lambda *_: self._reschedule_dagsplan_notifs(), 0.3)
             pop_ref[0].dismiss()
             self._build_dagsrytme_ui()
-        btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save))
+
+        save_btn = mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save)
+
+        # Lagre-knappen er aktiv (grønn) kun når navnefeltet har tekst –
+        # forhindrer aktiviteter uten navn og gir tydelig "klar til å
+        # lagre"-tilbakemelding. Tid/kategori har alltid gyldige
+        # standardverdier, så navn er det eneste som mangler for nye
+        # aktiviteter.
+        def _update_save_state(*_):
+            has_text = bool(name_inp.text.strip())
+            save_btn.disabled  = not has_text
+            save_btn.btn_color = list(hex_k('#6BCB77' if has_text else '#B0B8C4'))
+        name_inp.bind(text=_update_save_state)
+        _update_save_state()
+
+        btn_row.add_widget(save_btn)
         btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
             cb=lambda *_: pop_ref[0].dismiss()))
         layout.add_widget(btn_row)
@@ -6604,6 +6762,19 @@ INNSTILLINGER
         pop = Popup(title='Ny aktivitet' if new else 'Rediger aktivitet',
                     content=layout, size_hint=POPUP_LARGE)
         pop_ref[0] = pop; pop.open()
+
+        # Auto-fokus på navnefeltet for nye aktiviteter UTEN forhåndsvalgt
+        # symbol – tastaturet dukker opp med én gang, og siden tid/kategori
+        # allerede har fornuftige standardverdier kan brukeren ofte bare
+        # skrive navnet og trykke Lagre. Liten forsinkelse slik at popup-en
+        # er ferdig rendret/animert inn før fokus settes (ellers kan
+        # tastaturet på enkelte Android-versjoner ikke dukke opp).
+        #
+        # Hvis navn allerede er forhåndsutfylt fra et valgt symbol
+        # (preset_name), trengs ikke tastaturet – brukeren kan bare
+        # bekrefte tid/kategori og trykke Lagre direkte.
+        if new and not preset_name:
+            Clock.schedule_once(lambda *_: setattr(name_inp, 'focus', True), 0.35)
 
     # ══════════════════════════════════════════════════
     #  TIDSUR
