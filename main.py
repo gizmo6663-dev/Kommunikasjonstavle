@@ -279,13 +279,22 @@ DEFAULT_STRUCT = {
     "kategorier": list(DEFAULT_CATEGORIES),
     "pause":      None,    # {"since": "ISO timestamp"} eller None
     "settings": {
-        "tts_enabled": False,
-        "font_scale": 1.0,
-        "high_contrast": False,
-        "swipe_nav": False,
-        "onboarding_done": False
+        "tts_enabled":            False,
+        "font_scale":             1.0,
+        "high_contrast":          False,
+        "swipe_nav":              False,
+        "onboarding_done":        False,
+        "notifications_timer":    False,
+        "notifications_dagsplan": False
     }
 }
+
+# ── Notifikasjon-ID-er (Android AlarmManager) ─────────────────────────────
+# Unike heltall brukes som PendingIntent request codes i AlarmManager.
+# Dagsplan støtter inntil 32 aktiviteter per dag (nok for en barnehagedag).
+NOTIF_TIMER          = 9001          # tidsur ferdig
+NOTIF_DAG_START_BASE = 9100          # 9100–9131: aktivitet starter
+NOTIF_DAG_END_BASE   = 9200          # 9200–9231: aktivitet ferdig
 
 # ══════════════════════════════════════════════════════════════════
 #  KRASJLOGGING
@@ -2509,9 +2518,11 @@ class KommunikasjonstavleApp(App):
         # IKKE lukk popup-er – bildevelgeren sender appen til bakgrunn
         # og da ville aktivitets-popup-en forsvinne
         save_struct(self.data, immediate=True)
+        self._write_app_state(False)   # appen er i bakgrunnen
         return True
 
     def on_resume(self):
+        self._write_app_state(True)    # appen er i forgrunnen igjen
         def _safe(*_):
             try:
                 if hasattr(self, 'data') and isinstance(self.data, dict):
@@ -2526,6 +2537,8 @@ class KommunikasjonstavleApp(App):
         Binder også on_new_intent for å fange deling mens appen kjører.
         Viser onboarding-omvisningen for nye brukere første gang.
         """
+        self._write_app_state(True)   # appen er i forgrunnen
+
         # Onboarding: kort delay så hjemskjermen rekker å rendres først,
         # ellers ser det rart ut at popup-en dukker opp før appen.
         Clock.schedule_once(self._maybe_show_onboarding, 0.6)
@@ -2538,6 +2551,11 @@ class KommunikasjonstavleApp(App):
             if self._cur_scr == 'home':
                 self._show_home(animate=False)
         Clock.schedule_once(_silent_home_refresh, 0.4)
+
+        # Planlegg dagsplan-varsler basert på dagens plan, og be om
+        # POST_NOTIFICATIONS-tillatelse (kreves på Android 13+).
+        Clock.schedule_once(lambda *_: self._reschedule_dagsplan_notifs(), 1.0)
+        Clock.schedule_once(lambda *_: self._request_notification_permission(), 2.0)
 
         if platform == 'android':
             try:
@@ -4707,6 +4725,41 @@ class KommunikasjonstavleApp(App):
         kb_row.add_widget(kb_on); kb_row.add_widget(kb_off)
         outer.add_widget(kb_row)
 
+        # ── Varsler ──────────────────────────────────────────────────
+        outer.add_widget(Label(text='Push-varsler:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        outer.add_widget(Label(
+            text='Varsler sendes kun når appen er i bakgrunnen / skjermen er av.',
+            font_size=fsp(13), color=(0.4, 0.4, 0.5, 1),
+            size_hint_y=None, height=dp(28), halign='left'))
+
+        def _mk_notif_row(label, key):
+            on_now = self.data.get('settings', {}).get(key, False)
+            row = BoxLayout(size_hint_y=None, height=rdp(56), spacing=dp(8))
+            btn_on  = mk_btn('På',  hex_k('#6BCB77' if on_now     else '#B0B8C4'),
+                             h=rdp(50), fs=14)
+            btn_off = mk_btn('Av',  hex_k('#EF5350' if not on_now else '#B0B8C4'),
+                             h=rdp(50), fs=14)
+            def _set(val, b_on=btn_on, b_off=btn_off, k=key):
+                self.data.setdefault('settings', {})[k] = val
+                b_on.btn_color  = list(hex_k('#6BCB77' if val  else '#B0B8C4'))
+                b_off.btn_color = list(hex_k('#EF5350' if not val else '#B0B8C4'))
+                save_struct(self.data)
+                if k == 'notifications_dagsplan':
+                    self._reschedule_dagsplan_notifs()
+                if val:
+                    self._request_notification_permission()
+            btn_on.bind( on_release=lambda *_: _set(True))
+            btn_off.bind(on_release=lambda *_: _set(False))
+            row.add_widget(Label(text=label, font_size=fsp(15),
+                                 color=(0.1, 0.1, 0.3, 1), halign='left'))
+            row.add_widget(btn_on)
+            row.add_widget(btn_off)
+            return row
+
+        outer.add_widget(_mk_notif_row('Tidsur:',    'notifications_timer'))
+        outer.add_widget(_mk_notif_row('Dagsplan:',  'notifications_dagsplan'))
+
         # ── Hjelp ────────────────────────────────────────────────────
         outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08,0.10,0.35,1), halign='left'))
@@ -6213,6 +6266,7 @@ INNSTILLINGER
                               'category': cat_state[0]})
             save_struct(self.data)
             Clock.schedule_once(lambda *_: _update_widget(self.data), 0.2)
+            Clock.schedule_once(lambda *_: self._reschedule_dagsplan_notifs(), 0.3)
             pop_ref[0].dismiss()
             self._build_dagsrytme_ui()
         btn_row.add_widget(mk_btn('Lagre', hex_k('#6BCB77'), h=dp(50), cb=on_save))
@@ -6507,6 +6561,7 @@ INNSTILLINGER
             self._timer_start_btn.text      = 'Pause'
             self._timer_start_btn.btn_color = list(hex_k('#FF9F43'))
         self._timer_event = Clock.schedule_interval(self._tidsur_tick, 1)
+        self._schedule_timer_notif()   # planlegg varsel for når tidsuret er ferdig
 
     def _tidsur_stop(self):
         self._timer_running = False
@@ -6518,11 +6573,204 @@ INNSTILLINGER
         if hasattr(self, '_timer_start_btn') and self._timer_start_btn:
             self._timer_start_btn.text      = 'Start'
             self._timer_start_btn.btn_color = list(hex_k('#6BCB77'))
+        self._cancel_alarm(NOTIF_TIMER)   # avbryt varsel ved pause/stopp
 
     def _tidsur_reset(self, *_):
         self._tidsur_stop()
         self._timer_sek = getattr(self, '_timer_total_sek', 300)
         self._tidsur_refresh_display()
+        self._cancel_alarm(NOTIF_TIMER)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  NOTIFIKASJONER (Android)
+    #  Push-varsler via AlarmManager + KtAlarmReceiver.java.
+    #  Vises kun når appen er i bakgrunnen (kontrollert via app_state.txt).
+    # ══════════════════════════════════════════════════════════════════
+
+    def _notif_on(self, kind: str) -> bool:
+        """True hvis varsler av typen 'timer' eller 'dagsplan' er skrudd på."""
+        return bool(self.data.get('settings', {}).get(f'notifications_{kind}', False))
+
+    def _write_app_state(self, foreground: bool) -> None:
+        """Skriver forgrunns-tilstand til fil lest av KtAlarmReceiver."""
+        if not DATA_DIR:
+            return
+        try:
+            with open(os.path.join(DATA_DIR, 'app_state.txt'), 'w') as _f:
+                _f.write('1' if foreground else '0')
+        except Exception:
+            pass
+
+    def _schedule_alarm(self, notif_id: int, title: str,
+                        body: str, epoch_ms: int) -> None:
+        """
+        Planlegger ett Android-varsel via AlarmManager.
+
+        epoch_ms: tidspunkt i millisekunder siden Unix-epoch (UTC).
+        Bruker setExactAndAllowWhileIdle for å fyre i Doze-modus;
+        faller tilbake til setAndAllowWhileIdle hvis eksakt alarm
+        ikke er tillatt (Android 12+).
+        """
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity  = autoclass('org.kivy.android.PythonActivity')
+            Intent          = autoclass('android.content.Intent')
+            PendingIntent   = autoclass('android.app.PendingIntent')
+            AlarmManager    = autoclass('android.app.AlarmManager')
+            KtAlarmReceiver = autoclass(
+                'no.askapp.kommunikasjonstavle.KtAlarmReceiver')
+
+            ctx    = PythonActivity.mActivity
+            intent = Intent(ctx, KtAlarmReceiver)
+            intent.putExtra('notif_id', notif_id)
+            intent.putExtra('title',    title)
+            intent.putExtra('body',     body)
+
+            flags = PendingIntent.FLAG_UPDATE_CURRENT
+            try:
+                flags |= PendingIntent.FLAG_IMMUTABLE   # API 23+
+            except Exception:
+                pass
+
+            pi = PendingIntent.getBroadcast(ctx, notif_id, intent, flags)
+            am = ctx.getSystemService('alarm')
+
+            # Forsøk eksakt alarm; faller tilbake ved PermissionError (API 31+)
+            try:
+                am.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP, epoch_ms, pi)
+            except Exception:
+                am.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP, epoch_ms, pi)
+        except Exception as _e:
+            logging.warning('_schedule_alarm feilet: %s', _e)
+
+    def _cancel_alarm(self, notif_id: int) -> None:
+        """Avbryter et planlagt AlarmManager-varsel."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity  = autoclass('org.kivy.android.PythonActivity')
+            Intent          = autoclass('android.content.Intent')
+            PendingIntent   = autoclass('android.app.PendingIntent')
+            AlarmManager    = autoclass('android.app.AlarmManager')
+            KtAlarmReceiver = autoclass(
+                'no.askapp.kommunikasjonstavle.KtAlarmReceiver')
+
+            ctx    = PythonActivity.mActivity
+            intent = Intent(ctx, KtAlarmReceiver)
+            flags  = PendingIntent.FLAG_NO_CREATE
+            try:
+                flags |= PendingIntent.FLAG_IMMUTABLE
+            except Exception:
+                pass
+
+            pi = PendingIntent.getBroadcast(ctx, notif_id, intent, flags)
+            if pi is not None:
+                am = ctx.getSystemService('alarm')
+                am.cancel(pi)
+        except Exception as _e:
+            logging.warning('_cancel_alarm feilet: %s', _e)
+
+    def _schedule_timer_notif(self) -> None:
+        """Planlegger 'Tidsur ferdig'-varsel basert på gjenværende sekunder."""
+        self._cancel_alarm(NOTIF_TIMER)
+        if not self._notif_on('timer'):
+            return
+        sek = getattr(self, '_timer_sek', 0)
+        if sek <= 0:
+            return
+        epoch_ms = int((time.time() + sek) * 1000)
+        self._schedule_alarm(
+            NOTIF_TIMER,
+            '⏰ Tidsur ferdig!',
+            'Tidsuret er ferdig.',
+            epoch_ms)
+
+    def _reschedule_dagsplan_notifs(self) -> None:
+        """
+        Avbryter og gjenplanlegger alle dagsplan-varsler for i dag.
+
+        Logikk iht. spesifikasjon:
+          • Start-varsel for hver aktivitet.
+          • Slutt-varsel KUN hvis neste aktivitet starter på et annet
+            tidspunkt enn denne slutter, ELLER det er siste aktivitet.
+        """
+        # Avbryt alt som måtte ligge inne
+        for _i in range(32):
+            self._cancel_alarm(NOTIF_DAG_START_BASE + _i)
+            self._cancel_alarm(NOTIF_DAG_END_BASE   + _i)
+
+        if not self._notif_on('dagsplan'):
+            return
+
+        entries = sorted(
+            get_day_plan(self.data, today_code()),
+            key=lambda e: e.get('start', '00:00'))
+        if not entries:
+            return
+
+        now_m = datetime.now().hour * 60 + datetime.now().minute
+
+        def _epoch(h_m: int) -> int:
+            """Minutter siden midnatt → epoch-ms i dag."""
+            t = datetime.now().replace(
+                hour=h_m // 60, minute=h_m % 60,
+                second=0, microsecond=0)
+            return int(t.timestamp() * 1000)
+
+        for idx, entry in enumerate(entries[:32]):
+            s_m   = self._dr_parse(entry.get('start', '00:00'))
+            e_m   = self._dr_parse(entry.get('end',   '23:59'))
+            name  = entry.get('name', 'Aktivitet')
+            s_str = entry.get('start', '')
+            e_str = entry.get('end',   '')
+
+            # Start-varsel (kun i fremtiden)
+            if s_m > now_m:
+                self._schedule_alarm(
+                    NOTIF_DAG_START_BASE + idx,
+                    f'🕐 {name}',
+                    f'Starter nå  •  {s_str}–{e_str}',
+                    _epoch(s_m))
+
+            # Slutt-varsel: kun hvis neste aktivitet IKKE starter akkurat nå
+            if e_m > now_m:
+                nxt = entries[idx + 1] if idx + 1 < len(entries) else None
+                nxt_s_m = self._dr_parse(nxt['start']) if nxt else -1
+
+                if nxt_s_m != e_m:          # gap eller ingen neste
+                    if nxt:
+                        body = f'Neste: {nxt["name"]} kl. {nxt.get("start","")}'
+                    else:
+                        body = 'Ingen flere aktiviteter i dag'
+                    self._schedule_alarm(
+                        NOTIF_DAG_END_BASE + idx,
+                        f'✅ {name} ferdig',
+                        body,
+                        _epoch(e_m))
+
+    def _request_notification_permission(self) -> None:
+        """Ber om POST_NOTIFICATIONS-tillatelse på Android 13+ (API 33)."""
+        if platform != 'android':
+            return
+        try:
+            from jnius import autoclass
+            Build   = autoclass('android.os.Build')
+            if Build.VERSION.SDK_INT < 33:
+                return
+            Activity    = autoclass('android.app.Activity')
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            ctx = PythonActivity.mActivity
+            perm = 'android.permission.POST_NOTIFICATIONS'
+            pm = ctx.getPackageManager()
+            if pm.checkPermission(perm, ctx.getPackageName()) != 0:
+                ctx.requestPermissions([perm], 1002)
+        except Exception as _e:
+            logging.warning('_request_notification_permission: %s', _e)
 
     def _tidsur_tick(self, dt):
         self._timer_sek = max(0, getattr(self, '_timer_sek', 0) - 1)
