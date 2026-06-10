@@ -6158,7 +6158,7 @@ INNSTILLINGER
                 size_hint_y=None, height=dp(22),
                 font_size=fsp(13), bold=True, color=(0.3, 0.3, 0.4, 1),
                 halign='left'))
-            list_sv  = ScrollView(size_hint_y=None, height=dp(170))
+            list_sv  = ScrollView(size_hint_y=None, height=dp(190))
             list_box = BoxLayout(orientation='vertical', spacing=dp(4),
                                  size_hint_y=None)
             list_box.bind(minimum_height=list_box.setter('height'))
@@ -6177,8 +6177,8 @@ INNSTILLINGER
                     bg = (0.97, 0.97, 1.0, 1.0)
 
                 row = RBox(orientation='horizontal',
-                           size_hint_y=None, height=dp(48),
-                           spacing=dp(6), padding=(dp(4), dp(2)),
+                           size_hint_y=None, height=dp(56),
+                           spacing=dp(6), padding=(dp(4), dp(4)),
                            box_color=bg, radius=dp(12))
 
                 if stripe_col:
@@ -6194,7 +6194,31 @@ INNSTILLINGER
                 else:
                     row.add_widget(Widget(size_hint_x=None, width=dp(4)))
 
-                txt = f'  {e.get("start","?")} – {e.get("end","?")}   {e["name"]}'
+                # ── Symbol-thumbnail ──────────────────────────────────
+                # Aktiviteter opprettet via _dr_new_activity_flow har et
+                # bilde knyttet direkte (entry['image'] = symbolets bilde).
+                # Viser dette i listen – gir umiddelbar visuell gjenkjenning
+                # av aktiviteten, samme symbol som i resten av appen.
+                # Aktiviteter uten bilde (manuelt navngitt, f.eks. "Fri lek")
+                # får en tom plassholder i samme bredde – holder
+                # klokkeslett/navn-teksten på linje på tvers av rader.
+                THUMB = int(dp(40))
+                act_img = e.get('image')
+                has_act_img = bool(act_img and os.path.exists(act_img))
+                thumb_w = Image(size_hint=(None, None),
+                                size=(dp(40), dp(40)),
+                                allow_stretch=True, keep_ratio=True)
+                if has_act_img:
+                    _tex = get_thumbnail(act_img, THUMB, THUMB)
+                    if _tex:
+                        thumb_w.texture = _tex
+                    else:
+                        thumb_w.source = act_img
+                else:
+                    thumb_w.opacity = 0
+                row.add_widget(thumb_w)
+
+                txt = f'{e.get("start","?")} – {e.get("end","?")}   {e["name"]}'
                 if completed and not is_cur:
                     label_text = f'[s]{txt}[/s]'
                     text_col = (0.45, 0.48, 0.55, 1)
@@ -6614,18 +6638,24 @@ INNSTILLINGER
         # ── Smarte standardverdier for NY aktivitet ──────────────────
         # Reduserer tastetrykk for det vanligste tilfellet: aktivitet
         # som starter "nå" og varer en time.
-        #   • Starttid = neste hele time (eller inneværende time hvis
-        #     klokka akkurat NÅ er på en hel time).
+        #   • Starttid = nærmeste halvtime FREMOVER (avrundes opp til
+        #     :00 eller :30 – f.eks. 14:05 → 14:30, 14:35 → 15:00).
+        #     Hvis klokka allerede er på en halvtime, brukes den direkte.
         #   • Sluttid  = starttid + 1 time.
         #   • Kategori = sist brukte kategori (lagres i innstillinger
         #     ved lagring, se on_save nedenfor).
         # Brukeren kan justere alt med ett trykk hvis det ikke passer.
         if new:
             _now = datetime.now()
-            _start_h = _now.hour if _now.minute == 0 else (_now.hour + 1) % 24
-            _end_h   = (_start_h + 1) % 24
-            initial_start = f'{_start_h:02d}:00'
-            initial_end   = f'{_end_h:02d}:00'
+            _total = _now.hour * 60 + _now.minute
+            if _total % 30 == 0:
+                _start_total = _total
+            else:
+                _start_total = ((_total // 30) + 1) * 30
+            _start_total %= (24 * 60)
+            _end_total = (_start_total + 60) % (24 * 60)
+            initial_start = f'{_start_total // 60:02d}:{_start_total % 60:02d}'
+            initial_end   = f'{_end_total   // 60:02d}:{_end_total   % 60:02d}'
         else:
             initial_start = entry.get('start', '08:00')
             initial_end   = entry.get('end',   '08:30')
@@ -6703,12 +6733,29 @@ INNSTILLINGER
         else:
             _img_label_text = 'Bilde: ' + (
                 os.path.basename(chosen_img[0]) if chosen_img[0] else 'ingen')
+
+        # ── Bildeforhåndsvisning ──────────────────────────────────
+        # Visuell bekreftelse på hvilket bilde aktiviteten vil bruke –
+        # særlig viktig når navn/bilde kommer fra _dr_new_activity_flow
+        # (symbolvalg), slik at det er tydelig at AKTIVITETEN faktisk
+        # arver bildet til symbolet man trykket på, ikke bare navnet.
+        # Skjult (høyde 0) når intet bilde er valgt.
+        _has_img = bool(chosen_img[0] and os.path.exists(chosen_img[0]))
+        img_preview = Image(
+            source=chosen_img[0] or '',
+            size_hint_y=None,
+            height=dp(110) if _has_img else 0,
+            opacity=1 if _has_img else 0,
+            allow_stretch=True, keep_ratio=True,
+        )
+        layout.add_widget(img_preview)
+
         img_lbl = Label(
             text=_img_label_text,
             size_hint_y=None, height=dp(26), font_size=fsp(13), color=(0.3, 0.3, 0.3, 1))
         layout.add_widget(img_lbl)
         layout.add_widget(mk_btn('Velg bilde', hex_k('#4D96FF'), h=dp(48),
-            cb=lambda *_: self._pick_from_folders(chosen_img, img_lbl)))
+            cb=lambda *_: self._pick_from_folders(chosen_img, img_lbl, img_preview)))
 
         btn_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
         def on_save(*_):
@@ -8131,10 +8178,14 @@ INNSTILLINGER
     #  BILDE – LAST OPP / LAST NED
     # ══════════════════════════════════════════════════
 
-    def _pick_from_folders(self, chosen_img_ref, label_widget):
+    def _pick_from_folders(self, chosen_img_ref, label_widget, preview_widget=None):
         """
         Lar brukeren velge et allerede opplastet bilde fra mappene.
         Viser alle mapper og bildene i dem – ingen filvelger nødvendig.
+
+        preview_widget: valgfritt Image-widget som oppdateres med det
+        valgte bildet (brukes av _dr_entry_popup for visuell bekreftelse
+        på hvilket bilde aktiviteten vil bruke).
         """
         pop_ref = [None]
         layout  = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
@@ -8192,6 +8243,11 @@ INNSTILLINGER
                         if w.collide_point(*t.pos):
                             chosen_img_ref[0] = _ip
                             label_widget.text = 'Bilde: ' + _name
+                            if preview_widget is not None:
+                                preview_widget.source  = _ip
+                                preview_widget.height  = dp(110)
+                                preview_widget.opacity = 1
+                                preview_widget.reload()
                             pop_ref[0].dismiss()
                             return True
                     cell.bind(on_touch_down=_tap)
