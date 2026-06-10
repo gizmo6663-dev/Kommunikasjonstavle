@@ -2194,11 +2194,21 @@ class KommunikasjonstavleApp(App):
                 break
 
         if not assets_root:
+            diag(f'ASSETS_ROOT IKKE FUNNET – prøvde: {[os.path.join(d, "assets", "bilder") for d in app_dirs[:3]]}')
             logging.warning('bundled assets: ingen assets/bilder/-mappe funnet. '
                             'Prøvde: %s', [os.path.join(d, 'assets', 'bilder') for d in app_dirs])
             return
 
+        diag(f'ASSETS_ROOT={assets_root}')
         logging.info('bundled assets: bruker rot %s', assets_root)
+
+        # Logg innholdet av IMG_DIR ved start av import-løkken – avgjørende
+        # for å skille om filene var der fra før eller ble kopiert nå.
+        try:
+            imgdir_at_start = sorted(os.listdir(IMG_DIR))
+        except Exception:
+            imgdir_at_start = ['(listdir feilet)']
+        diag(f'IMG_DIR ved init-start ({len(imgdir_at_start)} filer): {imgdir_at_start[:10]}')
 
         # ── Importer mapper og bilder ────────────────────────────────
         imported_folders = 0
@@ -2228,11 +2238,11 @@ class KommunikasjonstavleApp(App):
                 }
                 self.data.setdefault('folders', []).append(existing)
                 imported_folders += 1
+                diag(f'NY_MAPPE opprettet: "{folder_name}"')
                 logging.info('bundled assets: opprettet mappe "%s"', folder_name)
 
             # Bygg sett av allerede importerte filnavn
             # Inkluder kun items der bildet faktisk finnes på disk.
-            # Items med manglende filer hoppes IKKE over – de re-importeres.
             existing_imgs = {
                 os.path.basename(it.get('image', ''))
                 for it in existing.get('items', [])
@@ -2244,15 +2254,20 @@ class KommunikasjonstavleApp(App):
                 it for it in existing.get('items', [])
                 if not it.get('image') or os.path.exists(it['image'])
             ]
-            if len(existing['items']) < before:
+            removed = before - len(existing['items'])
+            diag(f'MAPPE "{folder_name}": items_før={before} fjernet={removed} '
+                 f'existing_imgs={sorted(existing_imgs)}')
+            if removed:
                 logging.info('bundled assets: fjernet %d items med manglende bilder fra "%s"',
-                             before - len(existing['items']), folder_name)
+                             removed, folder_name)
 
             for img_file in sorted(os.listdir(src_folder)):
                 if not img_file.lower().endswith(
                         ('.png', '.jpg', '.jpeg', '.webp', '.gif')):
                     continue
+
                 if img_file in existing_imgs:
+                    diag(f'SKIP_EXISTING_IMG {img_file} (allerede i mappen med gyldig sti)')
                     logging.debug('bundled assets: %s allerede importert, hopper over', img_file)
                     continue
 
@@ -2261,6 +2276,7 @@ class KommunikasjonstavleApp(App):
 
                 # Kopier bare hvis kildefilen faktisk finnes
                 if not os.path.exists(src_path):
+                    diag(f'SRC_MISSING {img_file} → src={src_path}')
                     logging.warning('bundled assets: kildefil finnes ikke: %s', src_path)
                     failed_images += 1
                     continue
