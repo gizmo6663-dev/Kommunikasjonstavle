@@ -480,13 +480,26 @@ def _update_widget(data):
         pass
 
 
-@functools.lru_cache(maxsize=200)
+_THUMB_CACHE = {}
+_THUMB_CACHE_MAX = 200
+
 def get_thumbnail(path, w, h):
     """
     Returnerer en PIL-basert Kivy Texture skalert til (w×h).
-    Bruker functools.lru_cache(maxsize=200) for effektiv caching –
-    ingen manuell cache-håndtering nødvendig.
+
+    Bruker en manuell cache (IKKE functools.lru_cache) som kun lagrer
+    VELLYKKEDE resultater. Begrunnelse: like etter installasjon kan et
+    nylig kopiert bilde (fra _init_bundled_assets) i sjeldne tilfeller
+    feile på FØRSTE lesing (PIL rekker ikke åpne filen før den er
+    ferdig flushet til disk). Med lru_cache ville dette None-resultatet
+    bli cachet PERMANENT for resten av appsesjonen – bildet ville aldri
+    vises før appen restartes. Med manuell cache prøver vi på nytt
+    neste gang denne flisen tegnes (f.eks. ved _show_folder-refresh).
     """
+    key = (path, int(w), int(h))
+    if key in _THUMB_CACHE:
+        return _THUMB_CACHE[key]
+
     if not PIL_OK or not path or not os.path.exists(path):
         return None
     try:
@@ -501,9 +514,19 @@ def get_thumbnail(path, w, h):
         tex  = Texture.create(size=(int(w), int(h)), colorfmt='rgb')
         tex.blit_buffer(raw, colorfmt='rgb', bufferfmt='ubyte')
         tex.flip_vertical()
+        if len(_THUMB_CACHE) >= _THUMB_CACHE_MAX:
+            _THUMB_CACHE.pop(next(iter(_THUMB_CACHE)))
+        _THUMB_CACHE[key] = tex
         return tex
     except Exception:
-        return None
+        return None  # IKKE cachet – tillater retry neste gang
+
+
+def _thumb_cache_clear():
+    _THUMB_CACHE.clear()
+
+
+get_thumbnail.cache_clear = _thumb_cache_clear
 
 
 
@@ -2745,6 +2768,16 @@ class KommunikasjonstavleApp(App):
         widget.size_hint = (1, 1)
         self._content.add_widget(widget)
 
+        # KRITISK: FloatLayout endrer IKKE child.y når pos_hint er tom –
+        # widget.y forblir på sin default-verdi (0 = vindusbunnen).
+        # Men _content selv ligger IKKE ved vindusbunnen (det er
+        # navigasjonsbaren _navbar som gjør det) – _content.y =
+        # navbar-høyden. Uten denne linjen blir widget plassert
+        # navbar_h piksler for lavt: et tomt gap øverst (under
+        # hurtigmenyen) og widgetens nederste del havner bak/under
+        # _navbar i stedet for over den.
+        widget.y = self._content.y
+
         if animate:
             if direction == 'back':
                 # Slide inn fra venstre (tilbake-navigasjon)
@@ -2978,7 +3011,8 @@ class KommunikasjonstavleApp(App):
         self.cur_folder = None
         self._set_title(APP_TITLE)
 
-        outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=(dp(8), dp(6)))
+        outer = BoxLayout(orientation='vertical', spacing=rdp(6),
+                          padding=(dp(8), rdp(6), dp(8), 0))
 
         # ── «Akkurat nå»-kort ────────────────────────────────────
         snap = self._home_now_card()
@@ -3329,6 +3363,22 @@ class KommunikasjonstavleApp(App):
             )
             if thumb_tex:
                 ti.texture = thumb_tex
+            elif img_path:
+                # Fallback for fersk installasjon: hvis CoreImage-lastingen
+                # feiler stille på FØRSTE forsøk (filen er nylig kopiert av
+                # _init_bundled_assets og ikke ferdig flushet til disk når
+                # Kivys image-loader prøver å åpne den), settes ingen
+                # texture og widgeten blir tom permanent – source endres
+                # jo ikke igjen, så _load_source kjører aldri på nytt.
+                # ti.reload() tvinger en ny lastesyklus etter en kort
+                # forsinkelse, da filen garantert er lesbar.
+                def _ensure_loaded(dt, ti=ti, p=img_path):
+                    if ti.texture is None and os.path.exists(p):
+                        try:
+                            ti.reload()
+                        except Exception:
+                            pass
+                Clock.schedule_once(_ensure_loaded, 0.5)
             img_wrap.add_widget(ti)
             cell.add_widget(img_wrap)
 
