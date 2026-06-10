@@ -2881,10 +2881,12 @@ class KommunikasjonstavleApp(App):
 
     def _build_bottombar(self):
         """
-        Slim mørk tittellinje øverst med tittel sentrert og søke-ikon
-        oppe til høyre. Søke-ikonet åpner samme globale søk som det
-        gamle Søk-knappen i navbar – men mer tilgjengelig fordi det er
-        synlig fra hvilken som helst skjerm.
+        Slim mørk tittellinje øverst med tittel sentrert.
+
+        Søkeknappen som tidligere lå her er flyttet til FAB-ens
+        hurtigmeny (_fab_quick_menu) – mer tilgjengelig for énhånds-
+        bruk enn et lite ikon i øvre høyre hjørne.
+
         Høyde: 46dp – kompakt men lesbar.
         """
         bar = BottomBar(
@@ -2892,36 +2894,13 @@ class KommunikasjonstavleApp(App):
             padding=(dp(14), dp(6)),
             spacing=dp(0),
         )
-        # Tittel-label tar all bredden, mens søk-ikonet ligger absolutt
-        # plassert på høyre side. Det gjør at tittelen forblir sentrert
-        # på skjermen uavhengig av om søk-ikonet er der eller ei.
-        outer = FloatLayout()
         self._lbl_title = Label(
             text=APP_TITLE, bold=True, font_size=sp(17),
             color=(1.0, 1.0, 1.0, 0.95),
             halign='center', valign='middle',
-            size_hint=(1, 1), pos_hint={'x': 0, 'y': 0},
         )
         self._lbl_title.bind(size=self._lbl_title.setter('text_size'))
-        outer.add_widget(self._lbl_title)
-
-        # Søk-knapp – bruker tekst «Søk» i stedet for emoji
-        # slik at den rendres korrekt på alle Android-enheter
-        # uavhengig av tilgjengelig emoji-font.
-        search_btn = Button(
-            text='Søk',
-            background_normal='', background_down='',
-            background_color=(0, 0, 0, 0),
-            color=(1, 1, 1, 0.90),
-            font_size=sp(13),
-            bold=True,
-            size_hint=(None, None), size=(dp(46), dp(38)),
-            pos_hint={'right': 1, 'center_y': 0.5},
-        )
-        search_btn.bind(on_release=lambda *_: self._global_search_popup())
-        outer.add_widget(search_btn)
-
-        bar.add_widget(outer)
+        bar.add_widget(self._lbl_title)
         return bar
 
     def _set_title(self, t):
@@ -2992,7 +2971,7 @@ class KommunikasjonstavleApp(App):
 
     def _build_fab(self):
         """
-        Bygger den flytende sirkulære søkeknappen.
+        Bygger den flytende runde "+"-knappen.
 
         Plassert nederst til høyre (pos_hint) – naturlig tommel-sone
         ved énhånds-bruk på store telefoner. mk_btn() gir automatisk
@@ -3000,15 +2979,140 @@ class KommunikasjonstavleApp(App):
 
         radius == width/2 (begge dp(64)/2 = dp(32)) gir en perfekt
         sirkel i stedet for avrundet rektangel.
+
+        "+" er et vanlig ASCII-tegn og rendres trygt med NotoSans –
+        i motsetning til emoji (➕✏️📸🔍), som mangler glyfer i
+        NotoSans-Regular og ville vist seg som tomme firkanter
+        (samme problem som ble fikset for æ/ø/å, men for emoji).
+        Derfor brukes ren tekst uten emoji i hele quick-menyen.
         """
         fab = mk_btn(
-            'Søk', hex_k('#9B59B6'), h=dp(64), fs=14,
+            '+', hex_k('#9B59B6'), h=dp(64), fs=34,
             size_hint=(None, None), width=dp(64),
             pos_hint={'right': 0.97, 'y': 0.035},
             radius=dp(32),
-            cb=lambda *_: self._global_search_popup(),
+            cb=lambda *_: self._fab_quick_menu(),
         )
         return fab
+
+    def _fab_quick_menu(self):
+        """
+        Hurtigmeny som åpnes ved trykk på FAB-en. Gir umiddelbar tilgang
+        til de mest brukte handlingene for ansatte "på farten" – uten å
+        måtte navigere til riktig skjerm/mappe først:
+
+          • Ny aktivitet               – legg til i dagsplanen for i dag
+          • Rediger nåværende aktivitet – rediger det som pågår "NÅ"
+          • Legg til bilde              – nytt ASK-symbol i en mappe
+          • Søk                         – globalt søk (flyttet hit fra
+                                           tittellinjen øverst)
+        """
+        haptic_feedback()
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
+
+        def _close_then(fn):
+            def _cb(*_):
+                pop_ref[0].dismiss()
+                Clock.schedule_once(lambda *_: fn(), 0.05)
+            return _cb
+
+        layout.add_widget(mk_btn(
+            'Ny aktivitet', hex_k('#6BCB77'), h=dp(56), fs=16,
+            cb=_close_then(lambda: self._dr_entry_popup(None))))
+        layout.add_widget(mk_btn(
+            'Rediger nåværende aktivitet', hex_k('#4D96FF'), h=dp(56), fs=16,
+            cb=_close_then(self._fab_edit_current_activity)))
+        layout.add_widget(mk_btn(
+            'Legg til bilde', hex_k('#FF9F43'), h=dp(56), fs=16,
+            cb=_close_then(self._fab_add_image)))
+        layout.add_widget(mk_btn(
+            'Søk', hex_k('#9B59B6'), h=dp(56), fs=16,
+            cb=_close_then(self._global_search_popup)))
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(46), fs=14,
+            cb=lambda *_: pop_ref[0].dismiss()))
+
+        pop = Popup(title='Hurtigvalg', content=layout,
+                    size_hint=POPUP_SMALL, title_size=fsp(16))
+        pop_ref[0] = pop
+        pop.open()
+
+    def _fab_edit_current_activity(self):
+        """
+        Finner aktiviteten som er aktiv "NÅ" i dagens dagsplan og åpner
+        rediger-popup for den direkte. Samme søke-logikk som
+        «Akkurat nå»-kortet på hjemskjermen (se _home_now_card).
+
+        Hvis ingen aktivitet pågår akkurat nå, vises en toast i stedet
+        for å åpne en tom/feil popup.
+        """
+        entries = sorted(
+            get_day_plan(self.data, today_code()),
+            key=lambda e: e.get('start', '00:00'))
+        now_m = datetime.now().hour * 60 + datetime.now().minute
+        current = None
+        for e in entries:
+            s = self._dr_parse(e.get('start', '00:00'))
+            t = self._dr_parse(e.get('end',   '23:59'))
+            if s <= now_m < t:
+                current = e
+                break
+        if current is None:
+            self._toast('Ingen aktivitet pågår akkurat nå.')
+            return
+        self._dr_entry_popup(current)
+
+    def _fab_add_image(self):
+        """
+        «Legg til bilde»-handlingen i quick-menyen.
+
+        Hvis brukeren allerede står inne i en mappe (_cur_scr=='folder'),
+        åpnes _item_popup direkte for DEN mappen – dette er den vanligste
+        situasjonen («jeg mangler et symbol her og nå»).
+
+        Ellers vises en kompakt mappevelger først, slik at brukeren kan
+        legge til et bilde i en mappe uten å navigere dit manuelt.
+        """
+        if self._cur_scr == 'folder' and self.cur_folder:
+            fo = get_folder(self.data, self.cur_folder)
+            if fo:
+                self._item_popup(fo, None)
+                return
+
+        folders = self.data.get('folders', [])
+        if not folders:
+            self._toast('Ingen mapper finnes ennå.')
+            return
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
+        layout.add_widget(Label(
+            text='Velg mappe for nytt bilde:', size_hint_y=None, height=dp(32),
+            font_size=fsp(15), bold=True, color=(0.08, 0.10, 0.35, 1)))
+        sv  = ScrollView()
+        col = BoxLayout(orientation='vertical', spacing=dp(6),
+                        size_hint_y=None)
+        col.bind(minimum_height=col.setter('height'))
+
+        def _pick(fo):
+            pop_ref[0].dismiss()
+            Clock.schedule_once(lambda *_: self._item_popup(fo, None), 0.05)
+
+        for fo in folders:
+            col.add_widget(mk_btn(
+                fo['name'], hex_k(fo.get('color', '#4D96FF')),
+                h=dp(50), fs=15,
+                cb=lambda *_, f=fo: _pick(f)))
+        sv.add_widget(col)
+        layout.add_widget(sv)
+        layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(46), fs=14,
+            cb=lambda *_: pop_ref[0].dismiss()))
+
+        pop = Popup(title='Velg mappe', content=layout,
+                    size_hint=POPUP_MEDIUM, title_size=fsp(16))
+        pop_ref[0] = pop
+        pop.open()
 
     def _update_fab_visibility(self):
         """
