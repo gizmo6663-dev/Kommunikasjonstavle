@@ -2266,13 +2266,11 @@ class KommunikasjonstavleApp(App):
                     continue
 
                 try:
+                    newly_copied = False
                     if not os.path.exists(dst_path):
+                        newly_copied = True
                         t_copy = time.time()
                         shutil.copy2(src_path, dst_path)
-                        # fsync sikrer at data er skrevet til disk – ikke bare
-                        # til OS-bufferet. Uten dette kan Android returnere
-                        # file-size=0 og PIL feiler å åpne filen noen ms
-                        # etter at shutil.copy2 returnerte.
                         size_after = os.path.getsize(dst_path) if os.path.exists(dst_path) else -1
                         try:
                             with open(dst_path, 'rb') as _f:
@@ -2286,11 +2284,32 @@ class KommunikasjonstavleApp(App):
                              f't={time.time()-t_copy:.3f}s')
                         logging.debug('bundled assets: kopiert %s → %s', src_path, dst_path)
                     else:
-                        logging.debug('bundled assets: %s finnes allerede i IMG_DIR', img_file)
+                        # Filen var allerede i IMG_DIR – ingen kopiering nødvendig.
+                        # VIKTIG: vi logger størrelse her slik at vi kan se i
+                        # diagnoseloggen at filen faktisk finnes og er lesbar.
+                        try:
+                            fsize = os.path.getsize(dst_path)
+                        except Exception:
+                            fsize = -1
+                        diag(f'ALREADY_EXISTS {img_file} size={fsize}B')
+                        logging.debug('bundled assets: %s finnes allerede i IMG_DIR (size=%d)',
+                                      img_file, fsize)
 
-                    # Verifiser at filen faktisk er tilstede etter kopiering
-                    if not os.path.exists(dst_path):
-                        logging.error('bundled assets: kopiering feilet – dst finnes ikke: %s', dst_path)
+                    # ── Verifiser KUN nylig kopierte filer ────────────────
+                    # ROTÅRSAK for at bilder ikke vises ved første oppstart:
+                    # Android-filsystemet kan gi inkonsistente os.path.exists()-
+                    # svar for filer i app-privat lagring (/data/user/0/...) ved
+                    # aller første tilgang etter prosessstart. Et kall returnerer
+                    # True (filen finnes → else-grenen tas, ingen kopiering) og
+                    # neste kall returnerer False (filen finnes ikke → continue →
+                    # item legges aldri til → mappen vises tom).
+                    # Løsning: verifiser BARE nylig kopierte filer. Pre-eksisterende
+                    # filer (else-grenen) trenger ingen verifisering – vi vet de
+                    # er der fordi det første os.path.exists()-kallet sa True.
+                    if newly_copied and not os.path.exists(dst_path):
+                        diag(f'VERIFY_FAIL {img_file} – ny kopi finnes ikke etter skriving!')
+                        logging.error('bundled assets: kopiering feilet – dst finnes ikke: %s',
+                                      dst_path)
                         failed_images += 1
                         continue
 
@@ -2301,6 +2320,7 @@ class KommunikasjonstavleApp(App):
                         'image': dst_path,
                     })
                     imported_images += 1
+                    diag(f'ITEM_ADDED {img_file} → mappe="{existing["name"]}"')
                 except Exception as copy_err:
                     logging.error('bundled assets: kopiering feilet for %s: %s',
                                   img_file, copy_err)
