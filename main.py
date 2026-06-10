@@ -140,6 +140,49 @@ def diag_section(title: str) -> None:
     sep = '─' * 60
     diag(f'\n{sep}\n  {title}\n{sep}')
 
+
+def _fix_mojibake(s: str) -> str:
+    """
+    Reparerer mojibake i mappenavn fra assets/bilder/ på Android.
+
+    Symptom: "Måltid" vises som "M[][]ltid" – bokstaven "å" blir til
+    to firkanter uten glyf.
+
+    Rotårsak: APK-pakkeprosessen lagrer asset-filnavn med æ/ø/å som
+    UTF-8-bytes (f.eks. "å" = 0xC3 0xA5), men os.listdir() på Android
+    kan ikke alltid dekode disse bytene som UTF-8. Python faller da
+    tilbake til 'surrogateescape', som konverterer hver ugyldige byte
+    til et eget surrogat-kodepunkt (U+DC80–U+DCFF). Disse kodepunktene
+    har ingen glyf i noen font – derav de to firkantene.
+
+    Fiks: hvis strengen inneholder slike surrogater, koder vi den
+    tilbake til rå bytes (surrogateescape) og dekoder på nytt som
+    UTF-8 – da gjenopprettes "å" korrekt.
+
+    Funksjonen er trygg å kalle på allerede korrekte navn (norske
+    bokstaver skrevet direkte i appen via tastaturet) – disse
+    inneholder ingen surrogater og returneres uendret.
+    """
+    if not s:
+        return s
+    if any(0xDC80 <= ord(c) <= 0xDCFF for c in s):
+        try:
+            raw = s.encode('utf-8', 'surrogateescape')
+            return raw.decode('utf-8')
+        except (UnicodeError, UnicodeDecodeError):
+            pass
+    # Sekundær sjekk: "dobbel-dekodet" mojibake (UTF-8-bytes lest som
+    # Latin-1/CP1252), f.eks. "Ã¥" i stedet for "å".
+    if 'Ã' in s or 'Â' in s:
+        try:
+            fixed = s.encode('latin-1').decode('utf-8')
+            if 'Ã' not in fixed and 'Â' not in fixed:
+                return fixed
+        except (UnicodeError, UnicodeDecodeError):
+            pass
+    return s
+
+
 CANVAS_W = 960
 CANVAS_H = 1280   # Portrettformat passer mobilskjerm
 
@@ -2156,7 +2199,25 @@ class KommunikasjonstavleApp(App):
         Kjøres alltid ETTER load_struct() slik at self.data er tilgjengelig
         og bundled_version-sjekken fungerer korrekt.
         """
-        BUNDLE_VERSION = 3   # ← økt til 3: rydder opp ikke-bundlede mapper
+        BUNDLE_VERSION = 4   # ← økt til 4: reparerer mojibake i mappenavn (æøå)
+
+        # ── Reparer mojibake i ALLEREDE importerte mappenavn ─────────────
+        # Kjøres FØR versjonssjekken slik at "Måltid" (lagret som mangled
+        # navn av en tidligere BUNDLE_VERSION) repareres selv om
+        # bundled_version allerede er satt til en høyere/lik verdi senere.
+        # Idempotent: navn uten mojibake returneres uendret av _fix_mojibake.
+        _renamed = False
+        for _f in self.data.get('folders', []):
+            _orig = _f.get('name', '')
+            _fixed = _fix_mojibake(_orig)
+            if _fixed != _orig:
+                diag(f'MOJIBAKE_FIX: "{_orig}" → "{_fixed}"')
+                logging.info('bundled assets: reparerte mappenavn "%s" → "%s"',
+                             _orig, _fixed)
+                _f['name'] = _fixed
+                _renamed = True
+        if _renamed:
+            save_struct(self.data, immediate=True)
 
         # ── Sjekk om dette allerede er gjort ────────────────────────
         done_ver = self.data.get('settings', {}).get('bundled_version', 0)
@@ -2217,10 +2278,20 @@ class KommunikasjonstavleApp(App):
         imported_images  = 0
         failed_images    = 0
 
-        for folder_name in sorted(os.listdir(assets_root)):
-            src_folder = os.path.join(assets_root, folder_name)
+        for folder_name_raw in sorted(os.listdir(assets_root)):
+            src_folder = os.path.join(assets_root, folder_name_raw)
             if not os.path.isdir(src_folder):
                 continue
+
+            # folder_name_raw kan inneholde mojibake (se _fix_mojibake) –
+            # brukes KUN til filsystem-operasjoner (os.path.join/isdir),
+            # siden det er den faktiske strengen filsystemet returnerte.
+            # folder_name er den reparerte, korrekte visningsstrengen som
+            # lagres i structure.json og brukes til matching mot
+            # eksisterende mapper.
+            folder_name = _fix_mojibake(folder_name_raw)
+            if folder_name != folder_name_raw:
+                diag(f'MOJIBAKE_FIX (assets): "{folder_name_raw}" → "{folder_name}"')
 
             # Finn eller opprett mappe i structure.json
             existing = next(
@@ -2348,7 +2419,7 @@ class KommunikasjonstavleApp(App):
         # Tomme mapper med ukjent opprinnelse fjernes – disse er artefakter
         # fra DEFAULT_STRUCT, eldre app-versjoner eller debug-kjøringer.
         bundled_names = {
-            n.lower() for n in os.listdir(assets_root)
+            _fix_mojibake(n).lower() for n in os.listdir(assets_root)
             if os.path.isdir(os.path.join(assets_root, n))
         }
         before_sync = len(self.data.get('folders', []))
