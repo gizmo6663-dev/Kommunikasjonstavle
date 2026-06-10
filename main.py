@@ -3323,9 +3323,14 @@ class KommunikasjonstavleApp(App):
         return box
 
     def _make_pinned_tile(self, pin):
-        IMG_H  = dp(72)
-        LBL_H  = dp(28)
-        TILE_H = IMG_H + LBL_H + dp(4)
+        IMG_H = dp(72)
+        LBL_H = dp(28)
+        edit  = self.edit_mode
+        # I redigeringsmodus får snarveien en ekstra "Fjern"-rad nederst,
+        # slik at festede bilder kan løsnes direkte fra hjemskjermen –
+        # samme mønster som "Slett" på mappe-/bildekort.
+        ACT_H  = dp(28) if edit else 0
+        TILE_H = IMG_H + LBL_H + ACT_H + dp(4)
         fo     = get_folder(self.data, pin.get('folder_id'))
         color  = fo.get('color', '#4D96FF') if fo else '#4D96FF'
         r, g, b, _ = hex_k(color)
@@ -3333,11 +3338,13 @@ class KommunikasjonstavleApp(App):
         cell = RBox(orientation='vertical', size_hint_y=None, height=TILE_H,
                     spacing=0, padding=(0, 0, 0, dp(2)),
                     box_color=list(card_col), radius=dp(12))
+        bind_card_pop(cell)
         img_path = pin.get('image', '')
         if img_path and os.path.exists(img_path):
             thumb = get_thumbnail(img_path, int(IMG_H), int(IMG_H))
             ti = TappableImage(
-                lambda p=img_path, n=pin['name']: self._show_image_full(p, n),
+                (lambda: None) if edit else
+                (lambda p=img_path, n=pin['name']: self._show_image_full(p, n)),
                 source=img_path if thumb is None else '',
                 allow_stretch=True, keep_ratio=True,
                 size_hint=(1, None), height=IMG_H)
@@ -3350,9 +3357,28 @@ class KommunikasjonstavleApp(App):
                    shorten=True, shorten_from='right',
                    halign='center', valign='middle')
         btn.bind(size=btn.setter('text_size'))
-        btn.bind(on_release=lambda b, p=img_path, n=pin['name']:
-                 self._show_image_full(p, n))
+        if edit:
+            # I redigeringsmodus åpner trykk på selve bildet/etiketten
+            # IKKE fullskjermvisning (det gir ingen mening å redigere
+            # derfra) – i stedet er "Fjern"-knappen den eneste handlingen.
+            btn.disabled = True
+        else:
+            btn.bind(on_release=lambda b, p=img_path, n=pin['name']:
+                     self._show_image_full(p, n))
         cell.add_widget(btn)
+
+        if edit:
+            def _do_unpin(*_, pid=pin.get('id')):
+                self.data['festede'] = [
+                    p for p in self.data.get('festede', [])
+                    if p.get('id') != pid]
+                save_struct(self.data)
+                self._toast('Snarvei fjernet.')
+                self._show_home()
+            cell.add_widget(mk_btn(
+                'Fjern', hex_k('#FF6B6B'), h=ACT_H - dp(2), fs=11,
+                cb=_do_unpin))
+
         return cell
 
     def _pin_popup(self, fo, it):
@@ -3555,6 +3581,11 @@ class KommunikasjonstavleApp(App):
                     return True
                 return False
             box.bind(on_touch_down=_tap_pause)
+            # Myk fade-inn – gir "Akkurat nå"-kortet et levende preg når
+            # hjemskjermen (re)bygges, i stedet for at det bare hopper
+            # rett inn med fullt innhold.
+            box.opacity = 0
+            Animation(opacity=1, duration=0.35, t='out_cubic').start(box)
             return box
 
         # Finn nåværende/neste aktivitet for dagens plan
@@ -3628,6 +3659,11 @@ class KommunikasjonstavleApp(App):
                 return True
             return False
         card.bind(on_touch_down=_tap)
+        # Myk fade-inn – samme begrunnelse som i pause-varianten over.
+        # Gir tydelig "noe oppdaterte seg nettopp"-følelse når aktiviteten
+        # skifter (NÅ → NESTE, eller ny aktivitet starter).
+        card.opacity = 0
+        Animation(opacity=1, duration=0.35, t='out_cubic').start(card)
         return card
 
     def _make_folder_tile(self, fo):
@@ -3658,6 +3694,7 @@ class KommunikasjonstavleApp(App):
             radius=dp(16),
         )
         btn.bind(on_release=lambda b, t=tap: t())
+        bind_card_pop(btn)
         r2, g2, b2, _ = hex_k(fo['color'])
         def _add_border(b=btn, r=r2, g=g2, bv=b2, bw=border_w):
             from kivy.graphics import Color as KColor, Line
@@ -3823,6 +3860,7 @@ class KommunikasjonstavleApp(App):
             box_color=list(card_col),
             radius=dp(14),
         )
+        bind_card_pop(cell)
 
         if has_img:
             # Ingen padding – bildet går helt til toppen av kortet
@@ -6482,23 +6520,41 @@ INNSTILLINGER
 
     def _empty_state(self, glyph, msg):
         """
-        Vennlig 'tom skjerm'-visning med stort symbol + tekst.
-        Bedre alternativ enn ren tekst på skjermer uten innhold.
+        Vennlig 'tom skjerm'-visning – glyf-merke + tekst i et avrundet
+        kort med svak gradient (samme RBox-tekstur som resten av appen),
+        i stedet for ren tekst direkte på bakgrunnen. Fader mykt inn for
+        et "levende" førsteinntrykk i stedet for å bare poppe opp.
         """
-        box = BoxLayout(orientation='vertical',
-                        size_hint_y=None, height=dp(180),
-                        spacing=dp(6), padding=(dp(20), dp(20)))
-        box.add_widget(Label(text=glyph, font_size=sp(48),
-                              color=(0.55, 0.58, 0.70, 1),
-                              size_hint_y=None, height=dp(72),
-                              halign='center'))
+        card = RBox(orientation='vertical',
+                     size_hint_y=None, height=dp(184),
+                     spacing=dp(10), padding=(dp(20), dp(20)),
+                     box_color=(0.965, 0.965, 0.99, 1.0), radius=dp(18))
+
+        # Glyf-merke: liten avrundet "badge" bak teksten – gir glyfen
+        # litt visuell vekt/farge i stedet for å flyte fritt på hvitt.
+        badge = RBox(orientation='vertical',
+                     size_hint=(None, None), size=(dp(96), dp(64)),
+                     pos_hint={'center_x': 0.5},
+                     box_color=(0.88, 0.90, 0.98, 1.0), radius=dp(14))
+        badge.add_widget(Label(text=glyph, font_size=sp(15), bold=True,
+                                color=(0.35, 0.40, 0.62, 1),
+                                halign='center', valign='middle'))
+        badge.children[-1].bind(size=badge.children[-1].setter('text_size'))
+        badge_wrap = BoxLayout(size_hint_y=None, height=dp(64))
+        badge_wrap.add_widget(Widget())
+        badge_wrap.add_widget(badge)
+        badge_wrap.add_widget(Widget())
+        card.add_widget(badge_wrap)
+
         lbl = Label(text=msg, font_size=fsp(15),
                     color=(0.45, 0.45, 0.55, 1),
-                    size_hint_y=None, height=dp(72),
                     halign='center', valign='top')
         lbl.bind(width=lambda l, w: setattr(l, 'text_size', (w - dp(20), None)))
-        box.add_widget(lbl)
-        return box
+        card.add_widget(lbl)
+
+        card.opacity = 0
+        Animation(opacity=1, duration=0.35, t='out_cubic').start(card)
+        return card
 
     def _dr_new_activity_flow(self):
         """

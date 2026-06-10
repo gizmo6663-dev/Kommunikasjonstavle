@@ -107,6 +107,14 @@ _KV = """
 
 <RBox>:
     canvas.before:
+        # Skala-transform rundt kortets senter – brukes til "pop"-
+        # animasjon ved trykk (krymp svakt → fjær tilbake), samme
+        # teknikk som RBtn sin trykk-feedback.
+        PushMatrix:
+        Scale:
+            x: self.scale
+            y: self.scale
+            origin: self.center
         # Skyggehierarki: RBox = "surface" (lett). Lettere enn RBtn (som
         # er "elevated"), så knapper leses tydelig oppå container-flater.
         # To lag for myk overgang i stedet for hard offset-kopi.
@@ -122,9 +130,21 @@ _KV = """
             pos: self.x + dp(1), self.y - dp(1)
             size: self.width, self.height
             radius: [self.radius + dp(1)]
-        # Bakgrunnsfarge
+        # Bakgrunn: svak PIL-gradient-tekstur (genereres av
+        # _update_grad_texture) – gir kortet litt dybde i stedet for
+        # helt flat farge. ~5% spredning, mye svakere enn knappenes
+        # ~11% slik at knapper fortsatt leses som "hevet" over kortet.
         Color:
-            rgba: self.box_color
+            rgba: 1, 1, 1, 1
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [self.radius]
+            texture: self._grad_tex if hasattr(self, '_grad_tex') and self._grad_tex else None
+        # Fallback flat farge hvis tekstur ikke er klar (f.eks. PIL
+        # mangler) – identisk med tidligere oppførsel.
+        Color:
+            rgba: self.box_color if not (hasattr(self, '_grad_tex') and self._grad_tex) else (0,0,0,0)
         RoundedRectangle:
             pos: self.pos
             size: self.size
@@ -135,6 +155,8 @@ _KV = """
         Line:
             rounded_rectangle: (self.x + dp(0.8), self.y + dp(0.8), self.width - dp(1.6), self.height - dp(1.6), self.radius)
             width: 0.9
+    canvas.after:
+        PopMatrix:
 
 <NavBar>:
     canvas.before:
@@ -231,6 +253,46 @@ if os.path.exists(_FONT_PATH):
 # ══════════════════════════════════════════════════════════════════
 
 
+def _make_gradient_texture(rgba, dark_end, light_end):
+    """
+    Genererer en 1×64-px vertikal lineær gradient-tekstur fra en RGBA-farge.
+
+    dark_end / light_end er relative justeringer (-1.0..1.0) på topp/bunn
+    av fargeverdiene – brukes til å gi flate farger en svak følelse av
+    dybde/belysning uten harde brytningspunkter.
+
+    Delt mellom RBtn (knapper, ~11% spredning – "elevated") og RBox
+    (kort/overflater, ~5% spredning – "lett") slik at begge får samme
+    visuelle teknikk, bare med ulik intensitet i tråd med skyggehierarkiet.
+
+    Returnerer None hvis PIL ikke er tilgjengelig (ingen feil – bare
+    ingen gradient, flat farge brukes som fallback).
+    """
+    if not PIL_OK:
+        return None
+    try:
+        r, g, b, a = rgba
+        H = 64
+        buf = bytearray(1 * H * 4)
+        for y in range(H):
+            t = y / (H - 1)             # 0 = bunn, 1 = topp etter flip
+            delta = dark_end + (light_end - dark_end) * t
+            fr = min(1.0, max(0.0, r + delta))
+            fg = min(1.0, max(0.0, g + delta))
+            fb = min(1.0, max(0.0, b + delta))
+            i = y * 4
+            buf[i]   = int(fr * 255)
+            buf[i+1] = int(fg * 255)
+            buf[i+2] = int(fb * 255)
+            buf[i+3] = int(a  * 255)
+        tex = Texture.create(size=(1, H), colorfmt='rgba')
+        tex.blit_buffer(bytes(buf), colorfmt='rgba', bufferfmt='ubyte')
+        tex.wrap = 'repeat'   # tiles horisontalt til full bredde
+        return tex
+    except Exception:
+        return None
+
+
 class RBtn(Button):
     """
     Avrundet knapp med myk skygge, kantlinje og PIL-basert lineær gradient.
@@ -248,59 +310,57 @@ class RBtn(Button):
 
     def _update_grad_texture(self):
         """
-        Genererer en 1×64-px gradient-tekstur fra btn_color.
-        Cacher teksturer per hex-farge – unngår unødvendig PIL-arbeid
-        ved skjermbytte når samme farge brukes flere ganger.
-
-        Gradienten er nå ren lineær – fra svakt mørkere i bunn til
-        svakt lysere på toppen, uten brytningspunkter. Det fjerner
-        "bølge"-effekten som oppstod når den stykkevise gradienten
-        skiftet helning på to steder.
+        Genererer (eller henter fra cache) gradient-teksturen for
+        gjeldende btn_color. ~11% spredning ("elevated"-nivå – knapper
+        skal lese tydelig oppå kort/overflater).
         """
-        if not PIL_OK:
-            return
-        # Bruk cache hvis samme farge allerede er generert
         r, g, b, a = self.btn_color
         cache_key = f'{r:.3f}{g:.3f}{b:.3f}{a:.3f}'
         cached = RBtn._grad_cache.get(cache_key)
         if cached:
             self._grad_tex = cached
             return
-        try:
-            H = 64
-            buf = bytearray(1 * H * 4)
-            # Subtil sweep: bunn −3% mørkere, topp +8% lysere.
-            # Total spredning ~11% (mot tidligere 36%) – knappen får
-            # fortsatt dimensjon, men oppleves som ett jevnt fargefelt.
-            DARK_END  = -0.03
-            LIGHT_END =  0.08
-            for y in range(H):
-                t = y / (H - 1)             # 0 = bunn, 1 = topp etter flip
-                delta = DARK_END + (LIGHT_END - DARK_END) * t
-                fr = min(1.0, max(0.0, r + delta))
-                fg = min(1.0, max(0.0, g + delta))
-                fb = min(1.0, max(0.0, b + delta))
-                i = y * 4
-                buf[i]   = int(fr * 255)
-                buf[i+1] = int(fg * 255)
-                buf[i+2] = int(fb * 255)
-                buf[i+3] = int(a  * 255)
-            tex = Texture.create(size=(1, H), colorfmt='rgba')
-            tex.blit_buffer(bytes(buf), colorfmt='rgba', bufferfmt='ubyte')
-            tex.wrap = 'repeat'   # tiles horisontalt til knappens fulle bredde
+        tex = _make_gradient_texture(self.btn_color, dark_end=-0.03, light_end=0.08)
+        if tex:
             self._grad_tex = tex
-            RBtn._grad_cache[cache_key] = tex  # cache for gjenbruk
-        except Exception:
-            pass
+            RBtn._grad_cache[cache_key] = tex
 
 
 class RBox(BoxLayout):
     """
-    Avrundet kort/panel-container med skygge og dobbel kantlinje.
-    Brukes for mappe-fliser og ASK-bilde-kort.
+    Avrundet kort/panel-container med skygge, dobbel kantlinje og svak
+    gradient-tekstur. Brukes for mappe-fliser, ASK-bilde-kort,
+    dagsplan-rader og "Akkurat nå"-kortet.
+
+    scale er NumericProperty slik at trykkbare kort kan få en kort
+    "pop"-animasjon (krymp → fjær tilbake) via PushMatrix/Scale/PopMatrix
+    i KV-regelen, samme teknikk som RBtn.
     """
     box_color = ListProperty([1.0, 1.0, 1.0, 1.0])
     radius    = NumericProperty(dp(16))
+    scale     = NumericProperty(1.0)
+    _grad_cache = {}  # delt tekstur-cache for alle RBox-instanser
+
+    def on_box_color(self, *_):
+        self._update_grad_texture()
+
+    def _update_grad_texture(self):
+        """
+        Genererer (eller henter fra cache) gradient-teksturen for
+        gjeldende box_color. ~5% spredning ("lett"-nivå – halvparten av
+        RBtn sin intensitet) for en subtil følelse av dybde uten å
+        konkurrere visuelt med knapper oppå kortet.
+        """
+        r, g, b, a = self.box_color
+        cache_key = f'{r:.3f}{g:.3f}{b:.3f}{a:.3f}'
+        cached = RBox._grad_cache.get(cache_key)
+        if cached:
+            self._grad_tex = cached
+            return
+        tex = _make_gradient_texture(self.box_color, dark_end=-0.015, light_end=0.035)
+        if tex:
+            self._grad_tex = tex
+            RBox._grad_cache[cache_key] = tex
 
 
 class NavBar(BoxLayout):
@@ -526,7 +586,36 @@ def apply_high_contrast(enabled):
         Window.clearcolor = time_of_day_tint()
 
 
-def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
+def bind_card_pop(card):
+    """
+    Gir et RBox-kort en kort "pop"-animasjon ved trykk: krymper svakt
+    (scale 0.96) idet fingeren treffer kortet, og fjærer tilbake til
+    full størrelse med out_back-easing (en bitteliten studs på slutten)
+    kort tid etter – uavhengig av hvor lenge fingeren holdes nede.
+
+    Bruker RBox.scale (NumericProperty + PushMatrix/Scale/PopMatrix i
+    KV-regelen, samme teknikk som RBtn sin trykk-feedback).
+
+    Bindingen returnerer alltid False fra on_touch_down – den FORBRUKER
+    ikke touch-en, så eksisterende tap-/long-press-håndtering på
+    barnewidgets (bilder, knapper inni kortet) fungerer helt uendret.
+    Dette er ren visuell "krydder" lagt oppå eksisterende interaksjon.
+    """
+    def _on_down(card, touch):
+        if card.collide_point(*touch.pos):
+            haptic_feedback()
+            Animation.cancel_all(card, 'scale')
+            Animation(scale=0.96, duration=0.06, t='out_quad').start(card)
+
+            def _spring_back(*_):
+                Animation.cancel_all(card, 'scale')
+                Animation(scale=1.0, duration=0.22, t='out_back').start(card)
+            Clock.schedule_once(_spring_back, 0.10)
+        return False
+    card.bind(on_touch_down=_on_down)
+
+
+
     """
     Lager en RBtn med:
     - PIL-gradient (via _update_grad_texture i RBtn)
