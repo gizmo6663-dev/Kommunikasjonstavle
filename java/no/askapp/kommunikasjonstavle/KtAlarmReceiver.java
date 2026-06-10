@@ -7,7 +7,10 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Build;
+import android.os.Bundle;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -21,25 +24,39 @@ import java.io.FileReader;
  *
  * Viser kun notifikasjon dersom appen er i bakgrunnen
  * (leses fra app_state.txt skrevet av Python-siden).
+ *
+ * Extras leses fra en Bundle (intent.getExtras()), IKKE via
+ * intent.getStringExtra() direkte – pyjnius kan ikke alltid
+ * matche riktig Intent.putExtra()-overload, noe som ga
+ * getStringExtra()==null på Java-siden (varselet viste da kun
+ * appnavnet som tittel og tom tekst). Bundle.putString()/putInt()
+ * fra Python-siden har utvetydige signaturer og leses trygt her
+ * via Bundle.getString()/getInt().
  */
 public class KtAlarmReceiver extends BroadcastReceiver {
 
     static final String CHANNEL_ID   = "kt_varsler";
     static final String CHANNEL_NAME = "Kommunikasjonstavle";
 
+    /** Maks bredde/høyde (px) for innlastet bilde – unngår OutOfMemory på store bilder. */
+    static final int MAX_IMG_DIM = 512;
+
     @Override
     public void onReceive(Context context, Intent intent) {
         // Ikke vis varsel hvis appen er i forgrunnen
         if (isAppForeground(context)) return;
 
-        int    notifId = intent.getIntExtra("notif_id", 0);
-        String title   = intent.getStringExtra("title");
-        String body    = intent.getStringExtra("body");
+        Bundle extras = intent.getExtras();
+        int    notifId   = extras != null ? extras.getInt("notif_id", 0) : 0;
+        String title     = extras != null ? extras.getString("title") : null;
+        String body      = extras != null ? extras.getString("body")  : null;
+        String imagePath = extras != null ? extras.getString("image_path") : null;
+
         if (title == null) title = "Kommunikasjonstavle";
         if (body  == null) body  = "";
 
         ensureChannel(context);
-        showNotification(context, notifId, title, body);
+        showNotification(context, notifId, title, body, imagePath);
     }
 
     /**
@@ -74,7 +91,37 @@ public class KtAlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private void showNotification(Context context, int notifId, String title, String body) {
+    /**
+     * Laster ned-skalert bitmap fra fil – eller null hvis stien er tom,
+     * filen ikke finnes, eller dekoding feiler.
+     *
+     * Bruker inSampleSize for å unngå å laste hele originalbildet i minnet
+     * når det kun skal vises som lite ikon/big-picture i et varsel.
+     */
+    private Bitmap loadScaledBitmap(String path) {
+        if (path == null || path.isEmpty()) return null;
+        File f = new File(path);
+        if (!f.exists()) return null;
+        try {
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(path, opts);
+
+            int sample = 1;
+            while (opts.outWidth  / sample > MAX_IMG_DIM
+                || opts.outHeight / sample > MAX_IMG_DIM) {
+                sample *= 2;
+            }
+            opts.inSampleSize = sample;
+            opts.inJustDecodeBounds = false;
+            return BitmapFactory.decodeFile(path, opts);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void showNotification(Context context, int notifId, String title,
+                                   String body, String imagePath) {
         NotificationManager nm = (NotificationManager)
                 context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
@@ -106,6 +153,22 @@ public class KtAlarmReceiver extends BroadcastReceiver {
          .setAutoCancel(true);
 
         if (pi != null) b.setContentIntent(pi);
+
+        // Aktivitetsbilde – vises som lite ikon ved siden av teksten,
+        // og som stort utvidet bilde (BigPictureStyle) når varselet
+        // dras ned/utvides.
+        Bitmap bmp = loadScaledBitmap(imagePath);
+        if (bmp != null) {
+            b.setLargeIcon(bmp);
+            Notification.BigPictureStyle style = new Notification.BigPictureStyle()
+                    .bigPicture(bmp)
+                    .setBigContentTitle(title)
+                    .setSummaryText(body);
+            // bigLargeIcon(null) skjuler det lille ikonet i utvidet visning
+            // slik at kun det store bildet vises – unngår dobbelt opp.
+            style.bigLargeIcon((Bitmap) null);
+            b.setStyle(style);
+        }
 
         nm.notify(notifId, b.build());
     }
