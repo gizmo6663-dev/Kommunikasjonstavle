@@ -26,6 +26,11 @@ android.archs = arm64-v8a
 p4a.branch = v2024.01.21
 p4a.hook   = p4a_hooks.py
 
+# ─── UTF-8 Encoding ────────────────────────────────────────────────
+# Sikrer at Gradle bruker UTF-8 for alle filoperasjoner.
+# Dette fikser problemer med spesialtegn som å, ø, é osv. i mappenavn.
+android.gradle_options = org.gradle.jvmargs=-Dfile.encoding=UTF-8
+
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
 # READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE: Android <= 12
