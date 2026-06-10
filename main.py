@@ -6602,7 +6602,8 @@ INNSTILLINGER
             pass
 
     def _schedule_alarm(self, notif_id: int, title: str,
-                        body: str, epoch_ms: int) -> None:
+                        body: str, epoch_ms: int,
+                        image_path: str = None) -> None:
         """
         Planlegger ett Android-varsel via AlarmManager.
 
@@ -6610,6 +6611,16 @@ INNSTILLINGER
         Bruker setExactAndAllowWhileIdle for å fyre i Doze-modus;
         faller tilbake til setAndAllowWhileIdle hvis eksakt alarm
         ikke er tillatt (Android 12+).
+
+        image_path: valgfri sti til aktivitetsbilde – vises som
+        stort ikon/big-picture i varselet (KtAlarmReceiver.java).
+
+        VIKTIG: extras settes via en Bundle med putString()/putInt(),
+        IKKE intent.putExtra() direkte. pyjnius kan ikke alltid løse
+        riktig overload for Intent.putExtra() (String vs CharSequence
+        vs Serializable), noe som resulterer i at Java-siden får
+        getStringExtra()==null. Bundle.putString()/putInt() har
+        utvetydige signaturer og er trygge fra pyjnius.
         """
         if platform != 'android':
             return
@@ -6617,6 +6628,7 @@ INNSTILLINGER
             from jnius import autoclass
             PythonActivity  = autoclass('org.kivy.android.PythonActivity')
             Intent          = autoclass('android.content.Intent')
+            Bundle          = autoclass('android.os.Bundle')
             PendingIntent   = autoclass('android.app.PendingIntent')
             AlarmManager    = autoclass('android.app.AlarmManager')
             KtAlarmReceiver = autoclass(
@@ -6624,9 +6636,14 @@ INNSTILLINGER
 
             ctx    = PythonActivity.mActivity
             intent = Intent(ctx, KtAlarmReceiver)
-            intent.putExtra('notif_id', notif_id)
-            intent.putExtra('title',    title)
-            intent.putExtra('body',     body)
+
+            extras = Bundle()
+            extras.putInt('notif_id', int(notif_id))
+            extras.putString('title', title)
+            extras.putString('body',  body)
+            if image_path:
+                extras.putString('image_path', image_path)
+            intent.putExtras(extras)
 
             flags = PendingIntent.FLAG_UPDATE_CURRENT
             try:
@@ -6684,10 +6701,12 @@ INNSTILLINGER
         if sek <= 0:
             return
         epoch_ms = int((time.time() + sek) * 1000)
+        title = (f'Tidsuret for "{self._timer_label}" er ferdig'
+                 if getattr(self, '_timer_label', '') else 'Tidsuret er ferdig')
         self._schedule_alarm(
             NOTIF_TIMER,
-            '⏰ Tidsur ferdig!',
-            'Tidsuret er ferdig.',
+            title,
+            'Tiden er ute.',
             epoch_ms)
 
     def _reschedule_dagsplan_notifs(self) -> None:
@@ -6728,14 +6747,18 @@ INNSTILLINGER
             name  = entry.get('name', 'Aktivitet')
             s_str = entry.get('start', '')
             e_str = entry.get('end',   '')
+            img   = entry.get('image') or None
+            if img and not os.path.exists(img):
+                img = None
 
             # Start-varsel (kun i fremtiden)
             if s_m > now_m:
                 self._schedule_alarm(
                     NOTIF_DAG_START_BASE + idx,
-                    f'🕐 {name}',
-                    f'Starter nå  •  {s_str}–{e_str}',
-                    _epoch(s_m))
+                    f'Aktiviteten {name} starter nå',
+                    f'{s_str}–{e_str}',
+                    _epoch(s_m),
+                    image_path=img)
 
             # Slutt-varsel: kun hvis neste aktivitet IKKE starter akkurat nå
             if e_m > now_m:
@@ -6749,9 +6772,10 @@ INNSTILLINGER
                         body = 'Ingen flere aktiviteter i dag'
                     self._schedule_alarm(
                         NOTIF_DAG_END_BASE + idx,
-                        f'✅ {name} ferdig',
+                        f'Aktiviteten {name} er nå ferdig',
                         body,
-                        _epoch(e_m))
+                        _epoch(e_m),
+                        image_path=img)
 
     def _request_notification_permission(self) -> None:
         """Ber om POST_NOTIFICATIONS-tillatelse på Android 13+ (API 33)."""
