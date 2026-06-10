@@ -2518,8 +2518,27 @@ class KommunikasjonstavleApp(App):
         self._quickbar = self._build_quickbar()
         root.add_widget(self._quickbar)
         # Innholdsflate i midten (tar all gjenværende plass)
+        # ── Lagdeling for FAB (flytende søkeknapp) ──────────────────
+        # self._content = ytre, PERSISTENT FloatLayout – tømmes ALDRI.
+        #   Inneholder to lag:
+        #     1. self._content_inner – det _set_content() faktisk
+        #        tømmer/fyller for hver skjerm.
+        #     2. self._fab – flytende søkeknapp, ligger alltid OVENPÅ
+        #        skjerminnholdet (lagt til etter _content_inner →
+        #        tegnes sist → øverst).
+        # pos_hint={'x':0,'y':0} er nødvendig: FloatLayout endrer ikke
+        # child.pos uten pos_hint, så uten dette ville _content_inner
+        # arvet (0,0) i vindu-koordinater i stedet for _content sin
+        # faktiske posisjon (over navigasjonsbaren).
         self._content = FloatLayout()
         root.add_widget(self._content)
+
+        self._content_inner = FloatLayout(size_hint=(1, 1),
+                                           pos_hint={'x': 0, 'y': 0})
+        self._content.add_widget(self._content_inner)
+
+        self._fab = self._build_fab()
+        self._content.add_widget(self._fab)
         # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
         self._navbar = self._build_navbar()
         root.add_widget(self._navbar)
@@ -2962,6 +2981,56 @@ class KommunikasjonstavleApp(App):
     def _push(self, scr, **kw):
         self.nav_stack.append((scr, kw))
 
+    # ══════════════════════════════════════════════════════════════════
+    #  FLYTENDE SØKEKNAPP (FAB)
+    #  Premium-UX-tiltak #2: alltid tilgjengelig ett-tommel-trykk for
+    #  raskt søk i symboler/mapper/aktiviteter – uavhengig av hvilken
+    #  skjerm den ansatte står på. Reduserer "opphold" i kommunikasjon
+    #  fordi man slipper å navigere tilbake til hjem/mappestruktur for
+    #  å finne et bilde man ikke vet hvor ligger.
+    # ══════════════════════════════════════════════════════════════════
+
+    def _build_fab(self):
+        """
+        Bygger den flytende sirkulære søkeknappen.
+
+        Plassert nederst til høyre (pos_hint) – naturlig tommel-sone
+        ved énhånds-bruk på store telefoner. mk_btn() gir automatisk
+        haptic feedback (kort vibrasjon) og trykk-animasjon.
+
+        radius == width/2 (begge dp(64)/2 = dp(32)) gir en perfekt
+        sirkel i stedet for avrundet rektangel.
+        """
+        fab = mk_btn(
+            'Søk', hex_k('#9B59B6'), h=dp(64), fs=14,
+            size_hint=(None, None), width=dp(64),
+            pos_hint={'right': 0.97, 'y': 0.035},
+            radius=dp(32),
+            cb=lambda *_: self._global_search_popup(),
+        )
+        return fab
+
+    def _update_fab_visibility(self):
+        """
+        Skjuler søke-FAB-en i kontekster der den ikke gir mening eller
+        ville forstyrre:
+          • barn-modus – enheten er da overlevert til et barn, og
+            søk/navigasjon utenfor den kuraterte tavla skal ikke være
+            tilgjengelig for dem.
+          • fullskjermbilde (_cur_scr == 'image') – dette er visningen
+            som vises TIL barnet; en flytende knapp ville forstyrre.
+
+        Fjerner/legger til widgeten helt (ikke bare opacity) slik at
+        den verken er synlig eller mottar berøringer når skjult.
+        """
+        barn = self.data.get('settings', {}).get('barn_modus', False)
+        hide = barn or self._cur_scr == 'image'
+        in_tree = self._fab in self._content.children
+        if hide and in_tree:
+            self._content.remove_widget(self._fab)
+        elif not hide and not in_tree:
+            self._content.add_widget(self._fab)
+
     def _set_content(self, widget, animate=True, direction=None):
         """
         Bytter innholdsflaten med slide-animasjon.
@@ -2986,20 +3055,20 @@ class KommunikasjonstavleApp(App):
             hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
             Window.clearcolor = hc_bg
 
-        self._content.clear_widgets()
+        self._content_inner.clear_widgets()
         # FloatLayout krever size_hint=(1,1) for å fylle hele flaten
         widget.size_hint = (1, 1)
-        self._content.add_widget(widget)
+        self._content_inner.add_widget(widget)
 
         # KRITISK: FloatLayout endrer IKKE child.y når pos_hint er tom –
         # widget.y forblir på sin default-verdi (0 = vindusbunnen).
-        # Men _content selv ligger IKKE ved vindusbunnen (det er
-        # navigasjonsbaren _navbar som gjør det) – _content.y =
+        # Men _content_inner selv ligger IKKE ved vindusbunnen (det er
+        # navigasjonsbaren _navbar som gjør det) – _content_inner.y =
         # navbar-høyden. Uten denne linjen blir widget plassert
         # navbar_h piksler for lavt: et tomt gap øverst (under
         # hurtigmenyen) og widgetens nederste del havner bak/under
         # _navbar i stedet for over den.
-        widget.y = self._content.y
+        widget.y = self._content_inner.y
 
         if animate:
             if direction == 'back':
@@ -3019,6 +3088,10 @@ class KommunikasjonstavleApp(App):
         # Bind sveipe-navigasjon hvis aktivert i innstillinger
         if self.data.get('settings', {}).get('swipe_nav', False):
             self._bind_swipe(widget)
+
+        # Skjul/vis flytende søkeknapp avhengig av kontekst
+        # (barn-modus / fullskjermbilde → skjult)
+        self._update_fab_visibility()
 
     def _bind_swipe(self, widget):
         """Binder sveipe-gjenkjenning til widget for høyre/venstre navigasjon."""
@@ -3431,8 +3504,8 @@ class KommunikasjonstavleApp(App):
         self._show_folder(fid=fo['id'])
         # Mappe-åpning: skaler innhold fra 0.88→1.0 med spring for «løft ut»-følelse
         def _spring_in(*_):
-            if self._content.children:
-                w = self._content.children[0]
+            if self._content_inner.children:
+                w = self._content_inner.children[0]
                 w.opacity = 0
                 Animation(opacity=1, duration=0.22, t='out_cubic').start(w)
         Clock.schedule_once(_spring_in, 0.02)
