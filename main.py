@@ -2213,6 +2213,15 @@ class KommunikasjonstavleApp(App):
                 try:
                     if not os.path.exists(dst_path):
                         shutil.copy2(src_path, dst_path)
+                        # fsync sikrer at data er skrevet til disk – ikke bare
+                        # til OS-bufferet. Uten dette kan Android returnere
+                        # file-size=0 og PIL feiler å åpne filen noen ms
+                        # etter at shutil.copy2 returnerte.
+                        try:
+                            with open(dst_path, 'rb') as _f:
+                                os.fsync(_f.fileno())
+                        except Exception:
+                            pass
                         logging.debug('bundled assets: kopiert %s → %s', src_path, dst_path)
                     else:
                         logging.debug('bundled assets: %s finnes allerede i IMG_DIR', img_file)
@@ -3364,21 +3373,36 @@ class KommunikasjonstavleApp(App):
             if thumb_tex:
                 ti.texture = thumb_tex
             elif img_path:
-                # Fallback for fersk installasjon: hvis CoreImage-lastingen
-                # feiler stille på FØRSTE forsøk (filen er nylig kopiert av
-                # _init_bundled_assets og ikke ferdig flushet til disk når
-                # Kivys image-loader prøver å åpne den), settes ingen
-                # texture og widgeten blir tom permanent – source endres
-                # jo ikke igjen, så _load_source kjører aldri på nytt.
-                # ti.reload() tvinger en ny lastesyklus etter en kort
-                # forsinkelse, da filen garantert er lesbar.
-                def _ensure_loaded(dt, ti=ti, p=img_path):
-                    if ti.texture is None and os.path.exists(p):
+                # ── Retry med eksponentiell backoff ──────────────────────
+                # Rotårsak: på fersk installasjon kopierer _init_bundled_assets
+                # bilder til IMG_DIR med shutil.copy2(). Filene er lukket og
+                # ferdigskrevet i Python, men Android bufrer noen ganger
+                # selve inode-oppdateringen noen hundre millisekunder.
+                # I tillegg kan Kivy-loaderens tråd prøve å åpne filen
+                # FØR bufferflush, noe som gir stille feil uten exception.
+                # Manuell cache cacher IKKE feil, så get_thumbnail() prøves
+                # på nytt – og vi får riktig PIL-thumbnail (hvit bakgrunn,
+                # korrekt størrelse) hvis den lykkes, ikke bare Kivy-raw-laster.
+                # Etter 5 forsøk (totalt ~7,5 s) gir vi opp stille.
+                def _retry_load(attempt=1, ti=ti, p=img_path, tsz=tile_sz):
+                    if ti.texture is not None:
+                        return                      # allerede lastet
+                    # Prøv PIL-thumbnail igjen (ikke cachet ved feil)
+                    new_tex = get_thumbnail(p, tsz, tsz)
+                    if new_tex is not None:
+                        ti.texture = new_tex
+                        return
+                    # PIL feilet – prøv Kivy async-loader som sekundær strategi
+                    if ti.source and os.path.exists(p):
                         try:
                             ti.reload()
                         except Exception:
                             pass
-                Clock.schedule_once(_ensure_loaded, 0.5)
+                    if attempt < 5:
+                        Clock.schedule_once(
+                            lambda dt, a=attempt: _retry_load(a + 1),
+                            0.5 * attempt)          # 0,5 · 1,0 · 1,5 · 2,0 s
+                Clock.schedule_once(lambda dt: _retry_load(1), 0.5)
             img_wrap.add_widget(ti)
             cell.add_widget(img_wrap)
 
