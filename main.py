@@ -7623,8 +7623,9 @@ INNSTILLINGER
                     data = _js.loads(_ur.urlopen(url, timeout=10).read())
                     Clock.schedule_once(lambda *_: show_arasaac(data[:18]), 0)
                 except Exception as e:
+                    _msg = str(e)
                     Clock.schedule_once(
-                        lambda *_: setattr(status, 'text', f'Feil: {e}'), 0)
+                        lambda *_, m=_msg: setattr(status, 'text', f'Feil: {m}'), 0)
             threading.Thread(target=fetch, daemon=True).start()
 
         def show_arasaac(data):
@@ -7740,8 +7741,9 @@ INNSTILLINGER
                     data = _js.loads(_ur.urlopen(url, timeout=10).read())
                     Clock.schedule_once(lambda *_: show_results(data[:18]), 0)
                 except Exception as e:
+                    _msg = str(e)
                     Clock.schedule_once(
-                        lambda *_: setattr(status, 'text', f'Feil: {e}'), 0)
+                        lambda *_, m=_msg: setattr(status, 'text', f'Feil: {m}'), 0)
             threading.Thread(target=fetch, daemon=True).start()
 
         def show_results(data):
