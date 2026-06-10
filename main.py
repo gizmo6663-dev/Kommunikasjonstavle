@@ -2997,46 +2997,118 @@ class KommunikasjonstavleApp(App):
 
     def _fab_quick_menu(self):
         """
-        Hurtigmeny som åpnes ved trykk på FAB-en. Gir umiddelbar tilgang
-        til de mest brukte handlingene for ansatte "på farten" – uten å
-        måtte navigere til riktig skjerm/mappe først:
+        Hurtigmeny som "popper ut" fra FAB-en – énhånds-vennlig design:
 
-          • Ny aktivitet               – legg til i dagsplanen for i dag
-          • Rediger nåværende aktivitet – rediger det som pågår "NÅ"
-          • Legg til bilde              – nytt ASK-symbol i en mappe
-          • Søk                         – globalt søk (flyttet hit fra
-                                           tittellinjen øverst)
+          • Gjennomsiktig bakgrunn (ingen Popup-scrim) – knappene flyter
+            direkte over skjerminnholdet.
+          • Kompakt: maks ~260dp total høyde, plassert på VENSTRE side
+            av skjermen, vertikalt sentrert – innenfor naturlig
+            tommelbue når telefonen holdes i høyre hånd og FAB-en
+            (nederst til høyre) trykkes.
+          • Hver knapp animeres fra FAB-ens posisjon og ut til sin
+            endelige plass, med liten forsinkelse per knapp (kaskade)
+            og 'out_back'-easing – gir et "popp"-preg med en bitte
+            liten studs/deakselerasjon på slutten.
+          • Usynlig "fangstlag" bak knappene lukker menyen ved trykk
+            utenfor – slik at man ikke trenger en egen Avbryt-knapp
+            for det vanligste tilfellet (angre = trykk hvor som helst
+            ellers), men «Avbryt» finnes likevel som siste knapp for
+            tydelighet.
         """
+        if getattr(self, '_fab_menu_open', False):
+            return
+        self._fab_menu_open = True
         haptic_feedback()
-        pop_ref = [None]
-        layout = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(14))
 
-        def _close_then(fn):
-            def _cb(*_):
-                pop_ref[0].dismiss()
-                Clock.schedule_once(lambda *_: fn(), 0.05)
-            return _cb
+        actions = [
+            ('Ny aktivitet',      '#6BCB77', lambda: self._dr_entry_popup(None)),
+            ('Rediger aktivitet', '#4D96FF', self._fab_edit_current_activity),
+            ('Legg til bilde',    '#FF9F43', self._fab_add_image),
+            ('Søk',               '#9B59B6', self._global_search_popup),
+            ('Avbryt',            '#9CA3AF', None),
+        ]
 
-        layout.add_widget(mk_btn(
-            'Ny aktivitet', hex_k('#6BCB77'), h=dp(56), fs=16,
-            cb=_close_then(lambda: self._dr_entry_popup(None))))
-        layout.add_widget(mk_btn(
-            'Rediger nåværende aktivitet', hex_k('#4D96FF'), h=dp(56), fs=16,
-            cb=_close_then(self._fab_edit_current_activity)))
-        layout.add_widget(mk_btn(
-            'Legg til bilde', hex_k('#FF9F43'), h=dp(56), fs=16,
-            cb=_close_then(self._fab_add_image)))
-        layout.add_widget(mk_btn(
-            'Søk', hex_k('#9B59B6'), h=dp(56), fs=16,
-            cb=_close_then(self._global_search_popup)))
-        layout.add_widget(mk_btn(
-            'Avbryt', hex_k('#9CA3AF'), h=dp(46), fs=14,
-            cb=lambda *_: pop_ref[0].dismiss()))
+        btn_w, btn_h, gap = dp(190), dp(44), dp(8)
+        fab_cx, fab_cy = self._fab.center
 
-        pop = Popup(title='Hurtigvalg', content=layout,
-                    size_hint=POPUP_SMALL, title_size=fsp(16))
-        pop_ref[0] = pop
-        pop.open()
+        # ── Plassering: stables OPPOVER fra FAB-en, høyrejustert ────
+        # med FAB-ens høyrekant – «rett ved siden av»-følelse i stedet
+        # for et frittstående panel et annet sted på skjermen.
+        # Knapp 0 ("Ny aktivitet") havner nærmest FAB-en (kortest
+        # tommelreise for den mest brukte handlingen), etterfølgende
+        # knapper stables videre oppover.
+        target_x = self._fab.right - btn_w
+        first_y  = self._fab.top + gap
+
+        self._fab_menu_widgets = []
+
+        # ── Usynlig fangstlag – fyller hele innholdsflaten ──────────
+        catcher = Widget(size_hint=(None, None),
+                         pos=self._content.pos, size=self._content.size)
+        def _catcher_touch(w, touch):
+            if w.collide_point(*touch.pos):
+                self._fab_menu_close()
+                return True
+            return False
+        catcher.bind(on_touch_down=_catcher_touch)
+        self._content.add_widget(catcher)
+        self._fab_menu_widgets.append(catcher)
+
+        # ── Knapper – starter som et lite punkt ved FAB-en ──────────
+        for i, (label, color, fn) in enumerate(actions):
+            target_pos = (target_x, first_y + i * (btn_h + gap))
+            btn = mk_btn(label, hex_k(color), h=btn_h, fs=13,
+                         size_hint=(None, None), width=btn_w)
+            btn.size    = (dp(2), dp(2))
+            btn.pos     = (fab_cx - dp(1), fab_cy - dp(1))
+            btn.opacity = 0
+
+            cb = (self._fab_make_action(fn) if fn
+                  else (lambda *_: self._fab_menu_close()))
+            btn.bind(on_release=cb)
+
+            self._content.add_widget(btn)
+            self._fab_menu_widgets.append(btn)
+
+            anim = Animation(pos=target_pos, size=(btn_w, btn_h),
+                             opacity=1, duration=0.28, t='out_back')
+            Clock.schedule_once(
+                lambda dt, a=anim, b=btn: a.start(b), i * 0.035)
+
+    def _fab_make_action(self, fn):
+        """Lukker hurtigmenyen, deretter kjører fn() etter en kort pause
+        (lar lukke-animasjonen starte før evt. ny popup åpnes)."""
+        def _cb(*_):
+            self._fab_menu_close()
+            Clock.schedule_once(lambda *_: fn(), 0.08)
+        return _cb
+
+    def _fab_menu_close(self, instant=False):
+        """
+        Lukker hurtigmenyen.
+
+        instant=True  → fjerner umiddelbart uten animasjon. Brukes som
+                         sikkerhetsnett i _set_content() hvis brukeren
+                         skulle navigere bort mens menyen er åpen, slik
+                         at vi aldri etterlater "spøkelsesknapper" flytende
+                         over neste skjerm.
+        instant=False → rask fade-ut (0.12s) før fjerning – normal lukking.
+        """
+        if not getattr(self, '_fab_menu_open', False):
+            return
+        self._fab_menu_open = False
+        widgets = getattr(self, '_fab_menu_widgets', [])
+        for w in widgets:
+            if instant:
+                if w in self._content.children:
+                    self._content.remove_widget(w)
+            else:
+                anim = Animation(opacity=0, duration=0.12, t='in_cubic')
+                anim.bind(on_complete=lambda *a, ww=w: (
+                    self._content.remove_widget(ww)
+                    if ww in self._content.children else None))
+                anim.start(w)
+        self._fab_menu_widgets = []
 
     def _fab_edit_current_activity(self):
         """
@@ -3146,6 +3218,13 @@ class KommunikasjonstavleApp(App):
         if direction is None:
             direction = getattr(self, '_next_slide_dir', 'forward')
         self._next_slide_dir = 'forward'  # reset til default
+
+        # Sikkerhetsnett: hvis FAB-hurtigmenyen av en eller annen grunn
+        # fortsatt er åpen når skjermen byttes, fjern den øyeblikkelig
+        # (uten fade) – ellers ville knappene bli liggende flytende
+        # over den NYE skjermen.
+        if getattr(self, '_fab_menu_open', False):
+            self._fab_menu_close(instant=True)
 
         if self._cur_scr != 'dagsrytme':
             ev = getattr(self, '_dr_event', None)
