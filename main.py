@@ -148,21 +148,28 @@ def diag_section(title: str) -> None:
 
 def _fix_mojibake(s: str) -> str:
     """
-    Reparerer mojibake i mappenavn fra assets/bilder/ på Android.
+    Reparerer mojibake i mappe-/elementnavn fra assets/bilder/ på Android.
 
-    Symptom: "Måltid" vises som "M[][]ltid" – bokstaven "å" blir til
-    to firkanter uten glyf.
+    Symptom: "Måltid" vises som "M[][]ltid", "Tørke" som "T[][]rke" osv. –
+    hver æ/ø/å blir til TO firkanter uten glyf.
 
-    Rotårsak: APK-pakkeprosessen lagrer asset-filnavn med æ/ø/å som
-    UTF-8-bytes (f.eks. "å" = 0xC3 0xA5), men os.listdir() på Android
-    kan ikke alltid dekode disse bytene som UTF-8. Python faller da
-    tilbake til 'surrogateescape', som konverterer hver ugyldige byte
-    til et eget surrogat-kodepunkt (U+DC80–U+DCFF). Disse kodepunktene
-    har ingen glyf i noen font – derav de to firkantene.
+    Rotårsak: filnavn med æ/ø/å under assets/bilder/ ble (på et tidspunkt
+    i build-/pakke-kjeden – f.eks. en zip/arkivering på Windows uten
+    UTF-8-flagg) lagret med disse bokstavene som ENKELT-BYTE
+    Latin-1/CP1252 (å=0xE5, æ=0xE6, ø=0xF8), IKKE som UTF-8s 2 byte
+    (C3 A5 for å). os.listdir() på Android (UTF-8-locale) kan ikke
+    dekode disse enkelt-bytene som UTF-8, og Python faller tilbake til
+    'surrogateescape': hver ugyldige byte blir et eget surrogat-
+    kodepunkt (U+DC80–U+DCFF). Disse manglende-glyf-kodepunktene
+    rendres som tofu – og siden ÉN Latin-1-byte blir ÉTT surrogat,
+    men dette spesifikke fallback-rendret viser surrogater som to
+    tomme bokser, får vi "to firkanter per bokstav".
 
-    Fiks: hvis strengen inneholder slike surrogater, koder vi den
-    tilbake til rå bytes (surrogateescape) og dekoder på nytt som
-    UTF-8 – da gjenopprettes "å" korrekt.
+    Fiks: hvis strengen inneholder slike surrogater, kodes den tilbake
+    til rå bytes (surrogateescape) – disse rå bytene prøves deretter
+    dekodet som UTF-8 først (dekker det opprinnelige 2-byte-tilfellet),
+    deretter CP1252/Latin-1 (dekker enkelt-byte-tilfellet over – disse
+    lykkes ALLTID for enkeltbyte 0x80–0xFF og gir korrekt æ/ø/å).
 
     Funksjonen er trygg å kalle på allerede korrekte navn (norske
     bokstaver skrevet direkte i appen via tastaturet) – disse
@@ -173,9 +180,16 @@ def _fix_mojibake(s: str) -> str:
     if any(0xDC80 <= ord(c) <= 0xDCFF for c in s):
         try:
             raw = s.encode('utf-8', 'surrogateescape')
-            return raw.decode('utf-8')
-        except (UnicodeError, UnicodeDecodeError):
-            pass
+        except UnicodeError:
+            raw = None
+        if raw is not None:
+            for enc in ('utf-8', 'cp1252', 'latin-1'):
+                try:
+                    fixed = raw.decode(enc)
+                except UnicodeDecodeError:
+                    continue
+                if not any(0xDC80 <= ord(c) <= 0xDCFF for c in fixed):
+                    return fixed
     # Sekundær sjekk: "dobbel-dekodet" mojibake (UTF-8-bytes lest som
     # Latin-1/CP1252), f.eks. "Ã¥" i stedet for "å".
     if 'Ã' in s or 'Â' in s:
@@ -2204,22 +2218,48 @@ class KommunikasjonstavleApp(App):
         Kjøres alltid ETTER load_struct() slik at self.data er tilgjengelig
         og bundled_version-sjekken fungerer korrekt.
         """
-        BUNDLE_VERSION = 4   # ← økt til 4: reparerer mojibake i mappenavn (æøå)
+        BUNDLE_VERSION = 5   # ← økt til 5: reparerer mojibake i mappe-/element-/
+                             #   undermappenavn (æøå), inkl. enkelt-byte
+                             #   Latin-1/CP1252-tilfellet (se _fix_mojibake)
 
-        # ── Reparer mojibake i ALLEREDE importerte mappenavn ─────────────
-        # Kjøres FØR versjonssjekken slik at "Måltid" (lagret som mangled
-        # navn av en tidligere BUNDLE_VERSION) repareres selv om
-        # bundled_version allerede er satt til en høyere/lik verdi senere.
+        # ── Reparer mojibake i ALLEREDE importerte navn ──────────────────
+        # Kjøres FØR versjonssjekken slik at navn lagret som mangled av en
+        # tidligere BUNDLE_VERSION repareres selv om bundled_version
+        # allerede er satt til en høyere/lik verdi senere.
         # Idempotent: navn uten mojibake returneres uendret av _fix_mojibake.
-        _renamed = False
-        for _f in self.data.get('folders', []):
-            _orig = _f.get('name', '')
+        #
+        # Rekursiv – fikser BÅDE mappens eget navn, navnet på hvert
+        # element (items, f.eks. "Håndsåpe"/"Tørke bak" – disse kommer
+        # fra bildefilnavn via os.listdir() og er like utsatt for
+        # mojibake som selve mappenavnet), og undermapper (med sine
+        # egne items).
+        def _fix_names_recursive(container):
+            changed = False
+            _orig = container.get('name', '')
             _fixed = _fix_mojibake(_orig)
             if _fixed != _orig:
                 diag(f'MOJIBAKE_FIX: "{_orig}" → "{_fixed}"')
-                logging.info('bundled assets: reparerte mappenavn "%s" → "%s"',
+                logging.info('bundled assets: reparerte navn "%s" → "%s"',
                              _orig, _fixed)
-                _f['name'] = _fixed
+                container['name'] = _fixed
+                changed = True
+            for _it in container.get('items', []):
+                _io = _it.get('name', '')
+                _ifx = _fix_mojibake(_io)
+                if _ifx != _io:
+                    diag(f'MOJIBAKE_FIX (item): "{_io}" → "{_ifx}"')
+                    logging.info('bundled assets: reparerte item-navn "%s" → "%s"',
+                                 _io, _ifx)
+                    _it['name'] = _ifx
+                    changed = True
+            for _sub in container.get('subfolders', []):
+                if _fix_names_recursive(_sub):
+                    changed = True
+            return changed
+
+        _renamed = False
+        for _f in self.data.get('folders', []):
+            if _fix_names_recursive(_f):
                 _renamed = True
         if _renamed:
             save_struct(self.data, immediate=True)
@@ -2401,7 +2441,7 @@ class KommunikasjonstavleApp(App):
                         failed_images += 1
                         continue
 
-                    name = os.path.splitext(img_file)[0].replace('_', ' ')
+                    name = _fix_mojibake(os.path.splitext(img_file)[0]).replace('_', ' ')
                     existing.setdefault('items', []).append({
                         'id':    str(uuid.uuid4()),
                         'name':  name,
