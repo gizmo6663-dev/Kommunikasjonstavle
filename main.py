@@ -7903,13 +7903,33 @@ INNSTILLINGER
     #  BILDEPAR-SPILL
     # ══════════════════════════════════════════════════
 
+    def _collect_all_images(self, folders, seen=None, out=None):
+        """
+        Samler alle spillbare bilder rekursivt fra `folders` og deres
+        undermapper (i alle nivåer). Tidligere ble kun bilder direkte i
+        toppnivå-mapper inkludert, slik at brukere med mye innhold
+        organisert i undermapper fikk for få bilder til Bildepar-spillet.
+
+        Dedupliserer på bildesti – samme bilde brukt flere steder i
+        tavlen skal bare gi ÉTT spillbart kort, ellers kan to ulike par
+        få identisk bilde og forvirre barnet (ser ut som et "tredje
+        match" som aldri kan fullføres).
+        """
+        if seen is None:
+            seen = set()
+        if out is None:
+            out = []
+        for fo in folders:
+            for it in fo.get('items', []):
+                p = it.get('image')
+                if p and p not in seen and os.path.exists(p):
+                    seen.add(p)
+                    out.append({'path': p, 'name': it.get('name', '')})
+            self._collect_all_images(fo.get('subfolders', []), seen, out)
+        return out
+
     def _nav_bildepar(self):
-        all_images = [
-            {'path': it['image'], 'name': it['name']}
-            for fo in self.data.get('folders', [])
-            for it in fo.get('items', [])
-            if it.get('image') and os.path.exists(it['image'])
-        ]
+        all_images = self._collect_all_images(self.data.get('folders', []))
         if len(all_images) < 2:
             self._toast('Trenger minst 2 bilder i mappene for å spille.')
             return
@@ -7917,7 +7937,7 @@ INNSTILLINGER
         self._bildepar_setup_popup(all_images)
 
     def _bildepar_setup_popup(self, all_images):
-        max_pairs = min(6, len(all_images))
+        max_pairs = min(15, len(all_images))
         chosen    = [min(4, max_pairs)]
         pop_ref   = [None]
 
@@ -7925,7 +7945,17 @@ INNSTILLINGER
         layout.add_widget(Label(text='Velg antall par:', size_hint_y=None, height=dp(36),
             font_size=fsp(18), bold=True, color=(0.08, 0.10, 0.35, 1), halign='center'))
 
-        pg = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(130))
+        # Antall valgknapper = 2..max_pairs. Høyden beregnes ut fra
+        # antall RADER (cols=3) slik at den fortsatt passer for både
+        # få bilder (f.eks. maks 3 par → 2 knapper → 1 rad) og opptil
+        # 15 par (14 knapper → 5 rader). Pakkes i en ScrollView med
+        # tak på ~3 rader synlig, slik at popupen ikke sprenges ved
+        # mange valg, men fortsatt er kompakt ved få valg.
+        n_choice_btns = max(0, max_pairs - 1)
+        pg_rows = (n_choice_btns + 2) // 3  # avrund opp
+        pg_natural_h = dp(56) * pg_rows + dp(8) * max(0, pg_rows - 1)
+        pg = GridLayout(cols=3, spacing=dp(8), size_hint_y=None)
+        pg.bind(minimum_height=pg.setter('height'))
         pb_list = []
         for n in range(2, max_pairs + 1):
             b = mk_btn(f'{n} par', hex_k('#4D96FF' if n != chosen[0] else '#0D47A1'),
@@ -7935,7 +7965,9 @@ INNSTILLINGER
                 for bi, ni in zip(blist, rng):
                     bi.btn_color = list(hex_k('#0D47A1' if ni == v else '#4D96FF'))
             b.bind(on_release=sel); pg.add_widget(b); pb_list.append(b)
-        layout.add_widget(pg)
+        pg_sv = ScrollView(size_hint_y=None, height=min(pg_natural_h, dp(190)))
+        pg_sv.add_widget(pg)
+        layout.add_widget(pg_sv)
 
         def on_start(*_):
             n = chosen[0]
@@ -7970,7 +8002,14 @@ INNSTILLINGER
             font_size=fsp(15), color=(0.2, 0.2, 0.35, 1), halign='center')
         root.add_widget(self._bp_status_lbl)
 
-        ncols = 3 if len(cards) <= 12 else 4
+        # Flere kolonner ved mange kort, slik at 10 par (20 kort) ikke
+        # blir 5 rader i 4 kolonner (mer skrolling enn nødvendig).
+        if len(cards) <= 12:
+            ncols = 3
+        elif len(cards) <= 16:
+            ncols = 4
+        else:
+            ncols = 5
         self._bp_grid = GridLayout(cols=ncols, spacing=dp(6), size_hint_y=None)
         self._bp_grid.bind(minimum_height=self._bp_grid.setter('height'))
         sv = ScrollView(); sv.add_widget(self._bp_grid); root.add_widget(sv)
