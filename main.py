@@ -6981,7 +6981,21 @@ INNSTILLINGER
         """
         new = entry is None
         pop_ref = [None]
-        layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+
+        # Fase 2 – liggende på telefon: popup-innholdet (navn, tid,
+        # kategori, bildevalg) kan bli høyere enn POPUP_LARGE sin
+        # tilgjengelige høyde (0.92 × Window.height, som nå er kort i
+        # liggende). Skjemafeltene legges derfor i en ScrollView; kun
+        # Lagre/Avbryt-raden (btn_row, lagt til helt til slutt under)
+        # holdes FAST utenfor scroll-området slik at man alltid kan
+        # lagre/avbryte uansett skrolleposisjon.
+        outer = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+        sv = ScrollView(do_scroll_x=False)
+        layout = BoxLayout(orientation='vertical', spacing=dp(10),
+                           size_hint_y=None)
+        layout.bind(minimum_height=layout.setter('height'))
+        sv.add_widget(layout)
+        outer.add_widget(sv)
 
         layout.add_widget(Label(text='Navn:', size_hint_y=None, height=dp(28),
             font_size=fsp(15), color=(0, 0, 0, 1), halign='left'))
@@ -7166,10 +7180,10 @@ INNSTILLINGER
         btn_row.add_widget(save_btn)
         btn_row.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50),
             cb=lambda *_: pop_ref[0].dismiss()))
-        layout.add_widget(btn_row)
+        outer.add_widget(btn_row)
 
         pop = Popup(title='Ny aktivitet' if new else 'Rediger aktivitet',
-                    content=layout, size_hint=POPUP_LARGE)
+                    content=outer, size_hint=POPUP_LARGE)
         pop_ref[0] = pop; pop.open()
 
         # Auto-fokus på navnefeltet for nye aktiviteter UTEN forhåndsvalgt
