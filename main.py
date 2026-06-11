@@ -153,30 +153,44 @@ def _fix_mojibake(s: str) -> str:
     Symptom: "Måltid" vises som "M[][]ltid", "Tørke" som "T[][]rke" osv. –
     hver æ/ø/å blir til TO firkanter uten glyf.
 
-    Rotårsak: filnavn med æ/ø/å under assets/bilder/ ble (på et tidspunkt
-    i build-/pakke-kjeden – f.eks. en zip/arkivering på Windows uten
-    UTF-8-flagg) lagret med disse bokstavene som ENKELT-BYTE
-    Latin-1/CP1252 (å=0xE5, æ=0xE6, ø=0xF8), IKKE som UTF-8s 2 byte
-    (C3 A5 for å). os.listdir() på Android (UTF-8-locale) kan ikke
-    dekode disse enkelt-bytene som UTF-8, og Python faller tilbake til
-    'surrogateescape': hver ugyldige byte blir et eget surrogat-
-    kodepunkt (U+DC80–U+DCFF). Disse manglende-glyf-kodepunktene
-    rendres som tofu – og siden ÉN Latin-1-byte blir ÉTT surrogat,
-    men dette spesifikke fallback-rendret viser surrogater som to
-    tomme bokser, får vi "to firkanter per bokstav".
+    BEKREFTET ROTÅRSAK (via diagnostikk på fysisk enhet, kt_navn_diag.txt):
+    "å" → kodepunktene U+FFC3 U+FFA5, "ø" → U+FFC3 U+FFB8.
+    Mønster: 0xFFC3 = 0xFF00 | 0xC3, 0xFFA5 = 0xFF00 | 0xA5 – dvs. hver
+    UTF-8-BYTE i det opprinnelige filnavnet (C3 A5 for "å", C3 B8 for "ø")
+    har blitt SIGN-EXTENDED fra signed Java `byte` til `char` UTEN
+    `& 0xFF`-maskering ((char)(byte)0xC3 == 0xFFC3 i Java) et sted i
+    p4a/Android sin asset-ekstrahering. Strengen skrives deretter til
+    filsystemet, og os.listdir() (UTF-8-locale) leser disse to
+    kodepunktene (begge i U+FF80–U+FFFF, utenfor de fleste fonters
+    dekning) – derav "to firkanter per bokstav".
 
-    Fiks: hvis strengen inneholder slike surrogater, kodes den tilbake
-    til rå bytes (surrogateescape) – disse rå bytene prøves deretter
-    dekodet som UTF-8 først (dekker det opprinnelige 2-byte-tilfellet),
-    deretter CP1252/Latin-1 (dekker enkelt-byte-tilfellet over – disse
-    lykkes ALLTID for enkeltbyte 0x80–0xFF og gir korrekt æ/ø/å).
+    Fiks: for hvert tegn i U+FF80–U+FFFF, hent opprinnelig byte via
+    kodepunkt & 0xFF, behold ASCII-tegn (<0x80) som de er, sett sammen
+    til en byte-sekvens og dekod som UTF-8 – gjenoppretter æ/ø/å korrekt.
+
+    To eldre/sekundære mønstre (surrogateescape fra enkeltbyte
+    Latin-1/CP1252, og dobbel-UTF-8/"Ã¥") håndteres også som fallback i
+    tilfelle andre deler av kjeden produserer andre varianter.
 
     Funksjonen er trygg å kalle på allerede korrekte navn (norske
     bokstaver skrevet direkte i appen via tastaturet) – disse
-    inneholder ingen surrogater og returneres uendret.
+    inneholder ingen tegn i de nevnte områdene og returneres uendret.
     """
     if not s:
         return s
+    # ── Hovedsjekk: Java byte→char sign-extension (U+FF80–U+FFFF) ────
+    if any(0xFF80 <= ord(c) <= 0xFFFF for c in s) and \
+       all(ord(c) < 0x80 or 0xFF80 <= ord(c) <= 0xFFFF for c in s):
+        try:
+            raw = bytes(
+                (ord(c) & 0xFF) if ord(c) >= 0xFF80 else ord(c)
+                for c in s
+            )
+            fixed = raw.decode('utf-8')
+            if not any(0xFF80 <= ord(c) <= 0xFFFF for c in fixed):
+                return fixed
+        except UnicodeDecodeError:
+            pass
     if any(0xDC80 <= ord(c) <= 0xDCFF for c in s):
         try:
             raw = s.encode('utf-8', 'surrogateescape')
@@ -2218,9 +2232,10 @@ class KommunikasjonstavleApp(App):
         Kjøres alltid ETTER load_struct() slik at self.data er tilgjengelig
         og bundled_version-sjekken fungerer korrekt.
         """
-        BUNDLE_VERSION = 5   # ← økt til 5: reparerer mojibake i mappe-/element-/
-                             #   undermappenavn (æøå), inkl. enkelt-byte
-                             #   Latin-1/CP1252-tilfellet (se _fix_mojibake)
+        BUNDLE_VERSION = 6   # ← økt til 6: reparerer mojibake i mappe-/element-/
+                             #   undermappenavn (æøå) – bekreftet rotårsak:
+                             #   Java byte→char sign-extension (U+FF80–FFFF),
+                             #   se _fix_mojibake
 
         # ── Reparer mojibake i ALLEREDE importerte navn ──────────────────
         # Kjøres FØR versjonssjekken slik at navn lagret som mangled av en
