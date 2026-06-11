@@ -615,7 +615,7 @@ def bind_card_pop(card):
     card.bind(on_touch_down=_on_down)
 
 
-
+def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     """
     Lager en RBtn med:
     - PIL-gradient (via _update_grad_texture i RBtn)
