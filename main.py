@@ -67,7 +67,7 @@ from kt_widgets import (
     RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
     hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
     apply_high_contrast, fsp, rdp, mk_btn, haptic_feedback, dominant_color,
-    bind_card_pop, is_landscape,
+    bind_card_pop, is_landscape, content_width, SIDEBAR_W_BASE,
 )
 from kt_data import (
     today_code, get_day_plan, is_paused, get_category,
@@ -2515,14 +2515,6 @@ class KommunikasjonstavleApp(App):
         # retningsskifte (ikke for hver minste resize/tastatur-endring).
         self._is_landscape = is_landscape()
 
-        root = BoxLayout(orientation='vertical')
-        # Tittellinje øverst (slim, ikke-interaktiv, mørk)
-        self._bottombar = self._build_bottombar()
-        root.add_widget(self._bottombar)
-        # Hurtigrad rett under tittellinje
-        self._quickbar = self._build_quickbar()
-        root.add_widget(self._quickbar)
-        # Innholdsflate i midten (tar all gjenværende plass)
         # ── Lagdeling for FAB (flytende søkeknapp) ──────────────────
         # self._content = ytre, PERSISTENT FloatLayout – tømmes ALDRI.
         #   Inneholder to lag:
@@ -2534,9 +2526,14 @@ class KommunikasjonstavleApp(App):
         # pos_hint={'x':0,'y':0} er nødvendig: FloatLayout endrer ikke
         # child.pos uten pos_hint, så uten dette ville _content_inner
         # arvet (0,0) i vindu-koordinater i stedet for _content sin
-        # faktiske posisjon (over navigasjonsbaren).
+        # faktiske posisjon (over navigasjonsbaren/sidestripene).
+        #
+        # self._content/_content_inner/_fab og self._bottombar (tittel-
+        # linje, kun portrett) er PERSISTENTE – _build_chrome() (fase 2)
+        # plasserer dem inn i enten den vertikale (portrett) eller
+        # horisontale (liggende, sidestriper) kapp-strukturen, og
+        # gjenbruker dem ved retningsskifte.
         self._content = FloatLayout()
-        root.add_widget(self._content)
 
         self._content_inner = FloatLayout(size_hint=(1, 1),
                                            pos_hint={'x': 0, 'y': 0})
@@ -2544,12 +2541,22 @@ class KommunikasjonstavleApp(App):
 
         self._fab = self._build_fab()
         self._content.add_widget(self._fab)
-        # Navigasjonsbar NEDERST for énhånds-bruk på store telefoner
-        self._navbar = self._build_navbar()
-        root.add_widget(self._navbar)
+
+        # Tittellinje – brukes kun i portrett-kapp (fjernes helt i
+        # liggende, fase 2). Bygges én gang her, _build_chrome()
+        # plasserer den (eller lar den være ubrukt).
+        self._bottombar = self._build_bottombar()
+
+        # root: enkel FloatLayout-wrapper rundt selve kapp-strukturen.
+        # _refresh_for_orientation() (fase 2) bytter ut innholdet i
+        # root via clear_widgets()/add_widget() ved retningsskifte –
+        # selve App-rotwidgeten kan ikke byttes ut etter build().
+        root = FloatLayout()
+        root.add_widget(self._build_chrome())
 
         diag('build() → kaller _show_home()')
         self._show_home()
+
         # Widget-oppdatering – pakket inn i try/except
         def _safe_widget_start(*_):
             try:
@@ -2847,6 +2854,41 @@ class KommunikasjonstavleApp(App):
                 cb=lambda *_, f=fn: f()))
         return bar
 
+    def _build_quickbar_vertical(self):
+        """
+        Fase 2 – liggende telefon: quickbar som smal VERTIKAL stripe på
+        venstre kant ("skjermens korte side"). Samme 5 snarveier som
+        horisontal quickbar (_build_quickbar), men stablet vertikalt og
+        fordelt jevnt over hele høyden (size_hint_y=1 per knapp) – dette
+        frigjør HELE topp/bunn-arealet til selve innholdet, som er
+        kritisk for Tegn og bilderutenettet på telefon.
+
+        Normal (ikke-rotert) tekst – tryggeste variant, se diskusjon om
+        RBtn + samtidig skala/rotasjon.
+        """
+        bar = BoxLayout(
+            orientation='vertical',
+            size_hint=(None, 1), width=rdp(SIDEBAR_W_BASE),
+            spacing=dp(4), padding=(dp(3), dp(4), dp(3), dp(4)),
+        )
+        from kivy.graphics import Color as _KC, Rectangle as _KR
+        with bar.canvas.before:
+            _KC(0.84, 0.86, 0.92, 1.0)
+            self._qbar_bg = _KR(pos=bar.pos, size=bar.size)
+        bar.bind(pos=lambda w, v: setattr(self._qbar_bg, 'pos', v),
+                 size=lambda w, v: setattr(self._qbar_bg, 'size', v))
+        _qcols = [
+            ('Rekker',   '#4ECDC4', self._nav_sequences),
+            ('Dagsplan', '#FF9F43', self._nav_dagsrytme),
+            ('Tidsur',   '#4D96FF', self._nav_tidsur),
+            ('Spill',    '#C77DFF', self._nav_bildepar),
+            ('Tegn',     '#FFD93D', self.go_draw),
+        ]
+        for lbl, col, fn in _qcols:
+            bar.add_widget(mk_btn(lbl, hex_k(col), fs=12, size_hint_y=1,
+                cb=lambda *_, f=fn: f()))
+        return bar
+
     def _build_navbar(self):
         """
         Navigasjonsbar plassert NEDERST for énhånds-bruk på store telefoner.
@@ -2891,6 +2933,47 @@ class KommunikasjonstavleApp(App):
             bar.add_widget(w)
         return bar
 
+    def _build_navbar_vertical(self):
+        """
+        Fase 2 – liggende telefon: navbar som smal VERTIKAL stripe på
+        høyre kant. Søkeplass-holderen (tom Widget, kun for symmetri i
+        horisontal navbar) droppes – 4 knapper fordelt jevnt over hele
+        høyden (size_hint_y=1 hver), samme rekkefølge/farger som
+        horisontal navbar.
+        """
+        bar = NavBar(
+            orientation='vertical',
+            size_hint=(None, 1), width=rdp(SIDEBAR_W_BASE),
+            padding=(dp(4), dp(8)),
+            spacing=dp(6),
+        )
+        btn_kw = dict(size_hint_y=1, radius=dp(14))
+
+        self._btn_back = mk_btn(
+            'Tilbake', hex_k('#4D96FF'), fs=12,
+            cb=self.go_back, **btn_kw,
+        )
+        self._btn_home = mk_btn(
+            'Hjem', hex_k('#6BCB77'), fs=12,
+            cb=self.go_home, **btn_kw,
+        )
+        self._btn_edit = mk_btn(
+            'Red.', hex_k('#C77DFF'), fs=12,
+            cb=self.toggle_edit, **btn_kw,
+        )
+        self._btn_settings_nav = mk_btn(
+            'Innst.', hex_k('#78909C'), fs=12,
+            cb=lambda *_: self._nav_settings(), **btn_kw,
+        )
+        # Ikke i bruk i smal stripe – holdes None for konsistens med
+        # _set_edit_highlight osv. som kun rører _btn_edit.
+        self._btn_search = None
+
+        for w in [self._btn_back, self._btn_home,
+                  self._btn_edit, self._btn_settings_nav]:
+            bar.add_widget(w)
+        return bar
+
     def _build_bottombar(self):
         """
         Slim mørk tittellinje øverst med tittel sentrert.
@@ -2920,6 +3003,47 @@ class KommunikasjonstavleApp(App):
 
     def _set_edit_highlight(self, on):
         self._btn_edit.btn_color = list(hex_k('#7B2FBE' if on else '#C77DFF'))
+
+    def _build_chrome(self):
+        """
+        Fase 2 – bygger appens "kapp" (tittellinje + quickbar + navbar)
+        ut fra gjeldende skjermretning, og setter self._content
+        (PERSISTENT FloatLayout med innhold + FAB) inn i resultatet.
+
+        PORTRETT: vertikal stabling som tidligere – tittellinje,
+        horisontal quickbar, innhold, horisontal navbar.
+
+        LIGGENDE: tittellinjen fjernes HELT (mer høyde til innhold).
+        Quickbar og navbar blir smale vertikale striper på hhv. venstre
+        og høyre kant ("skjermens korte sider"), slik at hele høyden
+        frigjøres til selve innholdet – kritisk for Tegn og
+        bilderutenettet på telefon i liggende.
+
+        self._content/_content_inner/_fab er PERSISTENTE objekter som
+        gjenbrukes på tvers av kall – de løsrives fra forrige kapp (om
+        noe) før de settes inn i det nye, slik at _set_content() og
+        FAB-logikken fortsetter å virke uendret etter et retningsskifte.
+        """
+        for w in (self._content, self._bottombar):
+            if w.parent:
+                w.parent.remove_widget(w)
+
+        if is_landscape():
+            chrome = BoxLayout(orientation='horizontal')
+            self._quickbar = self._build_quickbar_vertical()
+            chrome.add_widget(self._quickbar)
+            chrome.add_widget(self._content)
+            self._navbar = self._build_navbar_vertical()
+            chrome.add_widget(self._navbar)
+        else:
+            chrome = BoxLayout(orientation='vertical')
+            chrome.add_widget(self._bottombar)
+            self._quickbar = self._build_quickbar()
+            chrome.add_widget(self._quickbar)
+            chrome.add_widget(self._content)
+            self._navbar = self._build_navbar()
+            chrome.add_widget(self._navbar)
+        return chrome
 
     # ── Navigasjon ─────────────────────────────────────────────────
 
@@ -2986,12 +3110,22 @@ class KommunikasjonstavleApp(App):
 
     def _refresh_for_orientation(self):
         """
-        Rebygger gjeldende skjerm etter et retningsskifte – samme
-        skjerm-dispatch som _do_toggle_edit, men uten å endre
-        edit_mode. Skjermer som ikke har retningsavhengig layout
-        (tegning, bilde, innstillinger osv.) lar vi stå urørt; de
-        bruker uansett size_hint/pos_hint og reflyter selv via Kivy.
+        Rebygger kapp + gjeldende skjerm etter et retningsskifte.
+
+        Fase 2: kapp-strukturen (tittellinje + quickbar/navbar som
+        enten horisontale barer eller vertikale sidestriper) bygges om
+        FØRST via _build_chrome() – self._content (med alt nåværende
+        skjerminnhold) løsrives og settes inn i den nye strukturen
+        uendret. Deretter samme skjerm-dispatch som _do_toggle_edit
+        (uten å endre edit_mode) for skjermer med retningsavhengige
+        rutenett (4↔6 kolonner). Skjermer uten slik logikk (tegning,
+        bilde, innstillinger osv.) lar vi stå urørt; de bruker uansett
+        size_hint/pos_hint og reflyter selv via Kivy når self._content
+        får ny størrelse.
         """
+        self.root.clear_widgets()
+        self.root.add_widget(self._build_chrome())
+
         if self._cur_scr == 'home':
             self._show_home(animate=False)
         elif self._cur_scr == 'folder':
@@ -3335,20 +3469,26 @@ class KommunikasjonstavleApp(App):
         # _navbar i stedet for over den.
         widget.y = self._content_inner.y
 
+        # Fase 2: i liggende ligger _content_inner.x > 0 (etter venstre
+        # sidestripe). base_x brukes som referanse for både animerte
+        # og ikke-animerte x-posisjoner under – i portrett er base_x=0
+        # som tidligere (ingen endring i oppførsel).
+        base_x = self._content_inner.x
+
         if animate:
             if direction == 'back':
                 # Slide inn fra venstre (tilbake-navigasjon)
-                widget.x = -Window.width
+                widget.x = base_x - Window.width
                 widget.opacity = 1
-                Animation(x=0, duration=0.2, t='out_cubic').start(widget)
+                Animation(x=base_x, duration=0.2, t='out_cubic').start(widget)
             else:
                 # Slide inn fra høyre (navigering fremover)
-                widget.x = Window.width
+                widget.x = base_x + Window.width
                 widget.opacity = 1
-                Animation(x=0, duration=0.2, t='out_cubic').start(widget)
+                Animation(x=base_x, duration=0.2, t='out_cubic').start(widget)
         else:
             widget.opacity = 1
-            widget.x = 0
+            widget.x = base_x
 
         # Bind sveipe-navigasjon hvis aktivert i innstillinger
         if self.data.get('settings', {}).get('swipe_nav', False):
@@ -3933,7 +4073,7 @@ class KommunikasjonstavleApp(App):
             n_cols = 4 if barn else 6
         else:
             n_cols = 2 if barn else 3
-        IMG_H  = (Window.width - dp(40)) / n_cols   # kvadratisk bildehøyde
+        IMG_H  = (content_width() - dp(40)) / n_cols   # kvadratisk bildehøyde
         LBL_H  = dp(36)
         ACT_H  = dp(36)
         TILE_H = (IMG_H + LBL_H + ACT_H + dp(6)) if edit else (IMG_H + LBL_H + dp(2))

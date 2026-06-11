@@ -559,6 +559,33 @@ def rdp(base):
     return dp(int(base * screen_scale()))
 
 
+# ── Fase 2 – sidestriper i liggende ──────────────────────────────────
+# Bredde (dp-basis, skaleres via rdp) på de smale vertikale stripene
+# som erstatter quickbar/navbar i liggende format. Definert ÉN gang
+# her slik at både stripenes faktiske bredde (_build_quickbar_vertical/
+# _build_navbar_vertical i main.py) og content_width() under bruker
+# nøyaktig samme tall.
+SIDEBAR_W_BASE = 92
+
+
+def content_width():
+    """
+    Bredden tilgjengelig for selve INNHOLDET (i piksler/dp), dvs.
+    Window.width minus de to side-stripene i liggende (fase 2).
+
+    Brukes i stedet for Window.width direkte når en fast pikselstørrelse
+    skal beregnes ut fra tilgjengelig bredde (f.eks. kvadratiske
+    bilde-fliser i _make_item_tile) – ellers ville flisene blitt
+    feilstore/overlappende når quickbar/navbar tar plass på sidene.
+
+    I portrett er sidestriper ikke i bruk → returnerer Window.width
+    uendret.
+    """
+    if is_landscape():
+        return Window.width - 2 * rdp(SIDEBAR_W_BASE)
+    return Window.width
+
+
 
 def is_hc():
     """Returnerer True hvis høykontrast-modus er aktivert."""
