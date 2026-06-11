@@ -3627,7 +3627,9 @@ class KommunikasjonstavleApp(App):
                 glyph='[ Mapper ]',
                 msg='Ingen mapper ennå.\nTrykk "Red." og deretter "+ Ny mappe".'))
         else:
-            grid = GridLayout(cols=3, spacing=dp(6), padding=(dp(6), dp(6)),
+            # 3 kolonner i portrett, 6 i liggende (fase 1 – landskapsstøtte)
+            grid = GridLayout(cols=(6 if is_landscape() else 3),
+                              spacing=dp(6), padding=(dp(6), dp(6)),
                               size_hint_y=None)
             grid.bind(minimum_height=grid.setter('height'))
             for fo in self.data['folders']:
