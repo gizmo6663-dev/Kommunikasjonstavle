@@ -2264,6 +2264,58 @@ class KommunikasjonstavleApp(App):
         if _renamed:
             save_struct(self.data, immediate=True)
 
+        # ── Diagnostikk: dump kodepunkter for ikke-ASCII navn ────────────
+        # Kjøres UANSETT (også når _fix_mojibake ikke fant noe å endre) –
+        # gir oss eksakte kodepunkter for f.eks. "Håndsåpe"/"Tørke bak" i
+        # diag.log slik at vi kan se PRESIST hvilken type mojibake (eller
+        # om det IKKE er mojibake, men f.eks. uerstattelig U+FFFD) det er
+        # snakk om, hvis _fix_mojibake fortsatt ikke løser det.
+        def _diag_dump(container, path=''):
+            nm = container.get('name', '')
+            p = f'{path}/{nm}'
+            if any(ord(c) > 127 for c in nm):
+                cps = ' '.join(f'U+{ord(c):04X}' for c in nm)
+                diag(f'NAVN_DIAG {p!r}: {cps}')
+            for _it in container.get('items', []):
+                inm = _it.get('name', '')
+                if any(ord(c) > 127 for c in inm):
+                    cps = ' '.join(f'U+{ord(c):04X}' for c in inm)
+                    diag(f'NAVN_DIAG {p}/{inm!r}: {cps}')
+            for _sub in container.get('subfolders', []):
+                _diag_dump(_sub, p)
+        for _f in self.data.get('folders', []):
+            _diag_dump(_f)
+
+        # ── Diagnostikk 2: RÅ os.listdir() av assets/bilder/Rutiner ──────
+        # Skriver direkte til /sdcard/Download/kt_navn_diag.txt (vanlig
+        # Nedlastinger-mappe, tilgjengelig via Filer-appen uten root) –
+        # slik slipper vi å hente diag.log fra app-privat lagring.
+        # Viser PRESIST hva os.listdir() returnerer for filnavn med æøå
+        # PÅ DENNE ENHETEN, uavhengig av structure.json/_fix_mojibake.
+        try:
+            pkg = 'no.askapp.kommunikasjonstavle'
+            _candidates = [
+                f'/data/user/0/{pkg}/files/app/assets/bilder/Rutiner',
+                f'/data/data/{pkg}/files/app/assets/bilder/Rutiner',
+            ]
+            _lines = []
+            for _cand in _candidates:
+                _lines.append(f'== {_cand} ==')
+                if os.path.isdir(_cand):
+                    for _entry in sorted(os.listdir(_cand)):
+                        _cps = ' '.join(f'U+{ord(c):04X}' for c in _entry)
+                        _lines.append(f'{_entry!r}')
+                        _lines.append(f'  kodepunkter: {_cps}')
+                else:
+                    _lines.append('(finnes ikke)')
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            _diag_path = os.path.join(DOWNLOAD_DIR, 'kt_navn_diag.txt')
+            with open(_diag_path, 'w', encoding='utf-8') as _df:
+                _df.write('\n'.join(_lines))
+            diag(f'NAVN_DIAG_FIL skrevet: {_diag_path}')
+        except Exception as _nde:
+            diag(f'NAVN_DIAG_FIL feilet: {_nde}')
+
         # ── Sjekk om dette allerede er gjort ────────────────────────
         done_ver = self.data.get('settings', {}).get('bundled_version', 0)
         if done_ver >= BUNDLE_VERSION:
