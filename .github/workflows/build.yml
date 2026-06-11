@@ -298,8 +298,24 @@ jobs:
         id: find_apk
         if: success()
         run: |
-          APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "=== Innhold i bin/ ==="
+          ls -la "${{ github.workspace }}/bin" 2>&1 || echo "(bin/ finnes ikke)"
+
+          APK=$(find "${{ github.workspace }}/bin" -name "*.apk" 2>/dev/null | head -1)
+
+          if [ -z "$APK" ]; then
+            echo "Ingen APK i bin/ – søker i .buildozer/ som fallback"
+            echo "=== Innhold i apk/debug/ (hvis den finnes) ==="
+            find "${{ github.workspace }}/.buildozer" -path "*apk/debug*" 2>/dev/null
+            APK=$(find "${{ github.workspace }}/.buildozer" -name "*.apk" -path "*apk/debug*" 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$APK" ]; then
+            echo "FEIL: Fant ingen .apk-fil verken i bin/ eller .buildozer/"
+            exit 1
+          fi
+
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
           echo "Fant APK: $APK"
 
       - name: Last opp APK
