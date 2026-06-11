@@ -3871,7 +3871,8 @@ class KommunikasjonstavleApp(App):
                                     size_hint_y=None, spacing=dp(4))
             sub_section.bind(minimum_height=sub_section.setter('height'))
             if subfolders:
-                sub_grid = GridLayout(cols=3, spacing=dp(6),
+                sub_grid = GridLayout(cols=(6 if is_landscape() else 3),
+                                      spacing=dp(6),
                                       size_hint_y=None)
                 sub_grid.bind(minimum_height=sub_grid.setter('height'))
                 for sub in subfolders:
@@ -3886,9 +3887,13 @@ class KommunikasjonstavleApp(App):
         # ── ASK-bilder ────────────────────────────────────────────
         # spacing=dp(10): mellomrom mellom kort
         # padding=(dp(10), dp(4)): sidepadding = samme som spacing → jevn kant
-        # Barn-modus: 2 kolonner for større treffflater
+        # Barn-modus: 2 kolonner for større treffflater (4 i liggende)
+        # Vanlig modus: 3 kolonner i portrett, 6 i liggende (fase 1)
         barn = self.data.get('settings', {}).get('barn_modus', False)
-        n_cols = 2 if barn else 3
+        if is_landscape():
+            n_cols = 4 if barn else 6
+        else:
+            n_cols = 2 if barn else 3
         grid = GridLayout(
             cols=n_cols, spacing=dp(10),
             padding=(dp(10), dp(4), dp(10), dp(10)),
@@ -3924,7 +3929,10 @@ class KommunikasjonstavleApp(App):
         # Beregn kolonne-bredde fra skjermbredde:
         # grid padding lr=dp(10), spacing=dp(10) → usable = W - dp(40)
         barn = self.data.get('settings', {}).get('barn_modus', False)
-        n_cols = 2 if barn else 3
+        if is_landscape():
+            n_cols = 4 if barn else 6
+        else:
+            n_cols = 2 if barn else 3
         IMG_H  = (Window.width - dp(40)) / n_cols   # kvadratisk bildehøyde
         LBL_H  = dp(36)
         ACT_H  = dp(36)
