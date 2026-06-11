@@ -67,6 +67,7 @@ from kt_widgets import (
     RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
     hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
     apply_high_contrast, fsp, rdp, mk_btn, haptic_feedback, dominant_color,
+    bind_card_pop,
 )
 from kt_data import (
     today_code, get_day_plan, is_paused, get_category,
