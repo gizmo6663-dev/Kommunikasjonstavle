@@ -13,46 +13,146 @@ jobs:
     steps:
       - name: Sjekk ut kode
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # trenger HEAD~1 for endringsdeteksjon
 
-      # ── CACHE 1: Gradle wrapper og avhengigheter ─────────────────
-      # Sparer ~2 min ved cache-hit (ingen gradle-8.0.2-all.zip nedlasting).
+      # ── CACHE 1: Gradle ──────────────────────────────────────────
+      # Cachenøkkel basert på buildozer.spec OG Java-filer.
+      # Ugyldiggjøres kun hvis avhengigheter eller Java endres.
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: ~/.gradle
-          key: gradle-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('buildozer.spec', 'java/**/*.java') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # ── CACHE 2: Android SDK, NDK, ant og p4a-pakker ─────────────
-      # Disse lagres av buildozer til /root/.buildozer/ inne i Docker,
-      # som vi monterer fra .buildozer_sdk/ i workspace.
-      # Cache-miss (forste gang): buildozer laster ned alt (~3 GB), ~8 min.
-      # Cache-hit (neste gang): buildozer hopper over nedlasting, ~3-4 min.
-      # MERK: vi cacher IKKE .buildozer/dists/ siden det skaper stale state
-      # som feiler p4a-kompileringen pa neste bygg.
-      - name: Cache SDK, NDK og p4a-pakker
+      # ── CACHE 2: .buildozer (Android SDK/NDK + p4a-pakker) ───────
+      # Dette er det største tidsvinduet ved cache-miss (~3 GB nedlasting).
+      # Ugyldiggjøres kun når buildozer.spec endres (nye requirements osv.).
+      - name: Cache .buildozer (SDK, NDK, p4a)
+        id: buildozer-cache
         uses: actions/cache@v4
         with:
-          path: .buildozer_sdk
-          key: buildozer-sdk-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          path: .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-sdk-${{ runner.os }}-
+            buildozer-${{ runner.os }}-
+
+      # ── ENDRINGSDETEKSJON: bare Python endret? ───────────────────
+      # Sjekker om ALLE endrede filer siden forrige commit er .py/.md/.txt
+      # og om dists/-mappen allerede finnes fra cache.
+      # python_only=true → hopp over buildozer pass 1, kjør bare Gradle.
+      - name: Detekter endringstype
+        id: changes
+        run: |
+          # ── SNARVEI MIDLERTIDIG DEAKTIVERT ──────────────────────────
+          # SNARVEI-steget kopierer .py-filer til "$BASE/.../app/main.py"
+          # via 'find ... -path "*/app/main.py"', men denne stien
+          # finnes ikke i p4a sin faktiske dist-struktur (treffer aldri).
+          # Fallback-grenen kopierer da til en ny, ubrukt mappe
+          # ($DIST/src/main/python/) som Gradle ikke pakker inn i APK-en.
+          # Resultat: Gradle pakker INN GAMLE Python-filer fra forrige
+          # FULL bygg, selv om "BUILD SUCCESSFUL" rapporteres – endringer
+          # i main.py/kt_widgets.py vises aldri på enheten.
+          #
+          # Inntil kopi-logikken er verifisert mot p4a sin faktiske
+          # dist-struktur, kjøres derfor ALLTID full bygg (buildozer
+          # pass 1 + Gradle pass 2), som garantert pakker inn riktig
+          # kildekode. Dette er tregere, men KORREKT – avgjørende for
+          # en app under aktiv utvikling der hver Python-endring må
+          # faktisk havne i APK-en som testes.
+          echo "python_only=false" >> $GITHUB_OUTPUT
+          echo "Modus: FULL bygg (SNARVEI deaktivert – se kommentar)"
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "UKJENT")
+          echo "Endrede filer: $CHANGED"
 
       - name: Sett versjonsnummer fra git
         id: version
         run: |
           COUNT=$(git rev-list --count HEAD)
           echo "code=$COUNT" >> $GITHUB_OUTPUT
+          echo "Versjonskode: $COUNT"
 
-      - name: Bygg APK med Buildozer + Gradle (Docker)
+      # ══════════════════════════════════════════════════════════════
+      #  SNARVEI: kun Python-filer endret + dists/ finnes fra cache
+      #  Hopper over buildozer-passet og kopierer .py-filer direkte.
+      # ══════════════════════════════════════════════════════════════
+      - name: SNARVEI – kopier Python-filer og bygg med Gradle
+        if: steps.changes.outputs.python_only == 'true'
         run: |
-          mkdir -p ${{ github.workspace }}/.buildozer_sdk
-
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             -v ~/.gradle:/root/.gradle \
-            -v ${{ github.workspace }}/.buildozer_sdk:/root/.buildozer \
+            --entrypoint bash \
+            ghcr.io/kivy/buildozer:latest \
+            -c "
+              set -eo pipefail
+              cd /home/user/hostcwd
+
+              BASE=.buildozer/android/platform/build-arm64-v8a
+              DIST=\$BASE/dists/kommunikasjonstavle
+
+              # Finn p4a-app-mappen der Python-filer ligger
+              APP_DIR=\$(find \$BASE -name 'main.py' -path '*/app/main.py' 2>/dev/null | head -1 | xargs dirname || true)
+              if [ -z \"\$APP_DIR\" ]; then
+                echo 'ADVARSEL: fant ikke p4a app-mappe, kopierer til dist src'
+                APP_DIR=\$DIST/src/main/python
+                mkdir -p \$APP_DIR
+              fi
+
+              echo \"Kopierer .py-filer til \$APP_DIR\"
+              for pyfile in *.py; do
+                cp \"\$pyfile\" \"\$APP_DIR/\" 2>/dev/null || true
+              done
+              # Oppdater versjon
+              sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
+
+              # Skriv local.properties med riktig SDK-sti for denne container-instansen.
+              # Uten dette feiler Gradle med "SDK location not found" i snarvei-modus.
+              SDK_DIR=\$(find /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
+                | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null || true)
+              if [ -z "\$SDK_DIR" ]; then
+                SDK_DIR="/home/user/hostcwd/.buildozer/android/platform/android-sdk"
+              fi
+              NDK_DIR=\$(find /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
+              echo "sdk.dir=\$SDK_DIR"   >  \$DIST/local.properties
+              [ -n "\$NDK_DIR" ] && echo "ndk.dir=\$NDK_DIR" >> \$DIST/local.properties
+              echo "local.properties: sdk=\$SDK_DIR"
+
+              # Rydd Gradle-inkrementell cache så oppdaterte filer plukkes opp
+              rm -rf \$DIST/build/intermediates/assets
+              rm -rf \$DIST/build/intermediates/merged_assets
+
+              echo '=== SNARVEI: Gradle assembleDebug ==='
+              cd \$DIST
+              chmod +x gradlew
+              ./gradlew assembleDebug --no-build-cache 2>&1 | tee /home/user/hostcwd/gradle.log
+              GRADLE_EXIT=\${PIPESTATUS[0]}
+              cd /home/user/hostcwd
+              cat gradle.log > build.log
+
+              if [ \$GRADLE_EXIT -ne 0 ]; then
+                echo \"FEIL: Gradle feilet (exit \$GRADLE_EXIT)\"
+                exit \$GRADLE_EXIT
+              fi
+
+              APK=\$(find \$DIST/build/outputs/apk/debug -name '*.apk' 2>/dev/null | head -1)
+              mkdir -p bin
+              cp \"\$APK\" bin/
+              echo \"APK: \$(ls bin/)\"
+            "
+
+      # ══════════════════════════════════════════════════════════════
+      #  FULL BYGG: buildozer pass 1 + injeksjon + Gradle pass 2
+      # ══════════════════════════════════════════════════════════════
+      - name: FULL BYGG – Buildozer + Gradle
+        if: steps.changes.outputs.python_only != 'true'
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/home/user/hostcwd \
+            -v ~/.gradle:/root/.gradle \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
             -c "
@@ -61,15 +161,7 @@ jobs:
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
 
-              # Gi git tilgang til alle kataloger (løser ownership-konflikt
-              # mellom runner uid 1001 og Docker root)
-              git config --global --add safe.directory '*'
-
               sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
-
-              # Fjern stale python-for-android klon om den finnes.
-              # Dette hindrer buildozer i å feile med 'Detected old url/branch'.
-              rm -rf /home/user/hostcwd/.buildozer/android/platform/python-for-android
 
               echo '=== PASS 1: buildozer android debug ==='
               buildozer android debug 2>&1 | tee build_step1.log || true
@@ -81,17 +173,6 @@ jobs:
                 echo 'FEIL: dists-mappen ble ikke opprettet av buildozer'
                 cat build_step1.log > build.log
                 exit 1
-              fi
-
-              # Aksepter Android SDK-lisenser eksplisitt slik at Gradle
-              # kan installere build-tools og platform-pakker automatisk.
-              # Lisens-hashene er offisielle Google Android SDK-hashes.
-              SDK=/root/.buildozer/android/platform/android-sdk
-              if [ -d \"\$SDK\" ]; then
-                mkdir -p \"\$SDK/licenses\"
-                printf '8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n' > \"\$SDK/licenses/android-sdk-license\"
-                printf '84831b9409646a918e30573bab4c9c91346d8abd\n' > \"\$SDK/licenses/android-sdk-preview-license\"
-                echo 'SDK-lisenser akseptert'
               fi
 
               echo '=== Injiserer widget-filer ==='
@@ -128,6 +209,7 @@ jobs:
               rm -rf \$DIST/build/outputs/apk
               rm -rf \$DIST/build/intermediates
               rm -rf \$DIST/build/tmp
+              rm -rf ~/.gradle/caches/build-cache-*
               rm -rf /root/.gradle/caches/build-cache-*
 
               echo '=== PASS 2: Gradle assembleDebug ==='
@@ -155,7 +237,7 @@ jobs:
               MISSING=()
               for CLS in FileHelper KtWidget WidgetLog; do
                 FOUND_CLS=0
-                for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\.dex\$'); do
+                for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
                   if unzip -p \"\$APK\" \"\$DEX\" | grep -a -q \"no/askapp/kommunikasjonstavle/\$CLS\"; then
                     echo \"OK: \$CLS funnet i \$DEX\"
                     FOUND_CLS=1; break
@@ -170,7 +252,7 @@ jobs:
 
               mkdir -p bin
               cp \"\$APK\" bin/
-              echo \"APK: \$(ls bin/)\"
+              echo \"APK lagt i bin/: \$(ls bin/)\"
             "
 
       - name: Finn APK-fil
@@ -179,6 +261,7 @@ jobs:
         run: |
           APK=$(find ${{ github.workspace }}/bin -name "*.apk" | head -1)
           echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "Fant APK: $APK"
 
       - name: Last opp APK
         if: success()
