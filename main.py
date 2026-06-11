@@ -4435,11 +4435,10 @@ class KommunikasjonstavleApp(App):
             tool_grid.add_widget(b)
             self._tool_btns[key] = b
 
-        root.add_widget(tool_grid)
-        root.add_widget(brush_panel)
-
         # ── Rad 2: Angre / Gjenta / Lagre / Tom ──────────────────
-        act = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(5))
+        act = BoxLayout(size_hint_y=None,
+                        height=(dp(52) if is_landscape() else dp(48)),
+                        spacing=dp(5))
         act.add_widget(mk_btn('Angre',  hex_k('#546E7A'), h=dp(44), fs=13,
             cb=lambda *_: self.draw_canvas and self.draw_canvas.angre()))
         act.add_widget(mk_btn('Gjenta', hex_k('#546E7A'), h=dp(44), fs=13,
@@ -4448,7 +4447,25 @@ class KommunikasjonstavleApp(App):
             cb=self._save_drawing))
         act.add_widget(mk_btn('Tom',    hex_k('#FF6B6B'), h=dp(44), fs=13,
             cb=lambda *_: self.draw_canvas.clear_canvas()))
-        root.add_widget(act)
+
+        if is_landscape():
+            # Liggende – telefon: slå sammen verktøy- og handlingsrad til
+            # ÉN rad (tool_grid + act side om side) for å spare en hel
+            # rads høyde til selve tegneflaten (fase 2-prinsippet: bruk
+            # bredden, spar høyden – se også kombinert str/stab-rad
+            # under).
+            combo_tools = BoxLayout(size_hint_y=None, height=dp(52),
+                                     spacing=dp(4))
+            tool_grid.size_hint_x = 0.62
+            act.size_hint_x = 0.38
+            combo_tools.add_widget(tool_grid)
+            combo_tools.add_widget(act)
+            root.add_widget(combo_tools)
+            root.add_widget(brush_panel)
+        else:
+            root.add_widget(tool_grid)
+            root.add_widget(brush_panel)
+            root.add_widget(act)
 
         # ── Rad 3: Penselstørrelse – egen rad, slider får full bredde ──
         size_row = BoxLayout(size_hint_y=None, height=dp(46),
@@ -4463,7 +4480,8 @@ class KommunikasjonstavleApp(App):
         self._size_slider.bind(value=self._on_size_change)
         size_row.add_widget(self._size_slider)
         size_row.add_widget(self._size_lbl)
-        root.add_widget(size_row)
+        # (size_row legges til sammen med stab_row under – se etter
+        # stab_row-konstruksjonen for landskaps-/portrettvalg)
 
         # ── Rad 4: Stabilisering + Farge ────────────────────────────
         stab_row = BoxLayout(size_hint_y=None, height=dp(46),
@@ -4494,7 +4512,17 @@ class KommunikasjonstavleApp(App):
             size_hint_x=None, width=dp(72))
         open_pal_btn.bind(on_release=lambda *_: self._open_color_popup())
         stab_row.add_widget(open_pal_btn)
-        root.add_widget(stab_row)
+        if is_landscape():
+            # Liggende – telefon: str- og stab-rad side om side i stedet
+            # for to separate rader (samme prinsipp som combo_tools over).
+            combo_sliders = BoxLayout(size_hint_y=None, height=dp(46),
+                                       spacing=dp(8))
+            combo_sliders.add_widget(size_row)
+            combo_sliders.add_widget(stab_row)
+            root.add_widget(combo_sliders)
+        else:
+            root.add_widget(size_row)
+            root.add_widget(stab_row)
 
         # Initialiserer _col_btns som tom dict (brukes i _set_draw_color)
         self._col_btns = {}
@@ -6288,7 +6316,6 @@ INNSTILLINGER
                     font_size=fsp(14), color=(0.45, 0.48, 0.55, 1),
                     halign='center', valign='middle'))
             else:
-                edit_sv = ScrollView(size_hint=(1, None), height=dp(360))
                 edit_box = BoxLayout(
                     orientation='vertical', spacing=dp(6),
                     size_hint_y=None, padding=(0, dp(4)))
@@ -6391,8 +6418,7 @@ INNSTILLINGER
                         edit_box.add_widget(row)
 
                 _rebuild_edit_list()
-                edit_sv.add_widget(edit_box)
-                outer.add_widget(edit_sv)
+                outer.add_widget(edit_box)
         elif paused:
             outer.add_widget(Label(
                 text='Dagsrytmen er pauset. Nåværende og neste vises ikke.',
@@ -6476,7 +6502,6 @@ INNSTILLINGER
                 size_hint_y=None, height=dp(22),
                 font_size=fsp(13), bold=True, color=(0.3, 0.3, 0.4, 1),
                 halign='left'))
-            list_sv  = ScrollView(size_hint_y=None, height=dp(190))
             list_box = BoxLayout(orientation='vertical', spacing=dp(4),
                                  size_hint_y=None)
             list_box.bind(minimum_height=list_box.setter('height'))
@@ -6566,8 +6591,7 @@ INNSTILLINGER
                         cb=_do_complete))
 
                 list_box.add_widget(row)
-            list_sv.add_widget(list_box)
-            outer.add_widget(list_sv)
+            outer.add_widget(list_box)
 
         # ── 7. Notater per ukedag ────────────────────────────────
         notes_section = BoxLayout(orientation='vertical',
