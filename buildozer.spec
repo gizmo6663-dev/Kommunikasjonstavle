@@ -26,11 +26,6 @@ android.archs = arm64-v8a
 p4a.branch = v2024.01.21
 p4a.hook   = p4a_hooks.py
 
-# ─── UTF-8 Encoding ────────────────────────────────────────────────
-# Sikrer at Gradle bruker UTF-8 for alle filoperasjoner.
-# Dette fikser problemer med spesialtegn som å, ø, é osv. i mappenavn.
-android.gradle_options = org.gradle.jvmargs=-Dfile.encoding=UTF-8
-
 # ─── Tillatelser ──────────────────────────────────────────────────
 #
 # READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE: Android <= 12
@@ -66,6 +61,16 @@ android.manifest.activity_attributes = android:launchMode="singleTask" android:s
 
 # ─── AndroidX ─────────────────────────────────────────────────────
 android.enable_androidx = True
+
+# ─── UTF-8 encoding for Gradle ────────────────────────────────────
+# CI-containeren har trolig ikke en UTF-8-locale satt som standard,
+# så Gradles JVM kan falle tilbake til ASCII for filnavn-håndtering
+# under mergeDebugAssets/packaging. Dette er et ANNET trinn enn
+# kjøretids-reparasjonen i _fix_mojibake() (som retter opp
+# os.listdir()-surrogateescape PÅ ENHETEN) – denne fikser i stedet
+# encoding under selve BYGGET, slik at æ/ø/å i mappenavn (f.eks.
+# "Måltid") ikke mangles allerede når de pakkes inn i APK-en.
+android.gradle_options = org.gradle.jvmargs=-Dfile.encoding=UTF-8
 
 # ─── UI ───────────────────────────────────────────────────────────
 orientation = portrait
