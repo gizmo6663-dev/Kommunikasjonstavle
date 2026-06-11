@@ -503,10 +503,10 @@ def fsp(base_size):
 def screen_scale():
     """
     Returnerer en dimensjonsløs skaleringsfaktor [0.80 – 1.20] basert på
-    skjermens fysiske høyde i tetthetsuavhengige piksler (dp).
+    skjermens lengste side i tetthetsuavhengige piksler (dp).
 
     Referanse: 780 dp – tilsvarer en typisk FHD+ Android-telefon (f.eks.
-    Pixel 7, Samsung A54, 6,1"–6,4" med ~420 dpi).
+    Pixel 7, Samsung A54, 6,1"–6,4" med ~420 dpi) i portrettmodus.
 
     Eksempler:
       650 dp  (liten/kompakt telefon)   → 0.83
@@ -514,16 +514,37 @@ def screen_scale():
       900 dp  (stor telefon, S25 Ultra) → 1.15
       1000 dp (nettbrett)               → capped 1.20
 
+    Bruker max(bredde, høyde) i stedet for kun høyde, slik at en enhet
+    som roteres til liggende (fase 1 – landskapsstøtte) beholder SAMME
+    skaleringsfaktor som i portrett – den lange siden er fortsatt den
+    lange siden, bare horisontal i stedet for vertikal. Uten dette ville
+    rdp()-elementer krympet til minimum (0.80×) hver gang skjermen ble
+    bredere enn den er høy.
+
     Brukes av rdp() til å skalere høyde-kritiske UI-elementer proporsjonalt
-    med skjermstørrelsen slik at layouts ser konsistente ut på tvers av enheter.
+    med skjermstørrelsen slik at layouts ser konsistente ut på tvers av
+    enheter og retninger.
     """
-    h_dp = Window.height / dp(1)      # skjermhøyde i dp
-    return max(0.80, min(1.20, h_dp / 780.0))
+    long_dp = max(Window.width, Window.height) / dp(1)
+    return max(0.80, min(1.20, long_dp / 780.0))
+
+
+def is_landscape():
+    """
+    True hvis skjermen for øyeblikket er bredere enn den er høy.
+
+    Brukes til å la rutenett (mappe-/bilde-grid, snarveier, symbolvelger)
+    øke fra 4 til 6 kolonner i liggende format (fase 1 – landskapsstøtte),
+    slik at den ekstra bredden utnyttes i stedet for å gi unaturlig brede,
+    flate fliser.
+    """
+    return Window.width > Window.height
 
 
 def rdp(base):
     """
-    Responsiv dp: skalerer dp(base) etter skjermhøyde via screen_scale().
+    Responsiv dp: skalerer dp(base) etter skjermens lengste side via
+    screen_scale().
 
     Bruk rdp(x) i stedet for dp(x) for alle høyde-kritiske elementer
     (rader, knapper, kort, navigasjonsbarer) der proporsjonalitet mellom

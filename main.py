@@ -67,7 +67,7 @@ from kt_widgets import (
     RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
     hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
     apply_high_contrast, fsp, rdp, mk_btn, haptic_feedback, dominant_color,
-    bind_card_pop,
+    bind_card_pop, is_landscape,
 )
 from kt_data import (
     today_code, get_day_plan, is_paused, get_category,
@@ -2510,6 +2510,10 @@ class KommunikasjonstavleApp(App):
         self.draw_canvas = None
         self._cur_scr    = 'home'
         self._next_slide_dir = 'forward'  # slide-retning for neste _set_content
+        # Fase 1 – landskapsstøtte: husk gjeldende retning slik at
+        # _on_window_resize kun trigger ombygging VED FAKTISK
+        # retningsskifte (ikke for hver minste resize/tastatur-endring).
+        self._is_landscape = is_landscape()
 
         root = BoxLayout(orientation='vertical')
         # Tittellinje øverst (slim, ikke-interaktiv, mørk)
@@ -2567,6 +2571,13 @@ class KommunikasjonstavleApp(App):
         Clock.schedule_once(_safe_alarm, 6.0)
         # Bind tilbake-knapp (ESC / Android Back)
         Window.bind(on_keyboard=self.on_keyboard)
+        # Fase 1 – landskapsstøtte: rebygg gjeldende skjerm når retningen
+        # faktisk skifter (portrett ↔ liggende), slik at rutenett (4→6
+        # kolonner) og rdp()-skalering oppdateres. p4a sin PythonActivity
+        # deklarerer configChanges som inkluderer "orientation|screenSize",
+        # så Activity blir IKKE ødelagt/gjenskapt ved rotasjon – Window
+        # får bare en on_resize-hendelse, og widget-treet må selv reagere.
+        Window.bind(on_resize=self._on_window_resize)
         # Vis splash-overlay i 2 sekunder etter oppstart
         Clock.schedule_once(lambda *_: self._show_splash_overlay(), 0.1)
         self._confetti_btn_visible = False
@@ -2958,6 +2969,76 @@ class KommunikasjonstavleApp(App):
         else:
             self._show_home()
 
+    def _on_window_resize(self, *_):
+        """
+        Fase 1 – landskapsstøtte. Kalles ved enhver Window-resize
+        (rotasjon, multi-vindu, osv.). Sjekker om PORTRETT/LIGGENDE
+        faktisk har skiftet (ikke bare en mindre størrelsesendring,
+        f.eks. tastatur som dukker opp), og rebygger i så fall
+        gjeldende skjerm slik at rutenett (4↔6 kolonner) og
+        rdp()-skalering oppdateres med nye Window-dimensjoner.
+        """
+        new_landscape = is_landscape()
+        if new_landscape == self._is_landscape:
+            return
+        self._is_landscape = new_landscape
+        self._refresh_for_orientation()
+
+    def _refresh_for_orientation(self):
+        """
+        Rebygger gjeldende skjerm etter et retningsskifte – samme
+        skjerm-dispatch som _do_toggle_edit, men uten å endre
+        edit_mode. Skjermer som ikke har retningsavhengig layout
+        (tegning, bilde, innstillinger osv.) lar vi stå urørt; de
+        bruker uansett size_hint/pos_hint og reflyter selv via Kivy.
+        """
+        if self._cur_scr == 'home':
+            self._show_home(animate=False)
+        elif self._cur_scr == 'folder':
+            self._show_folder(fid=self.cur_folder, animate=False)
+        elif self._cur_scr == 'sequences':
+            self._show_sequences()
+        elif self._cur_scr == 'dagsrytme':
+            self._build_dagsrytme_ui()
+        elif self._cur_scr == 'settings':
+            self._show_settings()
+
+    def _set_orientation(self, landscape):
+        """
+        Bytter skjermretning programmatisk via Android sin
+        Activity.setRequestedOrientation(). Dette virker UAVHENGIG av
+        android:screenOrientation i manifestet (som kun setter
+        STARTVERDIEN) – API-kallet overstyrer ved kjøretid, så ingen
+        endring i buildozer.spec er nødvendig for fase 1.
+
+        SENSOR-variantene (SENSOR_LANDSCAPE/SENSOR_PORTRAIT) brukes i
+        stedet for de faste (LANDSCAPE/PORTRAIT) slik at enheten kan
+        velge "opp-ned"-variant basert på hvilken vei den faktisk
+        holdes, mens den fortsatt er LÅST til hovedretningen brukeren
+        valgte.
+        """
+        if platform != 'android':
+            self._toast('Retningsbytte er kun tilgjengelig på Android.')
+            return
+        try:
+            from jnius import autoclass
+            ActivityInfo = autoclass('android.content.pm.ActivityInfo')
+            Activity = autoclass('org.kivy.android.PythonActivity')
+            activity = Activity.mActivity
+            if landscape:
+                activity.setRequestedOrientation(
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+            else:
+                activity.setRequestedOrientation(
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT)
+        except Exception as e:
+            diag(f'_set_orientation feilet: {e}')
+            self._toast('Kunne ikke bytte skjermretning.')
+
+    def _toggle_orientation(self, *_):
+        """Knapp-callback: bytt mellom liggende og portrett."""
+        self._set_orientation(not self._is_landscape)
+
     def _push(self, scr, **kw):
         self.nav_stack.append((scr, kw))
 
@@ -3316,7 +3397,9 @@ class KommunikasjonstavleApp(App):
                     size_hint_y=None, height=dp(20), halign='left')
         lbl.bind(size=lbl.setter('text_size'))
         box.add_widget(lbl)
-        grid = GridLayout(cols=4, spacing=dp(8), size_hint_y=None)
+        # 4 kolonner i portrett, 6 i liggende (fase 1 – landskapsstøtte)
+        grid = GridLayout(cols=(6 if is_landscape() else 4),
+                          spacing=dp(8), size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for pin in festede[:8]:
             grid.add_widget(self._make_pinned_tile(pin))
@@ -4987,6 +5070,36 @@ class KommunikasjonstavleApp(App):
         _lbl_hc.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
         outer.add_widget(_lbl_hc)
 
+        # ── Skjermretning (fase 1 – landskapsstøtte) ─────────────
+        # Eksplisitt vippe-knapp i stedet for automatisk
+        # sensor-rotasjon hele tiden – forutsigbart for ASK-bruk
+        # (spesielt viktig om barnet ser på skjermen). Brukeren
+        # velger selv NÅR appen skal følge enhetens vipping, f.eks.
+        # når et nettbrett settes opp liggende.
+        outer.add_widget(Label(text='Skjermretning:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        or_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        or_portrait = mk_btn(
+            'Stående', hex_k('#000000' if not self._is_landscape else '#546E7A'),
+            fg=(1, 1, 1, 1), h=dp(52), fs=16,
+            cb=lambda *_: self._toggle_orientation()
+                if self._is_landscape else None)
+        or_landscape = mk_btn(
+            'Liggende', hex_k('#4D96FF' if self._is_landscape else '#90CAF9'),
+            fg=(1, 1, 1, 1), h=dp(52), fs=16,
+            cb=lambda *_: self._toggle_orientation()
+                if not self._is_landscape else None)
+        or_row.add_widget(or_portrait); or_row.add_widget(or_landscape)
+        outer.add_widget(or_row)
+        _lbl_or = Label(
+            text='Bytter skjermretning umiddelbart. Mappe- og bilderutenett '
+                 'tilpasser seg (4 → 6 kolonner i liggende).',
+            size_hint_y=None, height=dp(44),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+            halign='left', valign='top')
+        _lbl_or.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+        outer.add_widget(_lbl_or)
+
         # ── Sveipenavigasjon ─────────────────────────────────────
         outer.add_widget(Label(text='Sveipenavigasjon:', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
@@ -6614,7 +6727,9 @@ INNSTILLINGER
                 font_size=fsp(13), bold=True,
                 color=hex_k(fo.get('color', '#4D96FF'))[:3] + (1,),
                 halign='left'))
-            img_grid = GridLayout(cols=4, spacing=dp(4), size_hint_y=None)
+            # 4 kolonner i portrett, 6 i liggende (fase 1 – landskapsstøtte)
+            img_grid = GridLayout(cols=(6 if is_landscape() else 4),
+                                   spacing=dp(4), size_hint_y=None)
             img_grid.bind(minimum_height=img_grid.setter('height'))
             for it in items:
                 ip = it.get('image', '')
@@ -8089,7 +8204,9 @@ INNSTILLINGER
                 cb=lambda *_: self._upload_to_folder(sub)))
             outer.add_widget(btn_bar)
 
-        grid = GridLayout(cols=4, spacing=dp(6), padding=(dp(4),dp(4)),
+        # 4 kolonner i portrett, 6 i liggende (fase 1 – landskapsstøtte)
+        grid = GridLayout(cols=(6 if is_landscape() else 4),
+                          spacing=dp(6), padding=(dp(4),dp(4)),
                           size_hint_y=None)
         grid.bind(minimum_height=grid.setter('height'))
         for it in sub.get('items', []):
@@ -8275,9 +8392,11 @@ INNSTILLINGER
                     font_size=fsp(13), bold=True,
                     color=hex_k(fo.get('color','#4D96FF'))[:3] + (1,),
                     halign='left'))
-                # Bilder i 4-kolonne grid
+                # Bilder i grid – 4 kolonner i portrett, 6 i liggende
+                # (fase 1 – landskapsstøtte)
                 img_grid = GridLayout(
-                    cols=4, spacing=dp(4), size_hint_y=None)
+                    cols=(6 if is_landscape() else 4),
+                    spacing=dp(4), size_hint_y=None)
                 img_grid.bind(minimum_height=img_grid.setter('height'))
                 for it in items:
                     ip = it.get('image','')
