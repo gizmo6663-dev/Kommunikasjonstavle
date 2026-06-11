@@ -236,18 +236,31 @@ except Exception:
 # NotoSans støtter fullt ut æ, ø, å og alle norske tegn.
 # Kivy's innebygde Roboto mangler disse på noen Android-versjoner.
 # Fonten ligger i assets/ og er inkludert i APK via buildozer.spec.
+#
+# VIKTIG: Config.set('kivy','default_font', ...) er IKKE nok – Kivys
+# font-registry for navnet 'Roboto' initialiseres allerede når
+# kivy.core.text importeres (skjer implisitt lenge før dette punktet),
+# så en senere Config.set påvirker ikke widgets som bruker DEFAULT
+# font_name='Roboto' (f.eks. RBtn/Label uten eksplisitt font_name –
+# inkludert mappeflisene på hjemskjermen, "Måltid" osv.).
+#
+# Løsningen er å RE-REGISTRERE selve navnet 'Roboto' til å peke på
+# NotoSans-filen – da arver ALLE widgets med default font_name='Roboto'
+# automatisk æøå-støtte, uten å måtte sette font_name='NotoSans'
+# eksplisitt overalt. 'NotoSans' registreres i tillegg som eget navn
+# for steder som allerede bruker font_name='NotoSans' eksplisitt.
 _FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'assets', 'NotoSans-Regular.ttf')
 if os.path.exists(_FONT_PATH):
     try:
         LabelBase.register(name='NotoSans', fn_regular=_FONT_PATH)
-        # Sett som default font for alle Kivy Label/Button
-        from kivy.config import Config
-        Config.set('kivy', 'default_font', [
-            'NotoSans', _FONT_PATH, _FONT_PATH, _FONT_PATH, _FONT_PATH,
-        ])
+        LabelBase.register(
+            name='Roboto',
+            fn_regular=_FONT_PATH, fn_bold=_FONT_PATH,
+            fn_italic=_FONT_PATH, fn_bolditalic=_FONT_PATH,
+        )
     except Exception as _fe:
-        pass  # Ikke kritisk – faller tilbake til Roboto
+        pass  # Ikke kritisk – faller tilbake til Kivys innebygde Roboto
 
 
 # ══════════════════════════════════════════════════════════════════
