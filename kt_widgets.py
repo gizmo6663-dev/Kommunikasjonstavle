@@ -22,6 +22,8 @@ from kivy.metrics import dp, sp
 from kivy.properties import ListProperty, NumericProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.stencilview import StencilView
 from kivy.uix.image import Image
 from kivy.utils import platform
 
@@ -370,6 +372,21 @@ class NavBar(BoxLayout):
 
 class BottomBar(BoxLayout):
     """Bunnbar med hvit bakgrunn og separator-linje i topp."""
+    pass
+
+
+class ClippedContent(StencilView, FloatLayout):
+    """
+    FloatLayout som klipper alt innhold til sine egne grenser
+    (via StencilView).
+
+    Brukes for App._content (fase 2 – sidestriper i liggende):
+    garanterer at skjerminnhold ALDRI visuelt kan blø utover/overlappe
+    quickbar/navbar-stripene på sidene, selv om en enkelt skjerm
+    midlertidig får feil bredde/posisjon (f.eks. ett frame før Kivys
+    layout har rukket å oppdatere seg etter et retningsskifte, før
+    _refresh_for_orientation()s utsatte rebuild kjører).
+    """
     pass
 
 

@@ -64,7 +64,7 @@ except ImportError:
 
 # ── Moduler ───────────────────────────────────────────────────────
 from kt_widgets import (
-    RBtn, RBox, NavBar, BottomBar, TappableImage, LongPressImage,
+    RBtn, RBox, NavBar, BottomBar, ClippedContent, TappableImage, LongPressImage,
     hex_k, hex_p, text_on, is_hc, hc, time_of_day_tint,
     apply_high_contrast, fsp, rdp, mk_btn, haptic_feedback, dominant_color,
     bind_card_pop, is_landscape, content_width, SIDEBAR_W_BASE,
@@ -2533,7 +2533,7 @@ class KommunikasjonstavleApp(App):
         # plasserer dem inn i enten den vertikale (portrett) eller
         # horisontale (liggende, sidestriper) kapp-strukturen, og
         # gjenbruker dem ved retningsskifte.
-        self._content = FloatLayout()
+        self._content = ClippedContent()
 
         self._content_inner = FloatLayout(size_hint=(1, 1),
                                            pos_hint={'x': 0, 'y': 0})
@@ -3116,26 +3116,42 @@ class KommunikasjonstavleApp(App):
         enten horisontale barer eller vertikale sidestriper) bygges om
         FØRST via _build_chrome() – self._content (med alt nåværende
         skjerminnhold) løsrives og settes inn i den nye strukturen
-        uendret. Deretter samme skjerm-dispatch som _do_toggle_edit
-        (uten å endre edit_mode) for skjermer med retningsavhengige
-        rutenett (4↔6 kolonner). Skjermer uten slik logikk (tegning,
-        bilde, innstillinger osv.) lar vi stå urørt; de bruker uansett
+        uendret.
+
+        VIKTIG – timing: BoxLayout/FloatLayout sin layout (som setter
+        _content_inner.x/.y/.width/.height ut fra det NYE kappet) skjer
+        via Kivys utsatte _trigger_layout, IKKE synkront ved
+        add_widget(). _set_content() leser _content_inner.x/.y for å
+        posisjonere skjerminnholdet (se kommentarer der) – kalles dette
+        FØR layout har rukket å kjøre, fanges de GAMLE (portrett-)
+        verdiene, og innholdet ender opp feilplassert/overlappende
+        sidestripene (synlig som "grafiske glitcher" rett etter
+        rotasjon). Derfor utsetter vi selve skjerm-rebuilden ett steg
+        med Clock.schedule_once(..., 0) – da har layout-passet for det
+        nye kappet rukket å kjøre først.
+
+        Deretter samme skjerm-dispatch som _do_toggle_edit (uten å
+        endre edit_mode) for skjermer med retningsavhengige rutenett
+        (4↔6 kolonner). Skjermer uten slik logikk (tegning, bilde,
+        innstillinger osv.) lar vi stå urørt; de bruker uansett
         size_hint/pos_hint og reflyter selv via Kivy når self._content
         får ny størrelse.
         """
         self.root.clear_widgets()
         self.root.add_widget(self._build_chrome())
 
-        if self._cur_scr == 'home':
-            self._show_home(animate=False)
-        elif self._cur_scr == 'folder':
-            self._show_folder(fid=self.cur_folder, animate=False)
-        elif self._cur_scr == 'sequences':
-            self._show_sequences()
-        elif self._cur_scr == 'dagsrytme':
-            self._build_dagsrytme_ui()
-        elif self._cur_scr == 'settings':
-            self._show_settings()
+        def _rebuild_screen(*_):
+            if self._cur_scr == 'home':
+                self._show_home(animate=False)
+            elif self._cur_scr == 'folder':
+                self._show_folder(fid=self.cur_folder, animate=False)
+            elif self._cur_scr == 'sequences':
+                self._show_sequences()
+            elif self._cur_scr == 'dagsrytme':
+                self._build_dagsrytme_ui()
+            elif self._cur_scr == 'settings':
+                self._show_settings()
+        Clock.schedule_once(_rebuild_screen, 0)
 
     def _set_orientation(self, landscape):
         """
