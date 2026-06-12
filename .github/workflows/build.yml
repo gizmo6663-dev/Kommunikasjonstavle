@@ -157,7 +157,6 @@ jobs:
             ghcr.io/kivy/buildozer:latest \
             -c "
               set -eo pipefail
-              set -x
 
               pip install cmake==3.28.4 --quiet
               cd /home/user/hostcwd
@@ -197,18 +196,6 @@ jobs:
                 cat build_step1.log > build.log
                 exit 1
               fi
-
-              # ── Sikkerhetsnett: fjern PASS 1s (uinjiserte) APK ────────
-              # 'buildozer android debug' kopierer selv sin ferdige APK
-              # til bin/ – UTEN våre Java-klasser/manifest-patcher. Hvis
-              # injeksjon/PASS 2/verifisering nedenfor av en eller annen
-              # grunn ikke fullfører, må IKKE denne APK-en bli liggende
-              # og dermed bli funnet/lastet opp av 'Finn APK-fil' som om
-              # den var den verifiserte sluttproduktet. Fjern den + evt.
-              # gammel build/outputs/apk her, slik at jobben heller FEILER
-              # synlig enn å levere en uverifisert APK.
-              rm -f bin/*.apk
-              rm -rf \$DIST/build/outputs/apk
 
               # ── Sikkerhetsnett: skriv local.properties ───────────────
               # Selv om PASS 1 lyktes, kan buildozer i enkelte versjoner
