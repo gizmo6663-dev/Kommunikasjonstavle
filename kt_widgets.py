@@ -95,6 +95,15 @@ _KV = """
             pos: self.pos
             size: self.size
             radius: [self.radius]
+        # 2b. Trykk-overlay – svart med variabel alpha, helt separat fra
+        #     btn_color slik at trykk-feedback aldri kan endre/forstyrre
+        #     den "logiske" btn_color-fargen (valgt/uvalgt-status osv.).
+        Color:
+            rgba: 0, 0, 0, self.press_overlay
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [self.radius]
         # 3. Én subtil ytre kant for definisjon.
         # Den indre "glans-linjen" er fjernet bevisst – den konkurrerte med
         # gradient-toppen og skapte en visuell "dobbel kant"-effekt.
@@ -318,6 +327,11 @@ class RBtn(Button):
     btn_color  = ListProperty([0.30, 0.50, 1.0, 1.0])
     radius     = NumericProperty(dp(14))
     scale      = NumericProperty(1.0)
+    # Mørklegging ved trykk tegnes som et EGET overlay (i stedet for å
+    # mutere btn_color), slik at btn_color kan brukes RENT som
+    # valgt/uvalgt-tilstand (f.eks. i bildepar-popup og tekststørrelse-
+    # velgeren) uten at trykk-animasjonen overskriver/krasjer med den.
+    press_overlay = NumericProperty(0.0)
     # _grad_tex MÅ være en ekte Property (ikke et vanlig attributt) for at
     # KV-reglene 'texture: self._grad_tex ...' og 'Color: ... not _grad_tex'
     # skal binde til og re-evaluere når _update_grad_texture() bytter
@@ -731,22 +745,20 @@ def mk_btn(text, bg, fg=(1, 1, 1, 1), fs=15, h=dp(54), cb=None, **kw):
     # Generer gradient-tekstur med det samme
     b._update_grad_texture()
 
-    # Lagre original farge for tilbakestilling
-    orig_color = list(btn_color)
-
     def _on_press(btn, *_):
-        # Mørklegg svakt + skala-trykk ned til 96%.
-        # 88% brightness er mykere enn tidligere 75% – passer flat-stilet bedre.
-        r, g, bv, a = btn.btn_color
-        btn.btn_color = [max(0, r*0.88), max(0, g*0.88), max(0, bv*0.88), a]
-        Animation(scale=0.92, duration=0.07, t='out_quad').start(btn)
+        # Mørklegg via press_overlay (separat lag) + skala-trykk ned til 96%.
+        # Rører ALDRI btn_color – den kan fritt brukes som
+        # valgt/uvalgt-tilstand av kallende kode uten å krasje med
+        # trykk-feedbacken.
+        Animation.cancel_all(btn, 'press_overlay')
+        Animation(press_overlay=0.16, scale=0.92, duration=0.07, t='out_quad').start(btn)
         haptic_feedback()
 
     def _on_release_anim(btn, *_):
-        btn.btn_color = list(orig_color)
+        Animation.cancel_all(btn, 'press_overlay')
         # Tilbake til normalstørrelse med svak elastisk overskyting (out_back).
         # Mer behersket enn forrige rotasjons-bounce.
-        Animation(scale=1.0, duration=0.13, t='out_back').start(btn)
+        Animation(press_overlay=0.0, scale=1.0, duration=0.13, t='out_back').start(btn)
 
     b.bind(on_press=_on_press, on_release=_on_release_anim)
     if cb:
