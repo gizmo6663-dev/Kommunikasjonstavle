@@ -19,7 +19,7 @@ from kivy.core.window import Window
 from kivy.graphics.texture import Texture
 from kivy.lang import Builder
 from kivy.metrics import dp, sp
-from kivy.properties import ListProperty, NumericProperty
+from kivy.properties import ListProperty, NumericProperty, ObjectProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
@@ -318,6 +318,16 @@ class RBtn(Button):
     btn_color  = ListProperty([0.30, 0.50, 1.0, 1.0])
     radius     = NumericProperty(dp(14))
     scale      = NumericProperty(1.0)
+    # _grad_tex MÅ være en ekte Property (ikke et vanlig attributt) for at
+    # KV-reglene 'texture: self._grad_tex ...' og 'Color: ... not _grad_tex'
+    # skal binde til og re-evaluere når _update_grad_texture() bytter
+    # teksturen senere (f.eks. når btn_color endres programmatisk for å
+    # vise "valgt"-tilstand). Et vanlig attributt gir KV ingen
+    # endringshendelse å binde til, så canvas ble FROSSET med teksturen
+    # fra opprettelsestidspunktet og oppdaterte seg aldri ved senere
+    # btn_color-endringer (kun synlig korrekt etter full ombygging av
+    # skjermen, dvs. nye mk_btn()-kall).
+    _grad_tex  = ObjectProperty(None, allownone=True)
     _grad_cache = {}  # delt tekstur-cache for alle RBtn-instanser
 
     def on_btn_color(self, *_):
@@ -354,6 +364,9 @@ class RBox(BoxLayout):
     box_color = ListProperty([1.0, 1.0, 1.0, 1.0])
     radius    = NumericProperty(dp(16))
     scale     = NumericProperty(1.0)
+    # Se RBtn for begrunnelse: _grad_tex må være en Property for at
+    # canvas skal oppdateres når box_color endres etter opprettelse.
+    _grad_tex  = ObjectProperty(None, allownone=True)
     _grad_cache = {}  # delt tekstur-cache for alle RBox-instanser
 
     def on_box_color(self, *_):
