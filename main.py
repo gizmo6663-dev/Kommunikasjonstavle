@@ -5731,8 +5731,12 @@ class KommunikasjonstavleApp(App):
                                   font_size=fsp(14), color=(0.06,0.08,0.30,1),
                                   size_hint_y=None, height=dp(38), halign='center'))
             pin_inp = _TI(hint_text='1234', multiline=False, input_filter='int',
-                          max_chars=4, size_hint_y=None, height=dp(50),
+                          size_hint_y=None, height=dp(50),
                           font_size=fsp(18), halign='center')
+            def _limit_pin(_inst, value):
+                if len(value) > 4:
+                    _inst.text = value[:4]
+            pin_inp.bind(text=_limit_pin)
             pbox.add_widget(pin_inp)
             pp = Popup(title='', content=pbox, size_hint=POPUP_SMALL, separator_height=0)
             def _save(*_):
@@ -8709,6 +8713,7 @@ BARN-MODUS
         if self._bp_state[idx] != 'hidden' or len(self._bp_revealed) >= 2:
             return
         self._bp_revealed.append(idx)
+        self._speak(self._bp_cards[idx]['name'])
         def after_flip():
             if len(self._bp_revealed) < 2:
                 return
