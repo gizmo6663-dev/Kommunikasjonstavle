@@ -210,13 +210,18 @@ jobs:
           # (HOME i containeren), IKKE under /home/user/hostcwd/.buildozer
           # (det er kun prosjektets dists/-mappe, fra GH Actions-cachen).
           # Bekreftet av buildozers egen miljødump: ANDROIDSDK='/root/.buildozer/...'.
-          # Feil sti her ga "SDK location not found" i PASS 2.
-          SDK_DIR=$(find /root/.buildozer /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
-            | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null || true)
+          #
+          # Søk på MAPPENAVN (android-sdk / android-ndk-*), ikke på 'adb' –
+          # NDK r25b bunter sin egen 'adb' (simpleperf), så et 'find -name adb'
+          # kan plukke opp NDK-mappa og skrive den som sdk.dir, som igjen gir
+          # "License for package ... not accepted" (lisenser finnes ikke der).
+          SDK_DIR=$(find /root/.buildozer/android/platform /home/user/hostcwd/.buildozer/android/platform \
+            -maxdepth 1 -type d -name "android-sdk" 2>/dev/null | head -1)
           if [ -z "$SDK_DIR" ]; then
             SDK_DIR="/root/.buildozer/android/platform/android-sdk"
           fi
-          NDK_DIR=$(find /root/.buildozer /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
+          NDK_DIR=$(find /root/.buildozer/android/platform /home/user/hostcwd/.buildozer/android/platform \
+            -maxdepth 1 -type d -name "android-ndk-*" 2>/dev/null | head -1)
           if [ -z "$NDK_DIR" ]; then
             NDK_DIR="/root/.buildozer/android/platform/android-ndk-r25b"
           fi
