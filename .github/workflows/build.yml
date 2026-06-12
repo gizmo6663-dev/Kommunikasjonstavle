@@ -146,166 +146,162 @@ jobs:
 
       # ══════════════════════════════════════════════════════════════
       #  FULL BYGG: buildozer pass 1 + injeksjon + Gradle pass 2
+      #
+      #  Skriptet skrives til full_build.sh via en heredoc med ENKLE
+      #  anførselstegn ('SCRIPT_EOF') – INGEN escaping av $ eller " er
+      #  nødvendig. Den tidligere varianten (alt i en docker -c "...")
+      #  krevde \$ og \" overalt og var skjør: i flere bygg (#559, #564,
+      #  #562/#563) stoppet skriptet stille rett etter
+      #  "echo local.properties: ..." uten feilmelding – Injiserer/
+      #  PASS 2/verifisering kjørte aldri, men steget rapporterte exit 0.
+      #  Med ren fil + 'docker run ... full_build.sh' unngår vi dette.
       # ══════════════════════════════════════════════════════════════
       - name: FULL BYGG – Buildozer + Gradle
         if: steps.changes.outputs.python_only != 'true'
         run: |
+          cat > full_build.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -eo pipefail
+          set -x
+
+          pip install cmake==3.28.4 --quiet
+          cd /home/user/hostcwd
+
+          sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
+
+          # ── Fiks 'dubious ownership' + stale p4a-checkout ────────
+          # Gjenoppstått .buildozer-cache (restore-keys-fallback kan gi
+          # en ELDRE cache enn nøyaktig buildozer.spec-treff) kan
+          # inneholde en python-for-android-checkout der
+          # 'git config --get remote.origin.url' feiler med exit 1.
+          # safe.directory '*' løser eierskaps-mismatch; å fjerne
+          # python-for-android tvinger et friskt 'git clone' (billig).
+          git config --global --add safe.directory '*'
+          rm -rf .buildozer/android/platform/python-for-android
+
+          echo '=== PASS 1: buildozer android debug ==='
+          buildozer android debug 2>&1 | tee build_step1.log || true
+
+          BASE=.buildozer/android/platform/build-arm64-v8a
+          DIST=$BASE/dists/kommunikasjonstavle
+
+          if [ ! -d "$DIST" ]; then
+            echo 'FEIL: dists-mappen ble ikke opprettet av buildozer'
+            cat build_step1.log > build.log
+            exit 1
+          fi
+
+          # ── Sikkerhetsnett: fjern PASS 1s (uinjiserte) APK ────────
+          # 'buildozer android debug' kopierer selv sin ferdige APK til
+          # bin/ – UTEN våre Java-klasser/manifest-patcher. Hvis
+          # injeksjon/PASS 2/verifisering nedenfor ikke fullfører, må
+          # IKKE denne APK-en bli liggende og dermed bli funnet/lastet
+          # opp av 'Finn APK-fil' som om den var sluttproduktet. Jobben
+          # skal heller FEILE synlig enn å levere en uverifisert APK.
+          rm -f bin/*.apk
+          rm -rf "$DIST/build/outputs/apk"
+
+          # ── Sikkerhetsnett: skriv local.properties ───────────────
+          # Selv om PASS 1 lyktes, kan buildozer la være å skrive
+          # local.properties (eller skrive feil sti for DENNE
+          # container-instansen). Overskriver alltid med korrekt sti.
+          SDK_DIR=$(find /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
+            | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null || true)
+          if [ -z "$SDK_DIR" ]; then
+            SDK_DIR="/home/user/hostcwd/.buildozer/android/platform/android-sdk"
+          fi
+          NDK_DIR=$(find /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
+          echo "sdk.dir=$SDK_DIR"   >  "$DIST/local.properties"
+          [ -n "$NDK_DIR" ] && echo "ndk.dir=$NDK_DIR" >> "$DIST/local.properties"
+          echo "local.properties: sdk=$SDK_DIR ndk=$NDK_DIR"
+
+          echo '=== Injiserer widget-filer ==='
+          KTDST="$DIST/src/main/java/no/askapp/kommunikasjonstavle"
+          mkdir -p "$KTDST"
+          cp java/no/askapp/kommunikasjonstavle/*.java "$KTDST/"
+          echo "Java-filer injisert: $(ls $KTDST)"
+
+          mkdir -p "$DIST/src/main/res/xml"
+          mkdir -p "$DIST/src/main/res/layout"
+          cp res/layout/kt_widget_layout.xml "$DIST/src/main/res/layout/"
+
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="utf-8"?>' \
+            '<appwidget-provider' \
+            '    xmlns:android="http://schemas.android.com/apk/res/android"' \
+            '    android:minWidth="180dp"' \
+            '    android:minHeight="110dp"' \
+            '    android:minResizeWidth="120dp"' \
+            '    android:minResizeHeight="80dp"' \
+            '    android:targetCellWidth="3"' \
+            '    android:targetCellHeight="2"' \
+            '    android:updatePeriodMillis="1800000"' \
+            '    android:initialLayout="@layout/kt_widget_layout"' \
+            '    android:resizeMode="horizontal|vertical"' \
+            '    android:widgetCategory="home_screen" />' \
+            > "$DIST/src/main/res/xml/kt_widget_info.xml"
+
+          MANIFEST="$DIST/src/main/AndroidManifest.xml"
+          if ! grep -q KtWidget "$MANIFEST" 2>/dev/null; then
+            python3 patch_manifest.py "$MANIFEST"
+          fi
+
+          rm -rf "$DIST/build/outputs/apk"
+          rm -rf "$DIST/build/intermediates"
+          rm -rf "$DIST/build/tmp"
+          rm -rf ~/.gradle/caches/build-cache-*
+          rm -rf /root/.gradle/caches/build-cache-*
+
+          echo '=== PASS 2: Gradle assembleDebug ==='
+          cd "$DIST"
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-build-cache --rerun-tasks 2>&1 | tee /home/user/hostcwd/gradle.log
+          GRADLE_EXIT=${PIPESTATUS[0]}
+          cd /home/user/hostcwd
+
+          cat build_step1.log  > build.log
+          cat gradle.log      >> build.log
+
+          if [ "$GRADLE_EXIT" -ne 0 ]; then
+            echo "FEIL: Gradle assembleDebug feilet (exit $GRADLE_EXIT)"
+            exit "$GRADLE_EXIT"
+          fi
+
+          APK=$(find "$DIST/build/outputs/apk/debug" -name '*.apk' 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo 'FEIL: Ingen APK funnet'
+            exit 1
+          fi
+
+          echo '=== Verifiserer prosjekt-klasser i APK ==='
+          MISSING=()
+          for CLS in FileHelper KtWidget WidgetLog; do
+            FOUND_CLS=0
+            for DEX in $(unzip -l "$APK" | awk '{print $NF}' | grep -E '^classes[0-9]*\.dex$'); do
+              if unzip -p "$APK" "$DEX" | grep -a -q "no/askapp/kommunikasjonstavle/$CLS"; then
+                echo "OK: $CLS funnet i $DEX"
+                FOUND_CLS=1; break
+              fi
+            done
+            if [ "$FOUND_CLS" -eq 0 ]; then MISSING+=("$CLS"); fi
+          done
+          if [ ${#MISSING[@]} -ne 0 ]; then
+            echo "FEIL: manglende klasser: ${MISSING[@]}"
+            exit 1
+          fi
+
+          mkdir -p bin
+          cp "$APK" bin/
+          echo "APK lagt i bin/: $(ls bin/)"
+          SCRIPT_EOF
+          chmod +x full_build.sh
+
           docker run --rm \
             -v ${{ github.workspace }}:/home/user/hostcwd \
             -v ~/.gradle:/root/.gradle \
             --entrypoint bash \
             ghcr.io/kivy/buildozer:latest \
-            -c "
-              set -eo pipefail
-              set -x
-
-              pip install cmake==3.28.4 --quiet
-              cd /home/user/hostcwd
-
-              sed -i 's/^version = .*/version = 1.${{ steps.version.outputs.code }}/' buildozer.spec
-
-              # ── Fiks 'dubious ownership' + stale p4a-checkout ────────
-              # Gjenoppstått .buildozer-cache (restore-keys-fallback kan
-              # gi en ELDRE cache enn nøyaktig buildozer.spec-treff) kan
-              # inneholde en python-for-android-checkout der
-              # 'git config --get remote.origin.url' feiler med exit 1 –
-              # enten pga. eierskapsmismatch (Docker-mountet volum eies
-              # av annen UID enn container-brukeren) eller en .git uten
-              # gyldig 'origin'. Buildozer behandler DETTE som en FATAL
-              # feil i 'Install platform' og avbryter PASS 1 umiddelbart
-              # – før SDK settes opp og local.properties skrives, som
-              # igjen gjør at PASS 2 (Gradle) feiler med
-              # 'SDK location not found'.
-              #
-              # 1) safe.directory '*' løser eierskaps-mismatch.
-              # 2) Fjerner python-for-android slik at buildozer gjør et
-              #    FRISKT 'git clone' – billig (liten repo), men gjør
-              #    PASS 1 robust uavhengig av cachens tilstand. SDK/NDK
-              #    (de store, trege nedlastingene) ligger i EGNE mapper
-              #    og berøres ikke.
-              git config --global --add safe.directory '*'
-              rm -rf .buildozer/android/platform/python-for-android
-
-              echo '=== PASS 1: buildozer android debug ==='
-              buildozer android debug 2>&1 | tee build_step1.log || true
-
-              BASE=.buildozer/android/platform/build-arm64-v8a
-              DIST=\$BASE/dists/kommunikasjonstavle
-
-              if [ ! -d \$DIST ]; then
-                echo 'FEIL: dists-mappen ble ikke opprettet av buildozer'
-                cat build_step1.log > build.log
-                exit 1
-              fi
-
-              # ── Sikkerhetsnett: fjern PASS 1s (uinjiserte) APK ────────
-              # 'buildozer android debug' kopierer selv sin ferdige APK
-              # til bin/ – UTEN våre Java-klasser/manifest-patcher. Hvis
-              # injeksjon/PASS 2/verifisering nedenfor av en eller annen
-              # grunn ikke fullfører, må IKKE denne APK-en bli liggende
-              # og dermed bli funnet/lastet opp av 'Finn APK-fil' som om
-              # den var den verifiserte sluttproduktet. Fjern den + evt.
-              # gammel build/outputs/apk her, slik at jobben heller FEILER
-              # synlig enn å levere en uverifisert APK.
-              rm -f bin/*.apk
-              rm -rf \$DIST/build/outputs/apk
-
-              # ── Sikkerhetsnett: skriv local.properties ───────────────
-              # Selv om PASS 1 lyktes, kan buildozer i enkelte versjoner
-              # la være å skrive local.properties (eller skrive en sti
-              # som ikke stemmer i DENNE container-instansen). Samme
-              # SDK/NDK-deteksjon som i SNARVEI-steget – overskriver
-              # alltid med korrekt sti for å garantere at PASS 2 finner
-              # SDK-en.
-              SDK_DIR=\$(find /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
-                | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null || true)
-              if [ -z "\$SDK_DIR" ]; then
-                SDK_DIR="/home/user/hostcwd/.buildozer/android/platform/android-sdk"
-              fi
-              NDK_DIR=\$(find /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
-              echo "sdk.dir=\$SDK_DIR"   >  \$DIST/local.properties
-              [ -n "\$NDK_DIR" ] && echo "ndk.dir=\$NDK_DIR" >> \$DIST/local.properties
-              echo "local.properties: sdk=\$SDK_DIR ndk=\$NDK_DIR"
-
-              echo '=== Injiserer widget-filer ==='
-              KTDST=\$DIST/src/main/java/no/askapp/kommunikasjonstavle
-              mkdir -p \$KTDST
-              cp java/no/askapp/kommunikasjonstavle/*.java \$KTDST/
-              echo \"Java-filer injisert: \$(ls \$KTDST)\"
-
-              mkdir -p \$DIST/src/main/res/xml
-              mkdir -p \$DIST/src/main/res/layout
-              cp res/layout/kt_widget_layout.xml \$DIST/src/main/res/layout/
-
-              printf '%s\n' \
-                '<?xml version=\"1.0\" encoding=\"utf-8\"?>' \
-                '<appwidget-provider' \
-                '    xmlns:android=\"http://schemas.android.com/apk/res/android\"' \
-                '    android:minWidth=\"180dp\"' \
-                '    android:minHeight=\"110dp\"' \
-                '    android:minResizeWidth=\"120dp\"' \
-                '    android:minResizeHeight=\"80dp\"' \
-                '    android:targetCellWidth=\"3\"' \
-                '    android:targetCellHeight=\"2\"' \
-                '    android:updatePeriodMillis=\"1800000\"' \
-                '    android:initialLayout=\"@layout/kt_widget_layout\"' \
-                '    android:resizeMode=\"horizontal|vertical\"' \
-                '    android:widgetCategory=\"home_screen\" />' \
-                > \$DIST/src/main/res/xml/kt_widget_info.xml
-
-              MANIFEST=\$DIST/src/main/AndroidManifest.xml
-              if ! grep -q KtWidget \$MANIFEST 2>/dev/null; then
-                python3 patch_manifest.py \$MANIFEST
-              fi
-
-              rm -rf \$DIST/build/outputs/apk
-              rm -rf \$DIST/build/intermediates
-              rm -rf \$DIST/build/tmp
-              rm -rf ~/.gradle/caches/build-cache-*
-              rm -rf /root/.gradle/caches/build-cache-*
-
-              echo '=== PASS 2: Gradle assembleDebug ==='
-              cd \$DIST
-              chmod +x gradlew
-              ./gradlew assembleDebug --no-build-cache --rerun-tasks 2>&1 | tee /home/user/hostcwd/gradle.log
-              GRADLE_EXIT=\${PIPESTATUS[0]}
-              cd /home/user/hostcwd
-
-              cat build_step1.log  > build.log
-              cat gradle.log      >> build.log
-
-              if [ \$GRADLE_EXIT -ne 0 ]; then
-                echo \"FEIL: Gradle assembleDebug feilet (exit \$GRADLE_EXIT)\"
-                exit \$GRADLE_EXIT
-              fi
-
-              APK=\$(find \$DIST/build/outputs/apk/debug -name '*.apk' 2>/dev/null | head -1)
-              if [ -z \"\$APK\" ]; then
-                echo 'FEIL: Ingen APK funnet'
-                exit 1
-              fi
-
-              echo '=== Verifiserer prosjekt-klasser i APK ==='
-              MISSING=()
-              for CLS in FileHelper KtWidget WidgetLog; do
-                FOUND_CLS=0
-                for DEX in \$(unzip -l \"\$APK\" | awk '{print \$NF}' | grep -E '^classes[0-9]*\\.dex\$'); do
-                  if unzip -p \"\$APK\" \"\$DEX\" | grep -a -q \"no/askapp/kommunikasjonstavle/\$CLS\"; then
-                    echo \"OK: \$CLS funnet i \$DEX\"
-                    FOUND_CLS=1; break
-                  fi
-                done
-                if [ \$FOUND_CLS -eq 0 ]; then MISSING+=(\$CLS); fi
-              done
-              if [ \${#MISSING[@]} -ne 0 ]; then
-                echo \"FEIL: manglende klasser: \${MISSING[@]}\"
-                exit 1
-              fi
-
-              mkdir -p bin
-              cp \"\$APK\" bin/
-              echo \"APK lagt i bin/: \$(ls bin/)\"
-            "
+            /home/user/hostcwd/full_build.sh
 
       - name: Finn APK-fil
         id: find_apk
