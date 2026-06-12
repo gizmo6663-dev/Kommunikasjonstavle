@@ -30,6 +30,8 @@ import functools
 import traceback as _tb
 from datetime import datetime
 
+import kt_sync
+
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -106,6 +108,26 @@ DRAW_DIR    = None
 STRUCT_FILE = None
 LOG_FILE    = None
 DIAG_FILE   = None   # diagnoselogg – satt i build()
+
+
+def _fmt_bytes(n):
+    """Menneskelesbar filstørrelse, f.eks. 1536 -> '1,5 KB'."""
+    if n < 1024:
+        return f'{n} B'
+    if n < 1024 * 1024:
+        return f'{n / 1024:.1f} KB'.replace('.', ',')
+    return f'{n / (1024 * 1024):.1f} MB'.replace('.', ',')
+
+
+def _darken(hex_color, factor=0.60):
+    """
+    Returnerer en mørkere variant av en hex-farge som Kivy RGBA-tuple –
+    brukt som ENHETLIG "aktiv/valgt"-markering på knapper i hele appen
+    (samme prinsipp som TOOL_ACTIVE/BRUSH_ACTIVE for tegneverktøy).
+    """
+    r, g, b, a = hex_k(hex_color)
+    return (r * factor, g * factor, b * factor, a)
+
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2620,6 +2642,7 @@ class KommunikasjonstavleApp(App):
         self.edit_mode   = False
         self.draw_canvas = None
         self._cur_scr    = 'home'
+        self._sync_server = None  # kt_sync.SyncServer – aktiv ved "Del innhold"
         self._next_slide_dir = 'forward'  # slide-retning for neste _set_content
         # Fase 1 – landskapsstøtte: husk gjeldende retning slik at
         # _on_window_resize kun trigger ombygging VED FAKTISK
@@ -2739,6 +2762,11 @@ class KommunikasjonstavleApp(App):
         # og da ville aktivitets-popup-en forsvinne
         save_struct(self.data, immediate=True)
         self._write_app_state(False)   # appen er i bakgrunnen
+        # Del-server skal ikke fortsette i bakgrunnen – PIN-koden gir
+        # kun beskyttelse mens brukeren aktivt ser delingsskjermen.
+        if self._sync_server:
+            self._sync_server.stop()
+            self._sync_server = None
         return True
 
     def on_resume(self):
@@ -2954,15 +2982,18 @@ class KommunikasjonstavleApp(App):
         bar.bind(pos=lambda w, v: setattr(self._qbar_bg, 'pos', v),
                  size=lambda w, v: setattr(self._qbar_bg, 'size', v))
         _qcols = [
-            ('Rekker',   '#4ECDC4', self._nav_sequences),
-            ('Dagsplan', '#FF9F43', self._nav_dagsrytme),
-            ('Tidsur',   '#4D96FF', self._nav_tidsur),
-            ('Spill',    '#C77DFF', self._nav_bildepar),
-            ('Tegn',     '#FFD93D', self.go_draw),
+            ('Rekker',   '#4ECDC4', 'sequences', self._nav_sequences),
+            ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
+            ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
+            ('Spill',    '#C77DFF', 'bildepar',  self._nav_bildepar),
+            ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
-        for lbl, col, fn in _qcols:
-            bar.add_widget(mk_btn(lbl, hex_k(col), h=rdp(46), fs=12,
-                cb=lambda *_, f=fn: f()))
+        self._quickbar_btns = {}
+        for lbl, col, scr_key, fn in _qcols:
+            b = mk_btn(lbl, hex_k(col), h=rdp(46), fs=12,
+                       cb=lambda *_, f=fn: f())
+            self._quickbar_btns[scr_key] = (b, col)
+            bar.add_widget(b)
         return bar
 
     def _build_quickbar_vertical(self):
@@ -2989,15 +3020,18 @@ class KommunikasjonstavleApp(App):
         bar.bind(pos=lambda w, v: setattr(self._qbar_bg, 'pos', v),
                  size=lambda w, v: setattr(self._qbar_bg, 'size', v))
         _qcols = [
-            ('Rekker',   '#4ECDC4', self._nav_sequences),
-            ('Dagsplan', '#FF9F43', self._nav_dagsrytme),
-            ('Tidsur',   '#4D96FF', self._nav_tidsur),
-            ('Spill',    '#C77DFF', self._nav_bildepar),
-            ('Tegn',     '#FFD93D', self.go_draw),
+            ('Rekker',   '#4ECDC4', 'sequences', self._nav_sequences),
+            ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
+            ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
+            ('Spill',    '#C77DFF', 'bildepar',  self._nav_bildepar),
+            ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
-        for lbl, col, fn in _qcols:
-            bar.add_widget(mk_btn(lbl, hex_k(col), fs=12, size_hint_y=1,
-                cb=lambda *_, f=fn: f()))
+        self._quickbar_btns = {}
+        for lbl, col, scr_key, fn in _qcols:
+            b = mk_btn(lbl, hex_k(col), fs=12, size_hint_y=1,
+                       cb=lambda *_, f=fn: f())
+            self._quickbar_btns[scr_key] = (b, col)
+            bar.add_widget(b)
         return bar
 
     def _build_navbar(self):
@@ -3038,6 +3072,10 @@ class KommunikasjonstavleApp(App):
             'Innst.', hex_k('#78909C'), fs=13,
             cb=lambda *_: self._nav_settings(), **btn_kw,
         )
+        self._navbar_btns = {
+            'home':     (self._btn_home, '#6BCB77'),
+            'settings': (self._btn_settings_nav, '#78909C'),
+        }
 
         for w in [self._btn_back, self._btn_home, self._btn_search,
                   self._btn_edit, self._btn_settings_nav]:
@@ -3076,6 +3114,10 @@ class KommunikasjonstavleApp(App):
             'Innst.', hex_k('#78909C'), fs=12,
             cb=lambda *_: self._nav_settings(), **btn_kw,
         )
+        self._navbar_btns = {
+            'home':     (self._btn_home, '#6BCB77'),
+            'settings': (self._btn_settings_nav, '#78909C'),
+        }
         # Ikke i bruk i smal stripe – holdes None for konsistens med
         # _set_edit_highlight osv. som kun rører _btn_edit.
         self._btn_search = None
@@ -3550,6 +3592,43 @@ class KommunikasjonstavleApp(App):
         elif not hide and not in_tree:
             self._content.add_widget(self._fab)
 
+    def _refresh_chrome_highlight(self):
+        """
+        Fremhever quickbar-/navbar-knappen for skjermen brukeren er på
+        nå, med en mørkere variant av dens egen farge (samme prinsipp
+        som TOOL_ACTIVE/BRUSH_ACTIVE for tegneverktøy).
+
+        Tidligere viste disse knappene ALLTID samme farge uansett
+        hvilken skjerm som var aktiv – ingen indikasjon på "hvor er
+        jeg nå". Kalles fra _set_content(), dvs. etter hver
+        skjermnavigering, slik at den alltid er korrekt.
+
+        "Red."-knappen styres separat av _set_edit_highlight()
+        (avhenger av edit_mode, ikke av hvilken skjerm man er på) og
+        røres ikke her.
+        """
+        scr = self._cur_scr
+        hc  = is_hc()
+        for d in (getattr(self, '_quickbar_btns', None),
+                  getattr(self, '_navbar_btns', None)):
+            if not d:
+                continue
+            for key, (btn, base_hex) in d.items():
+                try:
+                    active = (key == scr)
+                    if hc:
+                        # mk_btn tvinger alle knapper til svart/hvit i
+                        # høykontrast – fargebasert _darken() ville da
+                        # smugle farge tilbake inn. Bruk i stedet
+                        # invertert svart/hvit som "aktiv"-markør.
+                        btn.btn_color = [1.0, 1.0, 1.0, 1.0] if active else [0.0, 0.0, 0.0, 1.0]
+                        btn.color     = (0.0, 0.0, 0.0, 1.0) if active else (1.0, 1.0, 1.0, 1.0)
+                    else:
+                        btn.btn_color = list(
+                            _darken(base_hex) if active else hex_k(base_hex))
+                except ReferenceError:
+                    pass  # widget fjernet under en rask skjermbytting
+
     def _set_content(self, widget, animate=True, direction=None):
         """
         Bytter innholdsflaten med slide-animasjon.
@@ -3624,6 +3703,9 @@ class KommunikasjonstavleApp(App):
         # Skjul/vis flytende søkeknapp avhengig av kontekst
         # (barn-modus / fullskjermbilde → skjult)
         self._update_fab_visibility()
+
+        # Fremhev quickbar-/navbar-knappen for gjeldende skjerm
+        self._refresh_chrome_highlight()
 
     def _bind_swipe(self, widget):
         """Binder sveipe-gjenkjenning til widget for høyre/venstre navigasjon."""
@@ -4734,6 +4816,7 @@ class KommunikasjonstavleApp(App):
 
         # ── Bygger palett-panel ────────────────────────────────────
         def make_palette_panel():
+            from kivy.graphics import Color, Line
             panel = BoxLayout(orientation='vertical', spacing=dp(6))
             panel.add_widget(Label(
                 text='Velg farge:', size_hint_y=None, height=dp(26),
@@ -4751,6 +4834,23 @@ class KommunikasjonstavleApp(App):
                     cur_col[0] = c
                     pop_ref[0].dismiss()
                 cb.bind(on_release=pick_pal)
+
+                # Ring rundt NÅVÆRENDE farge – uten dette var det
+                # ingen måte å se hvilken av de 30 fargene som var
+                # aktiv når popupen åpnes (helt manglende markering).
+                # Ringfargen velges med text_on() for kontrast mot
+                # selve svatchen (lys ring på mørke farger og motsatt).
+                if col_hex.lower() == cur_col[0].lower():
+                    ring_col = text_on(col_hex)
+                    def _draw_ring(w, *_a, _rc=ring_col):
+                        w.canvas.after.clear()
+                        with w.canvas.after:
+                            Color(*_rc)
+                            Line(circle=(w.center_x, w.center_y,
+                                         w.width / 2 - dp(3)), width=dp(3))
+                    cb.bind(pos=_draw_ring, size=_draw_ring)
+                    _draw_ring(cb)
+
                 grid.add_widget(cb); self._col_btns[col_hex] = cb
             sv.add_widget(grid); panel.add_widget(sv)
             return panel
@@ -5544,6 +5644,24 @@ class KommunikasjonstavleApp(App):
         outer.add_widget(_mk_notif_row('Tidsur:',    'notifications_timer'))
         outer.add_widget(_mk_notif_row('Dagsplan:',  'notifications_dagsplan'))
 
+        # ── Del med annen enhet (WiFi) ────────────────────────────────
+        outer.add_widget(Label(text='Del med annen enhet:', size_hint_y=None, height=dp(32),
+            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+        _lbl_sync = Label(
+            text='Overfør mapper og bilder til/fra en annen enhet med '
+                 'appen, så lenge begge er på samme WiFi-nettverk.',
+            size_hint_y=None, height=dp(44),
+            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+            halign='left', valign='top')
+        _lbl_sync.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+        outer.add_widget(_lbl_sync)
+        sync_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+        sync_row.add_widget(mk_btn('Del innhold', hex_k('#6BCB77'), h=dp(54), fs=15,
+            cb=lambda *_: self._show_sync_send_popup()))
+        sync_row.add_widget(mk_btn('Motta innhold', hex_k('#4D96FF'), h=dp(54), fs=15,
+            cb=lambda *_: self._show_sync_receive_popup()))
+        outer.add_widget(sync_row)
+
         # ── Hjelp ────────────────────────────────────────────────────
         outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
             font_size=fsp(17), bold=True, color=(0.08,0.10,0.35,1), halign='left'))
@@ -5657,31 +5775,42 @@ HURTIGRAD (under tittellinjen)
 • Rekker – Handlingsrekker: visuelle sekvenser av bilder i rekkefølge
 • Dagsplan – Dagsrytme: tidsbasert plan for dagen med klokkeslett
 • Tidsur – Visuell nedtelling med rød pai som tømmes
-• Spill – Bildepar-minnespill med symbolene dine
-• Tegn – Fri tegning med ulike penseltyper og farger
+• Spill – Bildepar-minnespill med symbolene dine (2–15 par)
+• Tegn – Fri tegning med ulike penseltyper, farger og stabilisering
 
 NAVIGASJONSBAR (bunnen)
 • Tilbake – Gå ett steg tilbake
 • Hjem – Gå til startskjermen
-• Søk – Søk lokalt i alle symboler ELLER hent fra ARASAAC (13 000+ norske symboler)
+• Søk – Forstørrelsesglass øverst til høyre: søk lokalt ELLER i ARASAAC
 • Red. – Slå redigering av/på. I redigeringsmodus kan du legge til, flytte og slette
 • Innst. – Innstillinger og denne veiledningen
+Knappen for skjermen du er på vises i en mørkere fargetone, så du
+alltid ser hvor du er.
 
 MAPPER OG SYMBOLER
-• Opprett mapper fra startskjermen i redigeringsmodus
-• Trykk på en mappe for å åpne den
+• Opprett mapper og undermapper fra startskjermen i redigeringsmodus
+• Trykk på en mappe for å åpne den, og et bilde for å vise det stort
 • I en mappe: legg til bilder via kamera, filvelger, tegning eller ARASAAC-søk
+• «Fest til hjem» legger en snarvei til mappen/bildet på startskjermen
 • Last ned symboler til Nedlastinger via «Ned»-knappen
 • Flytt symboler mellom mapper via «Flytt»-knappen
 
-ARASAAC-SØKET
+SØK
 • Skriv et norsk eller engelsk ord i søkefeltet
-• Velg mellom «Lokalt» (egne bilder) og «ARASAAC» (nettbasert bibliotek)
-• Trykk på et symbol for å laste det ned til en mappe
+• «Lokalt» søker i mapper, bilder, aktiviteter, rekker og notater i tavla din
+• «ARASAAC» søker i et nettbasert bibliotek med 13 000+ norske symboler
+• Trykk på et ARASAAC-symbol for å laste det ned til en mappe
+• Den aktive fanen (Lokalt/ARASAAC) vises i en mørkere fargetone
 
 DAGSPLAN
-• Legg til aktiviteter med start- og sluttid og valgfritt bilde
-• Dagsplanen vises automatisk på hjemskjerm-widgeten
+• Egen plan per ukedag (mandag–søndag), med start-/sluttid og valgfritt bilde
+• «Akkurat nå»-kortet viser pågående og neste aktivitet
+• Aktiviteter kan ha kategori (fargekode) og fullføres med strek-gjennom
+• Den valgte kategorien er rammet inn i kategorivelgeren
+• «Sett på pause» stopper dagens fremdrift midlertidig
+• «Kopier dag» overfører dagens plan til andre ukedager
+• «Dagsoppsett» – lagre en hel dagsplan som mal (f.eks. «Skogstur», «Sykebarn»)
+• Hjemskjerm-widget viser dagens plan automatisk
 • Eksporter dagsplanen som bilde til Nedlastinger
 
 HANDLINGSREKKER
@@ -5693,13 +5822,50 @@ HANDLINGSREKKER
 TIDSUR
 • Velg tid fra forhåndsinnstillinger (1–10 min) eller slider
 • Rød pai tømmes gradvis – lett å forstå for barn
+• Kan startes direkte fra en aktivitet i dagsplanen
 • Konfetti og lydmelding når tiden er ute
+
+BILDEPAR-SPILLET
+• Memory-spill med bilder fra alle mapper og undermapper
+• Velg selv antall par – fra 2 og opp til 15, avhengig av hvor mange
+  bilder du har
+
+TEGN
+• Frihåndstegning med flere penseltyper: rund, myk, kalligrafisk, spray, piksel
+• Justerbar penselstørrelse og stabilisering jevner ut skjelvende strøk
+• 30-fargers palett (gjeldende farge har en ring rundt seg) eller fri
+  fargegradient
+• Tegninger lagres til galleriet
 
 INNSTILLINGER
 • Høykontrast – svart/hvitt for bedre synlighet
 • Tekststørrelse – fire nivåer
 • Les opp – trykk på et symbol for å høre navnet
-• Konfetti-knapp – alltid synlig på skjermen
+• Skjermretning – stående eller liggende
+• Sveipenavigasjon – bla mellom skjermer med sveip
+• Konfetti-knapp – alltid synlig på skjermen, gir en kort feiring ved trykk
+• Push-varsler – egne på/av-valg for tidsur og dagsplan
+• Del med annen enhet – overfør mapper og bilder til en annen enhet
+  på samme WiFi (se eget avsnitt under)
+• Barn-modus – 2-kolonne rutenett og PIN-beskyttet redigering
+• Hjelp, personvernerklæring og «Vis omvisning på nytt» finnes også her
+
+DEL MED ANNEN ENHET (WIFI)
+• «Del innhold» – velg hvilke mapper (inkl. undermapper og bilder) som
+  skal deles. Du får opp en IP-adresse, port og 4-sifret kode, samt en
+  QR-kode
+• «Motta innhold» – skriv inn IP-adresse, port og kode fra den delende
+  enheten, velg hvilke tilbudte mapper som skal importeres
+• Overføringen skjer kun over lokalt WiFi – ingen internett eller
+  skytjeneste er involvert
+• Importerte mapper legges til som nye mapper; finnes navnet allerede,
+  får den importerte mappen tillegget «(mottatt)»
+
+BARN-MODUS
+• Forenkler hjemskjermen til et 2-kolonne rutenett
+• Kan PIN-beskytte redigeringsmodus, slik at barnet ikke kommer i
+  skade for å endre noe ved et uhell
+• Sett opp PIN under Innstillinger → Barn-modus
 """
         from kivy.uix.scrollview import ScrollView
         layout = BoxLayout(orientation='vertical', padding=dp(10))
@@ -5888,22 +6054,33 @@ INNSTILLINGER
     #  QR-KODE
     # ══════════════════════════════════════════════════
 
+    def _make_qr_texture(self, text, px=380):
+        """
+        Genererer en QR-kode for `text` og returnerer (pil_img, texture).
+
+        Faktorert ut fra _show_qr_popup slik at QR-koder også kan vises
+        INLINE i andre popup-er (f.eks. "Del innhold til annen enhet"),
+        ikke bare i sin egen popup.
+        """
+        import qrcode as _qr
+        qr = _qr.QRCode(version=None,
+            error_correction=_qr.constants.ERROR_CORRECT_M,
+            box_size=9, border=3)
+        qr.add_data(text)
+        qr.make(fit=True)
+        pil_img = qr.make_image(fill_color='black', back_color='white').convert('RGBA')
+        pil_img = pil_img.resize((px, px), PILImage.LANCZOS)
+
+        raw = pil_img.tobytes()
+        tex = Texture.create(size=(px, px), colorfmt='rgba')
+        tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
+        tex.flip_vertical()
+        return pil_img, tex
+
     def _show_qr_popup(self, text, title='QR-kode'):
         """Genererer og viser QR-kode for gitt tekst."""
         try:
-            import qrcode as _qr
-            qr = _qr.QRCode(version=None,
-                error_correction=_qr.constants.ERROR_CORRECT_M,
-                box_size=9, border=3)
-            qr.add_data(text)
-            qr.make(fit=True)
-            pil_img = qr.make_image(fill_color='black', back_color='white').convert('RGBA')
-            pil_img = pil_img.resize((380, 380), PILImage.LANCZOS)
-
-            raw = pil_img.tobytes()
-            tex = Texture.create(size=(380, 380), colorfmt='rgba')
-            tex.blit_buffer(raw, colorfmt='rgba', bufferfmt='ubyte')
-            tex.flip_vertical()
+            pil_img, tex = self._make_qr_texture(text)
 
             pop_ref = [None]
             layout  = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(12))
@@ -5932,6 +6109,428 @@ INNSTILLINGER
         except Exception:
             logging.exception('_save_qr: feil')
             self._toast('Feil ved lagring.')
+
+    # ══════════════════════════════════════════════════
+    #  DEL/MOTTA INNHOLD MELLOM ENHETER (lokalt WiFi)
+    # ══════════════════════════════════════════════════
+    #
+    # Enkel HTTP-basert overføring (se kt_sync.py) – ingen internett,
+    # ingen skytjeneste, kun samme lokale nettverk. Brukeren velger
+    # selv hvilke mapper (med alle undermapper/bilder) som skal deles;
+    # mottakeren velger selv hvilke av de tilbudte mappene som skal
+    # importeres. Importerte mapper får NYE id-er og legges til som
+    # nye toppnivå-mapper (eksisterende innhold endres ikke).
+
+    def _show_sync_send_popup(self):
+        """
+        "Del innhold til annen enhet": brukeren velger hvilke
+        toppnivå-mapper (inkl. alle undermapper og bilder) som skal
+        deles, starter en lokal HTTP-server, og får opp IP/port/kode
+        + en QR-kode den andre enheten kan skanne.
+        """
+        folders = self.data.get('folders', [])
+        if not folders:
+            self._toast('Du har ingen mapper å dele.')
+            return
+
+        selected = set()
+        btn_map  = {}
+        pop_ref  = [None]
+
+        def build_step1():
+            layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+            layout.add_widget(Label(
+                text='Velg mapper som skal deles:',
+                size_hint_y=None, height=dp(34), bold=True,
+                font_size=fsp(16), color=(0.08, 0.10, 0.35, 1)))
+
+            grid = GridLayout(cols=1, spacing=dp(8), size_hint_y=None)
+            grid.bind(minimum_height=grid.setter('height'))
+            for fo in folders:
+                n = kt_sync.count_items(fo)
+                txt = f"{fo.get('name','')}  ({n} bilde{'r' if n != 1 else ''})"
+                is_sel = fo['id'] in selected
+                b = mk_btn(txt, hex_k('#0D47A1' if is_sel else '#4D96FF'),
+                           h=dp(56), fs=15)
+
+                def toggle(_, fid=fo['id']):
+                    if fid in selected:
+                        selected.discard(fid)
+                    else:
+                        selected.add(fid)
+                    btn_map[fid].btn_color = list(
+                        hex_k('#0D47A1' if fid in selected else '#4D96FF'))
+                b.bind(on_release=toggle)
+                btn_map[fo['id']] = b
+                grid.add_widget(b)
+            sv = ScrollView(); sv.add_widget(grid)
+            layout.add_widget(sv)
+
+            def on_share(*_):
+                chosen = [fo for fo in folders if fo['id'] in selected]
+                if not chosen:
+                    self._toast('Velg minst én mappe.')
+                    return
+                manifest, image_map = kt_sync.build_manifest(chosen)
+                _, n_img, n_bytes = kt_sync.manifest_totals(manifest)
+                if n_img == 0:
+                    self._toast('De valgte mappene har ingen bilder å dele.')
+                    return
+                server = kt_sync.SyncServer(manifest, image_map)
+                server.start()
+                self._sync_server = server
+                pop_ref[0].content = build_step2(server, n_img, n_bytes)
+                pop_ref[0].title   = 'Deling aktiv'
+
+            layout.add_widget(mk_btn('Del valgte mapper', hex_k('#6BCB77'),
+                h=dp(58), fs=18, cb=on_share))
+            layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
+                cb=lambda *_: pop_ref[0].dismiss()))
+            return layout
+
+        def build_step2(server, n_img, n_bytes):
+            ip = kt_sync.get_local_ip()
+            conn_str = f'{ip}:{server.port}:{server.code}'
+            layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+            layout.add_widget(Label(
+                text=f'Deler {n_img} bilde{"r" if n_img != 1 else ""} '
+                     f'({_fmt_bytes(n_bytes)})',
+                size_hint_y=None, height=dp(30), bold=True,
+                font_size=fsp(15), color=(0.1, 0.45, 0.1, 1)))
+            layout.add_widget(Label(
+                text='Skriv inn dette på den andre enheten,\n'
+                     'under "Motta innhold":',
+                size_hint_y=None, height=dp(50),
+                font_size=fsp(14), color=(0.2, 0.2, 0.35, 1), halign='center'))
+
+            info_lbl = Label(
+                text=(f'IP-adresse:  {ip}\n'
+                      f'Port:           {server.port}\n'
+                      f'Kode:           {server.code}'),
+                size_hint_y=None, height=dp(110),
+                font_size=fsp(20), bold=True, font_name='NotoSans',
+                color=(0.05, 0.10, 0.30, 1), halign='center')
+            info_lbl.bind(size=lambda w, v: setattr(w, 'text_size', (v[0], None)))
+            layout.add_widget(info_lbl)
+
+            try:
+                _, tex = self._make_qr_texture(conn_str, px=280)
+                qr_img = Image(size_hint_y=None, height=dp(180))
+                qr_img.texture = tex
+                layout.add_widget(qr_img)
+                layout.add_widget(Label(
+                    text='QR-koden kan skannes med en QR-skanner for å '
+                         'kopiere IP/port/kode.',
+                    size_hint_y=None, height=dp(28),
+                    font_size=fsp(11), color=(0.5, 0.5, 0.5, 1)))
+            except Exception:
+                logging.exception('sync send: QR-generering feilet')
+
+            layout.add_widget(Label(
+                text='Hold denne skjermen åpen til overføringen er '
+                     'fullført på den andre enheten.',
+                size_hint_y=None, height=dp(40),
+                font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+                halign='center', valign='top'))
+
+            def on_stop(*_):
+                server.stop()
+                if self._sync_server is server:
+                    self._sync_server = None
+                pop_ref[0].dismiss()
+            layout.add_widget(mk_btn('Avslutt deling', hex_k('#EF5350'), h=dp(54), fs=15,
+                cb=on_stop))
+            return layout
+
+        pop = Popup(title='Del innhold til annen enhet',
+                     content=build_step1(), size_hint=POPUP_LARGE)
+        pop_ref[0] = pop
+
+        def on_dismiss(*_):
+            if self._sync_server:
+                self._sync_server.stop()
+                self._sync_server = None
+        pop.bind(on_dismiss=on_dismiss)
+        pop.open()
+
+    def _unique_folder_name(self, name):
+        """
+        Returnerer `name` hvis ingen toppnivå-mappe har det navnet fra
+        før (case-insensitivt), ellers "<name> (mottatt)",
+        "<name> (mottatt 2)" osv.
+        """
+        existing = {f.get('name', '').strip().lower()
+                    for f in self.data.get('folders', [])}
+        base = (name or 'Mottatt').strip() or 'Mottatt'
+        if base.lower() not in existing:
+            return base
+        candidate = f'{base} (mottatt)'
+        n = 2
+        while candidate.lower() in existing:
+            candidate = f'{base} (mottatt {n})'
+            n += 1
+        return candidate
+
+    def _import_manifest_folder(self, mf, ip, port, code, progress, total, progress_cb):
+        """
+        Bygger en NY mappe-dict (med helt nye id-er, rekursivt for
+        undermapper) fra manifest-mappen `mf`, og laster ned alle
+        tilhørende bilder fra den delende enheten til IMG_DIR.
+
+        Kjøres i en BAKGRUNNSTRÅD – `progress_cb` må selv sørge for
+        trådsikker UI-oppdatering (Clock.schedule_once).
+
+        `progress` er en mutérbar dict {'done': N} delt mellom alle
+        rekursive kall, slik at fremdriften telles over HELE
+        mappetreet, ikke bare denne mappen.
+
+        Bilder som feiler å laste ned (f.eks. nettverksavbrudd
+        midtveis) hoppes over – resten av importen fortsetter, og
+        feilen logges til diag.log.
+        """
+        new_items = []
+        for it in mf.get('items', []):
+            new_id = str(uuid.uuid4())
+            ext = it.get('ext') or '.jpg'
+            if not ext.startswith('.'):
+                ext = '.' + ext
+            dst = os.path.join(IMG_DIR, f'mottatt_{new_id[:8]}{ext}')
+            try:
+                kt_sync.download_image(ip, port, code, it['id'], dst)
+                new_items.append({'id': new_id, 'name': it.get('name', ''), 'image': dst})
+            except kt_sync.SyncError as e:
+                diag(f'SYNC: nedlasting feilet for "{it.get("name")}": {e}')
+            progress['done'] += 1
+            progress_cb(progress['done'], total)
+
+        new_subs = [
+            self._import_manifest_folder(sub, ip, port, code, progress, total, progress_cb)
+            for sub in mf.get('subfolders', [])
+        ]
+
+        color = mf.get('color')
+        if not isinstance(color, str) or not color.startswith('#'):
+            color = '#4D96FF'
+
+        return {
+            'id':         str(uuid.uuid4()),
+            'name':       mf.get('name') or 'Mottatt',
+            'color':      color,
+            'image':      None,
+            'items':      new_items,
+            'subfolders': new_subs,
+            'opens':      0,
+        }
+
+    def _show_sync_receive_popup(self):
+        """
+        "Motta innhold fra annen enhet": brukeren taster inn
+        IP-adresse, port og kode fra den delende enheten, kobler til,
+        velger hvilke tilbudte mapper som skal importeres, og laster
+        ned mappestruktur + bilder.
+        """
+        import threading
+
+        pop_ref  = [None]
+        state    = {'ip': '', 'port': '', 'code': ''}
+        selected = set()
+        btn_map  = {}
+
+        def build_step1(err_msg=None):
+            layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+            layout.add_widget(Label(
+                text='Koble til en enhet som deler innhold:',
+                size_hint_y=None, height=dp(34), bold=True,
+                font_size=fsp(16), color=(0.08, 0.10, 0.35, 1)))
+            info_lbl = Label(
+                text='Skriv inn IP-adresse, port og kode som vises på '
+                     'den andre enheten (under "Del innhold").',
+                size_hint_y=None, height=dp(50),
+                font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
+                halign='left', valign='top')
+            info_lbl.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+            layout.add_widget(info_lbl)
+
+            ip_inp = TextInput(
+                text=state['ip'], hint_text='IP-adresse, f.eks. 192.168.1.42',
+                multiline=False, size_hint_y=None, height=dp(52),
+                font_size=sp(16), padding=(dp(10), dp(12)))
+            layout.add_widget(ip_inp)
+
+            row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+            port_inp = TextInput(
+                text=state['port'], hint_text='Port', input_filter='int',
+                multiline=False, size_hint_y=None, height=dp(52),
+                font_size=sp(16), padding=(dp(10), dp(12)))
+            code_inp = TextInput(
+                text=state['code'], hint_text='Kode', input_filter='int',
+                multiline=False, size_hint_y=None, height=dp(52),
+                font_size=sp(16), padding=(dp(10), dp(12)))
+            row.add_widget(port_inp); row.add_widget(code_inp)
+            layout.add_widget(row)
+
+            if err_msg:
+                err_lbl = Label(
+                    text=err_msg, size_hint_y=None, height=dp(60),
+                    font_size=fsp(13), color=(0.75, 0.10, 0.10, 1),
+                    halign='center', valign='middle')
+                err_lbl.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+                layout.add_widget(err_lbl)
+
+            status_lbl = Label(text='', size_hint_y=None, height=dp(28),
+                font_size=fsp(13), color=(0.2, 0.2, 0.35, 1))
+            layout.add_widget(status_lbl)
+
+            spacer = Widget()
+            layout.add_widget(spacer)
+
+            connect_btn_ref = [None]
+
+            def on_connect(*_):
+                ip   = ip_inp.text.strip()
+                port = port_inp.text.strip()
+                code = code_inp.text.strip()
+                if not ip or not port or not code:
+                    status_lbl.text = 'Fyll ut alle feltene.'
+                    return
+                state['ip'], state['port'], state['code'] = ip, port, code
+                connect_btn_ref[0].disabled = True
+                status_lbl.text = 'Kobler til …'
+
+                def fetch():
+                    try:
+                        manifest = kt_sync.fetch_manifest(ip, port, code)
+                    except kt_sync.SyncError as e:
+                        Clock.schedule_once(lambda *_: on_failed(str(e)))
+                        return
+                    except Exception as e:
+                        logging.exception('sync receive: tilkobling feilet')
+                        Clock.schedule_once(lambda *_: on_failed(f'Feil: {e}'))
+                        return
+                    Clock.schedule_once(lambda *_: on_fetched(manifest))
+
+                threading.Thread(target=fetch, daemon=True).start()
+
+            def on_fetched(manifest):
+                n_fo, n_img, n_bytes = kt_sync.manifest_totals(manifest)
+                if n_fo == 0:
+                    pop_ref[0].content = build_step1(
+                        'Den andre enheten deler ingen mapper med bilder akkurat nå.')
+                    return
+                pop_ref[0].content = build_step2(manifest, n_img, n_bytes)
+                pop_ref[0].title   = 'Velg innhold som skal importeres'
+
+            def on_failed(msg):
+                pop_ref[0].content = build_step1(msg)
+
+            connect_btn = mk_btn('Koble til', hex_k('#4D96FF'), h=dp(56), fs=16,
+                                  cb=on_connect)
+            connect_btn_ref[0] = connect_btn
+            layout.add_widget(connect_btn)
+            layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
+                cb=lambda *_: pop_ref[0].dismiss()))
+            return layout
+
+        def build_step2(manifest, n_img, n_bytes):
+            layout = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(14))
+            layout.add_widget(Label(
+                text=f'Tilbys: {n_img} bilde{"r" if n_img != 1 else ""} '
+                     f'({_fmt_bytes(n_bytes)})',
+                size_hint_y=None, height=dp(30), bold=True,
+                font_size=fsp(15), color=(0.1, 0.45, 0.1, 1)))
+            layout.add_widget(Label(
+                text='Velg mapper som skal importeres:',
+                size_hint_y=None, height=dp(34), bold=True,
+                font_size=fsp(16), color=(0.08, 0.10, 0.35, 1)))
+
+            mfolders = manifest.get('folders', [])
+            grid = GridLayout(cols=1, spacing=dp(8), size_hint_y=None)
+            grid.bind(minimum_height=grid.setter('height'))
+            for idx, mf in enumerate(mfolders):
+                n = kt_sync.count_items(mf)
+                txt = f"{mf.get('name','')}  ({n} bilde{'r' if n != 1 else ''})"
+                is_sel = idx in selected
+                b = mk_btn(txt, hex_k('#0D47A1' if is_sel else '#4D96FF'),
+                           h=dp(56), fs=15)
+
+                def toggle(_, i=idx):
+                    if i in selected:
+                        selected.discard(i)
+                    else:
+                        selected.add(i)
+                    btn_map[i].btn_color = list(
+                        hex_k('#0D47A1' if i in selected else '#4D96FF'))
+                b.bind(on_release=toggle)
+                btn_map[idx] = b
+                grid.add_widget(b)
+            sv = ScrollView(); sv.add_widget(grid)
+            layout.add_widget(sv)
+
+            progress_lbl = Label(text='', size_hint_y=None, height=dp(30),
+                font_size=fsp(13), color=(0.2, 0.2, 0.35, 1))
+            layout.add_widget(progress_lbl)
+
+            import_btn_ref = [None]
+
+            def on_import(*_):
+                chosen = [mfolders[i] for i in sorted(selected)]
+                if not chosen:
+                    self._toast('Velg minst én mappe.')
+                    return
+                import_btn_ref[0].disabled = True
+                ip, port, code = state['ip'], state['port'], state['code']
+                total = sum(kt_sync.count_items(mf) for mf in chosen) or 1
+                progress = {'done': 0}
+
+                def update_progress(done, tot):
+                    def _upd(*_):
+                        progress_lbl.text = f'Laster ned bilde {done} av {tot} …'
+                    Clock.schedule_once(_upd)
+
+                def work():
+                    try:
+                        new_folders = [
+                            self._import_manifest_folder(
+                                mf, ip, port, code, progress, total, update_progress)
+                            for mf in chosen
+                        ]
+                    except Exception as e:
+                        logging.exception('sync receive: import feilet')
+                        Clock.schedule_once(lambda *_: on_import_failed(str(e)))
+                        return
+                    Clock.schedule_once(lambda *_: on_import_done(new_folders))
+
+                threading.Thread(target=work, daemon=True).start()
+
+            def on_import_done(new_folders):
+                for nf in new_folders:
+                    nf['name'] = self._unique_folder_name(nf['name'])
+                    self.data.setdefault('folders', []).append(nf)
+                save_struct(self.data, immediate=True)
+                pop_ref[0].dismiss()
+                self._toast(
+                    f'Import fullført: {len(new_folders)} '
+                    f'mappe{"r" if len(new_folders) != 1 else ""} lagt til.')
+                if self._cur_scr == 'home':
+                    self._show_home()
+
+            def on_import_failed(msg):
+                progress_lbl.text = ''
+                import_btn_ref[0].disabled = False
+                self._toast(f'Import feilet: {msg}')
+
+            import_btn = mk_btn('Importer valgte', hex_k('#6BCB77'),
+                                 h=dp(58), fs=18, cb=on_import)
+            import_btn_ref[0] = import_btn
+            layout.add_widget(import_btn)
+            layout.add_widget(mk_btn('Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
+                cb=lambda *_: pop_ref[0].dismiss()))
+            return layout
+
+        pop = Popup(title='Motta innhold fra annen enhet',
+                     content=build_step1(), size_hint=POPUP_LARGE)
+        pop_ref[0] = pop
+        pop.open()
 
     # ══════════════════════════════════════════════════
     #  DAGSRYTME
@@ -7191,6 +7790,7 @@ INNSTILLINGER
                 cat_btn.text = 'Kategori: (ingen)'
                 cat_btn.btn_color = list(hex_k('#9CA3AF'))
         def open_cat_picker(*_):
+            from kivy.graphics import Color, Line
             inner = BoxLayout(orientation='vertical',
                               spacing=dp(6), padding=dp(12))
             pop_inner_ref = [None]
@@ -7198,12 +7798,38 @@ INNSTILLINGER
                 cat_state[0] = cat_id
                 refresh_cat_label()
                 pop_inner_ref[0].dismiss()
+
+            def _mark_selected(btn, col_hex):
+                """
+                Tegner en ramme rundt knappen for NÅVÆRENDE kategori –
+                uten dette var det ingen måte å se hvilket valg som
+                allerede var aktivt når velgeren åpnes (helt manglende
+                markering). Rammefargen kontrasterer mot knappens egen
+                bakgrunnsfarge via text_on().
+                """
+                ring_col = text_on(col_hex)
+                def _draw(w, *_a):
+                    w.canvas.after.clear()
+                    with w.canvas.after:
+                        Color(*ring_col)
+                        Line(rounded_rectangle=(w.x + dp(2), w.y + dp(2),
+                                                 w.width - dp(4), w.height - dp(4),
+                                                 w.radius), width=dp(3))
+                btn.bind(pos=_draw, size=_draw)
+                _draw(btn)
+
             # "Ingen" øverst
-            inner.add_widget(mk_btn('(Ingen kategori)', hex_k('#9CA3AF'),
-                h=dp(42), fs=14, cb=lambda *_: pick(None)))
+            b_none = mk_btn('(Ingen kategori)', hex_k('#9CA3AF'),
+                h=dp(42), fs=14, cb=lambda *_: pick(None))
+            if cat_state[0] is None:
+                _mark_selected(b_none, '#9CA3AF')
+            inner.add_widget(b_none)
             for c in self.data.get('kategorier', []):
-                inner.add_widget(mk_btn(c['name'], hex_k(c['color']),
-                    h=dp(42), fs=14, cb=lambda *_, cid=c['id']: pick(cid)))
+                b = mk_btn(c['name'], hex_k(c['color']),
+                    h=dp(42), fs=14, cb=lambda *_, cid=c['id']: pick(cid))
+                if c['id'] == cat_state[0]:
+                    _mark_selected(b, c['color'])
+                inner.add_widget(b)
             pop_inner = Popup(title='Velg kategori', content=inner,
                               size_hint=POPUP_MEDIUM, title_size=fsp(16))
             pop_inner_ref[0] = pop_inner
@@ -8865,6 +9491,18 @@ INNSTILLINGER
         tab_row.add_widget(btn_ara)
         layout.add_widget(tab_row)
 
+        def set_active_tab(which):
+            """
+            Fremhever den aktive faneknappen (Lokalt/ARASAAC) med en
+            mørkere fargevariant – tidligere viste begge faner alltid
+            samme farge, uten indikasjon på hvilket søk som var i bruk.
+            """
+            btn_lok.btn_color = list(
+                _darken('#4D96FF') if which == 'lok' else hex_k('#4D96FF'))
+            btn_ara.btn_color = list(
+                _darken('#9B59B6') if which == 'ara' else hex_k('#9B59B6'))
+        set_active_tab('lok')
+
         status = Label(text='Skriv og velg søketype.',
                        size_hint_y=None, height=dp(26),
                        font_size=fsp(12), color=(0.4,0.4,0.5,1))
@@ -8880,6 +9518,7 @@ INNSTILLINGER
             aktiviteter (per ukedag), sekvenser og notater. Resultater
             grupperes visuelt med en type-emoji som viser hva treffer er.
             """
+            set_active_tab('lok')
             term = inp.text.strip().lower()
             grid.clear_widgets()
             if not term:
@@ -8982,6 +9621,7 @@ INNSTILLINGER
                 grid.add_widget(row)
 
         def search_arasaac(*_):
+            set_active_tab('ara')
             term = inp.text.strip()
             if not term: return
             status.text = 'Søker ARASAAC…'
@@ -9260,6 +9900,46 @@ INNSTILLINGER
     #  TOAST
     # ══════════════════════════════════════════════════
 
+    def _find_assets_dir(self, subdir):
+        """
+        Finner assets/<subdir>/ ved å prøve samme kandidatstier som
+        _init_bundled_assets (se der for forklaring av hvorfor flere
+        kandidater er nødvendig på Android/p4a – __file__,
+        self.directory og kivy_data_dir kan alle peke ulike steder).
+
+        Brukes for assets som leses DIREKTE fra APK-pakken ved behov
+        (f.eks. omvisnings-GIF-er i assets/onboarding/), i motsetning
+        til assets/bilder/ som kopieres til user_data_dir ved første
+        oppstart.
+
+        Returnerer None hvis mappen ikke finnes – kallere må selv
+        håndtere dette gracefully (skjul GIF-visning osv.).
+        """
+        app_dirs = []
+        try:
+            app_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        except Exception:
+            pass
+        try:
+            app_dirs.append(self.directory)
+        except Exception:
+            pass
+        try:
+            from kivy import kivy_data_dir as _kdd
+            app_dirs.append(os.path.dirname(_kdd))
+        except Exception:
+            pass
+        pkg = 'no.askapp.kommunikasjonstavle'
+        for base in [f'/data/user/0/{pkg}/files/app',
+                     f'/data/data/{pkg}/files/app']:
+            app_dirs.append(base)
+
+        for d in app_dirs:
+            cand = os.path.join(d, 'assets', subdir)
+            if os.path.isdir(cand):
+                return cand
+        return None
+
     def _maybe_show_onboarding(self, *_):
         """Vises automatisk én gang ved første start for nye brukere."""
         try:
@@ -9271,34 +9951,97 @@ INNSTILLINGER
 
     def _show_onboarding(self):
         """
-        Guidet omvisning i 6 slides + interaktiv mappe-oppretting.
-        Etter slide 6 bes brukeren trykke «Red.»-knappen (uthevet med
-        pulserende glød) og opprette sin første mappe (forhåndsutfylt
-        navn). Når mappen er lagret vises «Du er klar!»-slide.
+        Guidet omvisning – én slide per hovedfunksjon/innstilling, +
+        en avsluttende interaktiv mappe-oppretting. Stegtallet («X/Y»)
+        beregnes fra len(slides), så antall slides kan endres uten å
+        oppdatere tekststrenger manuelt.
+
+        Hver slide kan vise en valgfri GIF fra assets/onboarding/N.gif
+        (N = 1-basert slide-nummer) som et visuelt eksempel på det som
+        beskrives. Mangler filen, vises slik bare tekst – ingen feil.
+
+        Etter SISTE slide bes brukeren trykke «Red.»-knappen (uthevet
+        med pulserende glød) og opprette sin første mappe
+        (forhåndsutfylt navn). Når mappen er lagret vises
+        «Du er klar!»-slide.
         """
         slides = [
-            ('1/6', 'Velkommen til Kommunikasjonstavle',
+            ('Velkommen til Kommunikasjonstavle',
              'Et verktøy for barnehage og spesialpedagogikk – '
              'støtter visuell kommunikasjon, struktur i dagen og '
-             'tilrettelegging for barn med ulike kommunikasjonsbehov.'),
-            ('2/6', 'Bildemapper på hjemskjermen',
-             'Mappene samler bilder etter tema (mat, klær, følelser '
-             'osv.). Trykk en mappe for å åpne den, og et bilde for å '
-             'vise det stort. Bildet kan brukes i kommunikasjon med '
-             'barnet ved peking eller blikk-kontakt.'),
-            ('3/6', 'Dagsplan med ukedager',
-             'I «Dagsplan» lager du en aktivitetsplan per ukedag. '
-             'Hver dag kan ha sin egen plan. Widget på hjemskjermen '
-             'viser nåværende aktivitet og hva som kommer neste.'),
-            ('4/6', 'Tidsur og rekker',
-             'Tidsuret viser tid igjen av en aktivitet. '
-             '«Rekker» er bildesekvenser for rutiner som '
-             'påkledning, håndvask eller utflukt i bestemt rekkefølge.'),
-            ('5/6', 'Redigeringsmodus',
-             'Trykk «Red.» nederst for å redigere. Da kan du legge til '
-             'mapper, bilder, aktiviteter og sekvenser. '
-             'Trykk «Red.» igjen for å gå tilbake til visningsmodus.'),
-            ('6/6', 'Prøv det nå!',
+             'tilrettelegging for barn med ulike kommunikasjonsbehov. '
+             'Denne omvisningen viser kort hva appen kan gjøre – du kan '
+             'hoppe over når du vil, og se den igjen senere via '
+             'Innstillinger → Vis omvisning på nytt.'),
+            ('Bildemapper og symboler',
+             'Mapper samler bilder etter tema – mat, klær, følelser, '
+             'rutiner og mer. Trykk en mappe for å åpne den, og et '
+             'bilde for å vise det stort. Mapper kan ha undermapper, '
+             'og favoritter kan «festes» til hjemskjermen for raskere '
+             'tilgang.'),
+            ('Dagsplan',
+             'I «Dagsplan» lager du en egen aktivitetsplan for hver '
+             'ukedag, med start-/sluttid og valgfritt bilde. '
+             '«Akkurat nå»-kortet på hjemskjermen viser hva som skjer '
+             'nå og hva som kommer. Du kan sette dagen på pause, '
+             'kopiere planen til andre dager, og lagre hele oppsett '
+             'som maler («Dagsoppsett») – f.eks. for utflukter eller '
+             'sykedager.'),
+            ('Tidsur',
+             'Tidsuret viser tid igjen som en rød sirkel som tømmes '
+             'mens tiden går – lett å forstå for barn. Det kan startes '
+             'manuelt fra hurtigraden, eller direkte fra en aktivitet '
+             'i dagsplanen.'),
+            ('Handlingsrekker',
+             '«Rekker» er bildesekvenser for rutiner som påkledning, '
+             'håndvask eller en utflukt, vist i fast rekkefølge. Trykk '
+             'for å gå videre gjennom bildene – konfetti vises når '
+             'rekken er fullført.'),
+            ('Bildepar-spillet',
+             'Under «Spill» finner barnet et memory-spill med bilder '
+             'fra egne mapper og undermapper. Velg selv hvor mange par '
+             '– fra 2 og opp til 15, avhengig av hvor mange bilder som '
+             'finnes.'),
+            ('Tegn',
+             '«Tegn» gir frihåndstegning med flere penseltyper (rund, '
+             'myk, kalligrafisk, spray, piksel), justerbar størrelse '
+             'og stabilisering som jevner ut skjelvende strøk. Velg '
+             'farge fra paletten eller en fri fargegradient. '
+             'Tegninger lagres til galleriet.'),
+            ('Redigeringsmodus',
+             'Trykk «Red.» nederst for å slå redigering på. Da kan du '
+             'legge til og endre mapper, bilder, aktiviteter og '
+             'rekker. Trykk «Red.» igjen for å gå tilbake til ren '
+             'visningsmodus – nyttig når tavla skal brukes av barnet.'),
+            ('Søk',
+             'Forstørrelsesglasset øverst til høyre søker i alt du '
+             'allerede har – «Lokalt» dekker mapper, bilder, '
+             'aktiviteter, rekker og notater. Fanen «ARASAAC» søker i '
+             'et stort, nettbasert bibliotek med over 13 000 norske '
+             'symboler du kan laste ned direkte til en mappe.'),
+            ('Tilpasninger',
+             'I Innstillinger finner du høykontrast (svart/hvitt), '
+             'fire tekststørrelser, opplesing av symbolnavn, valg '
+             'mellom stående og liggende skjerm, og '
+             'sveipenavigasjon mellom skjermer. Velg det som passer '
+             'best for barnet.'),
+            ('Konfetti-knappen',
+             'En liten konfetti-knapp er alltid synlig på skjermen '
+             '(kan slås av i Innstillinger). Et trykk gir en kort, '
+             'lekende feiring – fin som belønning, eller bare for '
+             'gledens skyld.'),
+            ('Del innhold mellom enheter',
+             'Under Innstillinger → «Del med annen enhet» kan du '
+             'overføre mapper og bilder til en annen enhet med appen, '
+             'så lenge begge er på samme WiFi-nettverk. Velg hvilke '
+             'mapper som skal deles – den andre enheten taster inn en '
+             'IP-adresse, port og kode for å motta dem.'),
+            ('Barn-modus',
+             'Barn-modus forenkler hjemskjermen til et 2-kolonne '
+             'rutenett og kan PIN-beskytte redigeringsmodus, så barnet '
+             'ikke kommer i skade for å endre noe ved et uhell. Slå på '
+             'under Innstillinger.'),
+            ('Prøv det nå!',
              'La oss opprette din første mappe. '
              'Trykk «Neste» for å komme i gang – '
              'vi guider deg gjennom det.'),
@@ -9348,12 +10091,29 @@ INNSTILLINGER
         title_lbl = Label(text='', font_size=fsp(19), bold=True,
                           size_hint_y=None, height=dp(44),
                           color=(0.04, 0.10, 0.36, 1), halign='center')
+
+        # Valgfri GIF (assets/onboarding/<slide-nr>.gif) – visuelt
+        # eksempel på det slide-en beskriver. anim_delay>0 spiller av
+        # animasjonen (Kivys img_pil-leser støtter animerte GIF-er
+        # nativt). Skjult (høyde 0) når ingen GIF finnes for slide-en.
+        gif_img = Image(size_hint_y=None, height=0, opacity=0,
+                        allow_stretch=True, keep_ratio=True,
+                        anim_delay=1.0 / 12.0)
+        onb_assets_dir = self._find_assets_dir('onboarding')
+
+        def _gif_path(slide_idx):
+            if not onb_assets_dir:
+                return None
+            p = os.path.join(onb_assets_dir, f'{slide_idx + 1}.gif')
+            return p if os.path.isfile(p) else None
+
         body_lbl  = Label(text='', font_size=fsp(15),
-                          size_hint_y=None, height=dp(150),
+                          size_hint_y=None,
                           color=(0.20, 0.22, 0.32, 1),
                           halign='center', valign='top')
         body_lbl.bind(width=lambda l, w:
                       setattr(l, 'text_size', (w - dp(20), None)))
+        body_lbl.bind(texture_size=lambda l, ts: setattr(l, 'height', ts[1]))
 
         # Dotnav – canvas-tegnet sirkler (ingen font-avhengighet)
         # Aktiv: litt større og lysere; inaktiv: liten og mørkere enn bg.
@@ -9425,11 +10185,19 @@ INNSTILLINGER
         folder_panel.add_widget(create_folder_btn)
 
         outer = BoxLayout(orientation='vertical', spacing=dp(6), padding=dp(16))
-        outer.add_widget(step_lbl)
-        outer.add_widget(title_lbl)
-        outer.add_widget(body_lbl)
-        outer.add_widget(folder_panel)
-        outer.add_widget(BoxLayout())  # spacer
+
+        scroll_content = BoxLayout(orientation='vertical', spacing=dp(6),
+                                    size_hint_y=None)
+        scroll_content.bind(minimum_height=scroll_content.setter('height'))
+        scroll_content.add_widget(step_lbl)
+        scroll_content.add_widget(title_lbl)
+        scroll_content.add_widget(gif_img)
+        scroll_content.add_widget(body_lbl)
+        scroll_content.add_widget(folder_panel)
+        content_sv = ScrollView()
+        content_sv.add_widget(scroll_content)
+
+        outer.add_widget(content_sv)
         outer.add_widget(dots_row)
         outer.add_widget(btn_row)
 
@@ -9450,6 +10218,9 @@ INNSTILLINGER
                 'Utforsk gjerne resten av appen – '
                 'du kan alltid gå tilbake til omvisningen '
                 'via Innstillinger.')
+            gif_img.source  = ''
+            gif_img.height  = 0
+            gif_img.opacity = 0
             folder_panel.height  = 0
             folder_panel.opacity = 0
             for d in dots:
@@ -9480,10 +10251,30 @@ INNSTILLINGER
 
         def render(*_):
             i = idx[0]
-            step, title, body = slides[i]
-            step_lbl.text  = step
+            title, body = slides[i]
+            step_lbl.text  = f'{i + 1}/{len(slides)}'
             title_lbl.text = title
             body_lbl.text  = body
+
+            # Vis GIF for denne slide-en hvis assets/onboarding/<i+1>.gif
+            # finnes – ellers la den forbli skjult (høyde 0).
+            gif_p = _gif_path(i)
+            if gif_p:
+                try:
+                    gif_img.source = gif_p
+                    gif_img.reload()
+                    gif_img.height  = dp(180)
+                    gif_img.opacity = 1
+                except Exception:
+                    logging.exception('onboarding: kunne ikke laste GIF %s', gif_p)
+                    gif_img.source  = ''
+                    gif_img.height  = 0
+                    gif_img.opacity = 0
+            else:
+                gif_img.source  = ''
+                gif_img.height  = 0
+                gif_img.opacity = 0
+
             for k, d in enumerate(dots):
                 d.set_active(k == i)
             prev_btn.opacity  = 0 if i == 0 else 1

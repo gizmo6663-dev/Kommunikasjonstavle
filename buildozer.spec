@@ -42,7 +42,10 @@ android.permissions = \
     android.permission.VIBRATE, \
     android.permission.RECEIVE_BOOT_COMPLETED, \
     android.permission.USE_EXACT_ALARM, \
-    android.permission.SCHEDULE_EXACT_ALARM
+    android.permission.SCHEDULE_EXACT_ALARM, \
+    android.permission.INTERNET, \
+    android.permission.ACCESS_NETWORK_STATE, \
+    android.permission.ACCESS_WIFI_STATE
 
 # ─── SDK-lisens ───────────────────────────────────────────────────
 android.accept_sdk_license = True
