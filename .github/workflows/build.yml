@@ -229,6 +229,23 @@ jobs:
           echo "ndk.dir=$NDK_DIR" >> "$DIST/local.properties"
           echo "local.properties: sdk=$SDK_DIR ndk=$NDK_DIR"
 
+          # ── Sikkerhetsnett: aksepter SDK-lisenser ────────────────
+          # PASS 2 trenger platforms;android-34 og build-tools;37.0.0,
+          # som ikke nødvendigvis var del av buildozers PASS 1-SDK.
+          # Gradle/sdkmanager nedlaster dem da automatisk, men kun hvis
+          # lisensene allerede er "akseptert" i SDK_DIR/licenses/.
+          # Skriver de velkjente standard-hashene direkte (samme som
+          # 'yes | sdkmanager --licenses' produserer) – unngår
+          # interaktiv prompt i CI.
+          mkdir -p "$SDK_DIR/licenses"
+          printf '%s\n%s\n%s\n' \
+            '8933bad161af4178b1185d1a37fbf41ea5269c55' \
+            'd56f5187479451eabf01fb78af6dfcb131a6481e' \
+            '24333f8a63b6825ea9c5514f83c2829b004d1fee' \
+            > "$SDK_DIR/licenses/android-sdk-license"
+          printf '%s\n' '84831b9409646a918e30573bab4c9c91346d8abd' \
+            > "$SDK_DIR/licenses/android-sdk-preview-license"
+
           echo '=== Injiserer widget-filer ==='
           KTDST="$DIST/src/main/java/no/askapp/kommunikasjonstavle"
           mkdir -p "$KTDST"
