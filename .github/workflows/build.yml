@@ -205,14 +205,23 @@ jobs:
           # Selv om PASS 1 lyktes, kan buildozer la være å skrive
           # local.properties (eller skrive feil sti for DENNE
           # container-instansen). Overskriver alltid med korrekt sti.
-          SDK_DIR=$(find /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
+          #
+          # VIKTIG: buildozer installerer SDK/NDK/ANT under /root/.buildozer
+          # (HOME i containeren), IKKE under /home/user/hostcwd/.buildozer
+          # (det er kun prosjektets dists/-mappe, fra GH Actions-cachen).
+          # Bekreftet av buildozers egen miljødump: ANDROIDSDK='/root/.buildozer/...'.
+          # Feil sti her ga "SDK location not found" i PASS 2.
+          SDK_DIR=$(find /root/.buildozer /home/user/hostcwd/.buildozer -maxdepth 5 -name "adb" 2>/dev/null \
             | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {} 2>/dev/null || true)
           if [ -z "$SDK_DIR" ]; then
-            SDK_DIR="/home/user/hostcwd/.buildozer/android/platform/android-sdk"
+            SDK_DIR="/root/.buildozer/android/platform/android-sdk"
           fi
-          NDK_DIR=$(find /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
+          NDK_DIR=$(find /root/.buildozer /home/user/hostcwd/.buildozer -maxdepth 4 -type d -name "android-ndk-*" 2>/dev/null | head -1 || true)
+          if [ -z "$NDK_DIR" ]; then
+            NDK_DIR="/root/.buildozer/android/platform/android-ndk-r25b"
+          fi
           echo "sdk.dir=$SDK_DIR"   >  "$DIST/local.properties"
-          [ -n "$NDK_DIR" ] && echo "ndk.dir=$NDK_DIR" >> "$DIST/local.properties"
+          echo "ndk.dir=$NDK_DIR" >> "$DIST/local.properties"
           echo "local.properties: sdk=$SDK_DIR ndk=$NDK_DIR"
 
           echo '=== Injiserer widget-filer ==='
