@@ -2197,6 +2197,121 @@ class CalendarDayView(FloatLayout):
 
 
 # ══════════════════════════════════════════════════════════════════
+#  DRAGGABLE BILDE-WIDGET (brukes av Sortering-spillet)
+# ══════════════════════════════════════════════════════════════════
+
+class _SortDraggable(BoxLayout):
+    """
+    Bildewidget som kan dras med fingeren. Brukes i Sortering-spillet
+    for at barnet skal kunne dra bilder til riktig kategorisone.
+
+    Ingen long-press-forsinkelse – barnet kan ta tak umiddelbart. Det
+    krever at widgeten ligger i en FloatLayout (eller liknende uten
+    auto-layout) slik at pos kan settes direkte uten at parent
+    overstyrer i hvert layout-pass.
+
+    Tilstand:
+      _original_pos    – startposisjon, settes via store_original_pos()
+                         etter at widgeten er lagt på riktig sted.
+      _locked          – sant når bildet er sortert riktig og ikke
+                         lenger skal kunne dras.
+      _touch_grabbed   – sant mellom on_touch_down og on_touch_up
+                         (uavhengig av om Kivys touch.grab er aktiv).
+    """
+    def __init__(self, item, on_drop_cb, **kw):
+        super().__init__(**kw)
+        self.item            = item
+        self._on_drop_cb     = on_drop_cb
+        self.size_hint       = (None, None)
+        self.orientation     = 'vertical'
+        self._original_pos   = None
+        self._touch_offset   = (0, 0)
+        self._touch_grabbed  = False
+        self._locked         = False
+
+        # Selve bildet fyller cellen
+        from kivy.uix.image import Image as _KivyImage
+        img = _KivyImage(
+            source=item['path'],
+            allow_stretch=True, keep_ratio=True,
+            size_hint=(1, 1),
+        )
+        self.add_widget(img)
+
+    def store_original_pos(self):
+        """Lagre nåværende posisjon som "hjem" for sprett-tilbake."""
+        self._original_pos = (self.x, self.y)
+
+    def on_touch_down(self, touch):
+        if self._locked:
+            return False
+        if not self.collide_point(*touch.pos):
+            return False
+        # Hvis store_original_pos ikke er kalt ennå, lagre nå
+        if self._original_pos is None:
+            self._original_pos = (self.x, self.y)
+        # Lagre offset så bildet ikke "hopper" til touch-posisjon
+        self._touch_offset = (touch.x - self.x, touch.y - self.y)
+        self.opacity = 0.85
+        touch.grab(self)
+        self._touch_grabbed = True
+        # Bring til front så den ikke blir dekket av andre widgets
+        # under draget. (Kivy renderer barn i listerekkefølge.)
+        if self.parent:
+            parent = self.parent
+            parent.remove_widget(self)
+            parent.add_widget(self)
+        return True
+
+    def on_touch_move(self, touch):
+        if not self._touch_grabbed:
+            return False
+        if touch.grab_current is not self:
+            return False
+        self.x = touch.x - self._touch_offset[0]
+        self.y = touch.y - self._touch_offset[1]
+        return True
+
+    def on_touch_up(self, touch):
+        if not self._touch_grabbed:
+            return False
+        if touch.grab_current is not self:
+            return False
+        touch.ungrab(self)
+        self._touch_grabbed = False
+        self.opacity = 1.0
+        # La spill-koden bestemme hva som skjer (riktig kategori?
+        # sprett tilbake? osv.) basert på slipp-posisjonen.
+        try:
+            self._on_drop_cb(self, touch)
+        except Exception:
+            logging.exception('_SortDraggable.on_touch_up callback feilet')
+        return True
+
+    def lock_at(self, x, y, scale=0.55):
+        """
+        Lås widget i ny posisjon med redusert størrelse og opacity –
+        brukes når bildet er sortert riktig i en kategorisone. Etter
+        dette kan brukeren ikke dra den igjen.
+        """
+        self._locked = True
+        new_w = self.width  * scale
+        new_h = self.height * scale
+        anim = Animation(x=x - new_w/2, y=y - new_h/2,
+                         width=new_w, height=new_h,
+                         opacity=0.70,
+                         duration=0.30, t='out_cubic')
+        anim.start(self)
+
+    def spring_back(self):
+        """Animer tilbake til startposisjonen."""
+        if self._original_pos is None:
+            return
+        Animation(x=self._original_pos[0], y=self._original_pos[1],
+                  duration=0.28, t='out_cubic').start(self)
+
+
+# ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
 
@@ -3231,7 +3346,8 @@ class KommunikasjonstavleApp(App):
 
     def toggle_edit(self, *_):
         if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar',
-                             'hvorer', 'spillmeny', 'settings'):
+                             'hvorer', 'sortering',
+                             'spillmeny', 'settings'):
             return
         st = self.data.get('settings', {})
         # Barn-modus: krev PIN for å aktivere redigeringsmodus
@@ -3600,7 +3716,7 @@ class KommunikasjonstavleApp(App):
         """
         barn = self.data.get('settings', {}).get('barn_modus', False)
         scr  = self._cur_scr
-        hide_scrs = ('image', 'tidsur', 'bildepar', 'hvorer',
+        hide_scrs = ('image', 'tidsur', 'bildepar', 'hvorer', 'sortering',
                      'spillmeny', 'draw', 'settings')
         edit_hide = self.edit_mode and scr in ('home', 'folder')
         skal_vise = not (barn or scr in hide_scrs or edit_hide)
@@ -8735,7 +8851,7 @@ BARN-MODUS
             'navn':  'Sortering',
             'farge': '#FF9F43',
             'desc':  'Plasser bildene i riktig kategori.',
-            'enabled': False,
+            'enabled': True,
         },
         {
             'id':    'sekvens',
@@ -8840,8 +8956,9 @@ BARN-MODUS
         # Når nye spill implementeres: legg til id → metodenavn her,
         # og sett 'enabled': True i SPILL_DEFINISJONER.
         _HANDLERS = {
-            'memory': '_open_bildepar_setup',
-            'hvorer': '_open_hvorer_setup',
+            'memory':    '_open_bildepar_setup',
+            'hvorer':    '_open_hvorer_setup',
+            'sortering': '_open_sortering_setup',
         }
         if enabled:
             handler = getattr(self, _HANDLERS.get(spill['id'], ''), None)
@@ -9545,6 +9662,438 @@ BARN-MODUS
         layout.add_widget(br)
 
         pop = Popup(title='Spill fullført!',
+                    content=layout, size_hint=POPUP_SMALL)
+        pop_ref[0] = pop
+        pop.open()
+
+    # ══════════════════════════════════════════════════════════════
+    #  SPILL: "SORTERING"
+    #
+    #  Drag-and-drop-spill der barnet sorterer bilder inn i riktige
+    #  kategorier. Kategoriene er appens egne mapper (slik at innholdet
+    #  reflekterer akkurat de bildene/symbolene barnet jobber med).
+    #
+    #  Pedagogisk modell:
+    #    • Bygger SEMANTISKE NETTVERK – ikke bare gjenkjenning, men
+    #      forståelse av at symboler hører til kategorier (mat, dyr,
+    #      følelser osv.).
+    #    • Errorless-vennlig: feil drop sender bildet tilbake til
+    #      startposisjon uten lyd-/farge-straff. Barnet kan prøve igjen.
+    #    • Score teller bare første forsøk per bilde – samme prinsipp
+    #      som Hvor er...?, gir reell indikator uten å demotivere.
+    #    • Ingen long-press: barnet kan ta tak umiddelbart. Det krever
+    #      at spillvinduet ikke har scroll (det har det heller ikke).
+    # ══════════════════════════════════════════════════════════════
+
+    def _open_sortering_setup(self, *_):
+        """
+        Åpner Sortering-setup. Krever minst 2 mapper med minst 1 bilde
+        hver (ellers er det ingenting å sortere mellom).
+        """
+        folders_with_items = [
+            fo for fo in self.data.get('folders', [])
+            if any(it.get('image') and os.path.exists(it['image'])
+                   for it in fo.get('items', []))
+        ]
+        if len(folders_with_items) < 2:
+            self._toast('Trenger minst 2 mapper med bilder for å sortere.')
+            return
+        self._push('spillmeny')
+        self._sortering_setup_popup(folders_with_items)
+
+    def _sortering_setup_popup(self, folders):
+        """
+        Setup: velg 2–4 mapper som kategorier, og antall bilder per
+        runde. Sjekker fortløpende at brukerens valg er konsistent.
+        """
+        # Hvilke mapper som er valgt (sett av folder-id-er)
+        # Standard: velg de to første som har bilder
+        chosen_folders = set()
+        if len(folders) >= 2:
+            chosen_folders.add(folders[0]['id'])
+            chosen_folders.add(folders[1]['id'])
+
+        chosen_n_imgs = [6]  # antall bilder per runde
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical',
+                           spacing=dp(10), padding=dp(14))
+
+        layout.add_widget(Label(
+            text='Dra bildene til riktig kategori.',
+            size_hint_y=None, height=dp(30),
+            font_size=fsp(13),
+            color=(0.30, 0.34, 0.50, 1),
+            halign='center', valign='middle'))
+
+        # ── Velg kategorier (mapper) ──────────────────────────────
+        layout.add_widget(Label(
+            text='Velg 2–4 kategorier:',
+            size_hint_y=None, height=dp(26),
+            font_size=fsp(14), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center'))
+
+        folder_btns = {}
+        fg_scroll = ScrollView(size_hint=(1, None), height=dp(170))
+        fg = GridLayout(cols=2, spacing=dp(6), padding=(dp(2), dp(2)),
+                        size_hint_y=None)
+        fg.bind(minimum_height=fg.setter('height'))
+
+        def _refresh_folder_btns():
+            for fid, b in folder_btns.items():
+                col = (folders_by_id[fid].get('color') or '#4D96FF')
+                if fid in chosen_folders:
+                    b.btn_color = list(hex_k(col))
+                    b.color = text_on(col)
+                else:
+                    # Dempet variant for ikke-valgt
+                    r, g, bl, a = hex_k(col)
+                    mix = 0.35
+                    b.btn_color = [r*mix + 0.85*(1-mix),
+                                   g*mix + 0.85*(1-mix),
+                                   bl*mix + 0.85*(1-mix), a]
+                    b.color = (0.30, 0.34, 0.48, 1)
+
+        folders_by_id = {fo['id']: fo for fo in folders}
+        for fo in folders:
+            n_imgs = sum(1 for it in fo.get('items', [])
+                         if it.get('image') and os.path.exists(it['image']))
+            label = f"{fo['name']} ({n_imgs})"
+            b = mk_btn(label, hex_k(fo.get('color') or '#4D96FF'),
+                       h=dp(46), fs=13)
+            def toggle(_, fid=fo['id']):
+                if fid in chosen_folders:
+                    if len(chosen_folders) > 2:
+                        chosen_folders.discard(fid)
+                else:
+                    if len(chosen_folders) < 4:
+                        chosen_folders.add(fid)
+                _refresh_folder_btns()
+            b.bind(on_release=toggle)
+            folder_btns[fo['id']] = b
+            fg.add_widget(b)
+        _refresh_folder_btns()
+
+        fg_scroll.add_widget(fg)
+        layout.add_widget(fg_scroll)
+
+        # ── Antall bilder per runde ───────────────────────────────
+        layout.add_widget(Label(
+            text='Antall bilder per runde:',
+            size_hint_y=None, height=dp(26),
+            font_size=fsp(14), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center'))
+        n_options = [4, 6, 8, 10]
+        ng = GridLayout(cols=4, spacing=dp(8),
+                        size_hint_y=None, height=dp(54))
+        n_btns = []
+        for n in n_options:
+            col = '#0D47A1' if n == chosen_n_imgs[0] else '#4D96FF'
+            b = mk_btn(str(n), hex_k(col), h=dp(54), fs=18)
+            def sel(_, v=n, blist=n_btns):
+                chosen_n_imgs[0] = v
+                for bi, ni in zip(blist, n_options):
+                    bi.btn_color = list(hex_k(
+                        '#0D47A1' if ni == v else '#4D96FF'))
+            b.bind(on_release=sel)
+            ng.add_widget(b)
+            n_btns.append(b)
+        layout.add_widget(ng)
+
+        # ── Start / Avbryt ────────────────────────────────────────
+        def on_start(*_):
+            if len(chosen_folders) < 2:
+                self._toast('Velg minst 2 kategorier.')
+                return
+            sel_folders = [folders_by_id[fid] for fid in chosen_folders]
+            total_avail = sum(
+                sum(1 for it in fo.get('items', [])
+                    if it.get('image') and os.path.exists(it['image']))
+                for fo in sel_folders
+            )
+            if chosen_n_imgs[0] > total_avail:
+                self._toast(f'Bare {total_avail} bilder tilgjengelig\n'
+                            f'i de valgte kategoriene.')
+                return
+            pop_ref[0].dismiss()
+            self._start_sortering_game(sel_folders, chosen_n_imgs[0])
+
+        layout.add_widget(mk_btn(
+            'Start spill', hex_k('#6BCB77'), h=dp(54), fs=17, cb=on_start))
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(48), fs=13,
+            cb=lambda *_: (pop_ref[0].dismiss(),
+                           self.nav_stack.pop() if self.nav_stack else None)))
+
+        pop = Popup(title='Sortering', content=layout,
+                    size_hint=POPUP_MEDIUM)
+        pop_ref[0] = pop
+        pop.open()
+
+    def _start_sortering_game(self, categories, n_imgs):
+        """Initialiserer spilltilstand og viser første runde."""
+        self._cur_scr = 'sortering'
+        self._set_title('Sortering')
+        self._so_categories  = categories
+        self._so_n_imgs      = n_imgs
+        self._so_round       = 0
+        self._so_score_total = 0
+        self._so_rounds_done = 0
+        self._sortering_show_round()
+
+    def _sortering_pick_items(self):
+        """
+        Velger bilder for runden: minst 1 fra hver kategori, totalt
+        _so_n_imgs (eller færre hvis ikke nok bilder finnes). Hver
+        bilde får et `_cat_id`-felt så vi vet hva som er riktig.
+        """
+        cats = self._so_categories
+        n = self._so_n_imgs
+
+        # Samle alle gyldige bilder per kategori
+        cat_imgs = {}
+        for fo in cats:
+            imgs = [
+                {'path': it['image'], 'name': it.get('name', ''),
+                 'uttale': it.get('uttale', ''), '_cat_id': fo['id']}
+                for it in fo.get('items', [])
+                if it.get('image') and os.path.exists(it['image'])
+            ]
+            random.shuffle(imgs)
+            cat_imgs[fo['id']] = imgs
+
+        # Minst 1 per kategori
+        chosen = []
+        for fid, imgs in cat_imgs.items():
+            if imgs:
+                chosen.append(imgs.pop(0))
+
+        # Fyll opp med tilfeldige bilder fra alle valgte kategorier
+        remaining_pool = [im for imgs in cat_imgs.values() for im in imgs]
+        random.shuffle(remaining_pool)
+        while len(chosen) < n and remaining_pool:
+            chosen.append(remaining_pool.pop(0))
+
+        random.shuffle(chosen)
+        return chosen
+
+    def _sortering_show_round(self):
+        """
+        Bygger spillskjermen for en ny runde: header, drop-soner i
+        nederste tredjedel, og bildene som skal sorteres øverst.
+
+        Layouten er en FloatLayout der drop-sonene har faste pos_hints
+        og bildene plasseres med absolutt pos beregnet etter at
+        FloatLayout har fått størrelse (via Clock.schedule_once etter
+        første layout-pass).
+        """
+        self._so_round += 1
+        items = self._sortering_pick_items()
+        self._so_items   = items
+        self._so_total   = len(items)
+        self._so_locked  = 0   # antall riktig-sorterte bilder
+        self._so_attempts = {id(it): 0 for it in items}
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(6), padding=(dp(6), dp(6)))
+
+        # ── Header ────────────────────────────────────────────────
+        header = BoxLayout(orientation='horizontal',
+                           size_hint_y=None, height=dp(36))
+        round_lbl = Label(
+            text=f'Runde {self._so_round}',
+            font_size=fsp(15), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            halign='left', valign='middle')
+        round_lbl.bind(size=round_lbl.setter('text_size'))
+        self._so_score_lbl = Label(
+            text=f'Riktig: 0 / {self._so_total}',
+            font_size=fsp(15), bold=True,
+            color=(0.10, 0.45, 0.20, 1),
+            halign='right', valign='middle')
+        self._so_score_lbl.bind(size=self._so_score_lbl.setter('text_size'))
+        header.add_widget(round_lbl)
+        header.add_widget(self._so_score_lbl)
+        outer.add_widget(header)
+
+        # ── Spillvindu (FloatLayout) ──────────────────────────────
+        game = FloatLayout()
+        self._so_game = game
+
+        # Drop-soner i nederste tredjedel
+        n_cats = len(self._so_categories)
+        zone_height_frac = 0.32  # 32% av spillvinduet
+        for i, cat in enumerate(self._so_categories):
+            col = cat.get('color') or '#4D96FF'
+            zone = RBox(
+                orientation='vertical',
+                padding=dp(6),
+                box_color=list(hex_k(col)) + [],  # kopier
+                radius=dp(14),
+                size_hint=(1.0/n_cats - 0.01, zone_height_frac),
+                pos_hint={'x': i * (1.0/n_cats) + 0.005, 'y': 0.005},
+            )
+            # Juster farge til litt mer gjennomsiktig så slipp-target
+            # ikke skriker visuelt
+            r, g, b, a = hex_k(col)
+            zone.box_color = [r, g, b, 0.78]
+            lbl = Label(
+                text=cat['name'],
+                font_size=fsp(15), bold=True,
+                color=text_on(col),
+                halign='center', valign='middle')
+            lbl.bind(size=lbl.setter('text_size'))
+            zone.add_widget(lbl)
+            zone._cat_id = cat['id']
+            game.add_widget(zone)
+
+        # Lag draggables (men plasser dem først etter at layout har
+        # gitt FloatLayout sin endelige størrelse)
+        self._so_draggables = []
+        for it in items:
+            d = _SortDraggable(it, on_drop_cb=self._sortering_on_drop)
+            self._so_draggables.append(d)
+            game.add_widget(d)
+
+        # Etter at FloatLayout har fått størrelse, plasser draggables
+        # i et grid i øvre del. Vi bruker schedule_once med 0 sekunder
+        # så det skjer rett etter at Kivy har gjort første layout-pass.
+        def _layout_draggables(*_):
+            if game.width <= 0 or game.height <= 0:
+                # Ikke målt ennå, prøv igjen kort etter
+                Clock.schedule_once(_layout_draggables, 0.05)
+                return
+            self._sortering_layout_draggables()
+        Clock.schedule_once(_layout_draggables, 0)
+
+        outer.add_widget(game)
+        self._set_content(outer)
+
+    def _sortering_layout_draggables(self):
+        """
+        Plasserer bildene i et grid i øvre 2/3 av spillvinduet.
+        Beregner cellestørrelse ut fra antall bilder; flest mulig
+        kolonner som gir kvadratiske celler. Lagrer original pos
+        for sprett-tilbake.
+
+        Pos beregnes som ABSOLUTTE Window-koordinater (game.x/game.y
+        + lokal offset), siden draggable.pos er i parent FloatLayout
+        sitt koordinatrom og FloatLayout kan ligge offset i Window
+        (her: under header-baren). Drop-sonene har pos_hint og blir
+        plassert riktig automatisk av FloatLayout.
+        """
+        game = self._so_game
+        n = len(self._so_draggables)
+        # Pool-området: nederste 5px–37% er drop-soner, øvre del er pool
+        pool_left   = game.x
+        pool_bottom = game.y + 0.37 * game.height
+        pool_w      = game.width
+        pool_h      = game.height - 0.37 * game.height - dp(8)
+
+        # Velg antall kolonner basert på antall bilder
+        if n <= 4:
+            cols = n
+        elif n <= 6:
+            cols = 3
+        elif n <= 8:
+            cols = 4
+        else:
+            cols = 5
+        rows = (n + cols - 1) // cols
+
+        cell_w = pool_w / cols
+        cell_h = pool_h / rows
+        # Bildet er kvadratisk – ta minste dimensjonen, med litt padding
+        size = max(dp(40), min(cell_w, cell_h) * 0.85)
+        for idx, d in enumerate(self._so_draggables):
+            row = idx // cols
+            col = idx % cols
+            # Senter av cellen, beregnet "fra toppen" så første rad
+            # havner øverst
+            cx = pool_left + (col + 0.5) * cell_w
+            cy = pool_bottom + pool_h - (row + 0.5) * cell_h
+            d.size = (size, size)
+            d.x = cx - size / 2
+            d.y = cy - size / 2
+            d.store_original_pos()
+
+    def _sortering_on_drop(self, draggable, touch):
+        """
+        Kalt av _SortDraggable når brukeren slipper. Sjekker om
+        bildet ble sluppet over en drop-sone og om kategorien stemmer.
+        """
+        if draggable._locked:
+            return
+        self._so_attempts[id(draggable.item)] += 1
+
+        # Finn drop-sone bildets senter er over
+        center_x = draggable.x + draggable.width / 2
+        center_y = draggable.y + draggable.height / 2
+        target_zone = None
+        for w in self._so_game.children:
+            if hasattr(w, '_cat_id') and w.collide_point(center_x, center_y):
+                target_zone = w
+                break
+
+        correct = (target_zone is not None
+                   and target_zone._cat_id == draggable.item['_cat_id'])
+
+        if correct:
+            # Riktig kategori – lås bildet i sonen
+            tx = target_zone.x + target_zone.width / 2
+            ty = target_zone.y + target_zone.height / 2
+            draggable.lock_at(tx, ty)
+            self._so_locked += 1
+            if self._so_attempts[id(draggable.item)] == 1:
+                self._so_score_total += 1
+            self._so_score_lbl.text = (
+                f'Riktig: {self._so_locked} / {self._so_total}')
+            # Liten konfetti-burst per riktig svar
+            Clock.schedule_once(lambda *_: launch_confetti(1.5), 0.0)
+            # Runde ferdig?
+            if self._so_locked >= self._so_total:
+                Clock.schedule_once(lambda *_: self._sortering_round_done(),
+                                    1.0)
+        else:
+            # Feil eller utenfor en sone – sprett tilbake
+            draggable.spring_back()
+
+    def _sortering_round_done(self):
+        """Vis ferdig-popup med valg om ny runde eller hjem."""
+        self._so_rounds_done += 1
+        self._play_jingle()
+        Clock.schedule_once(lambda *_: launch_confetti(2.5), 0.1)
+
+        # Liten ros tilpasset prestasjon
+        if self._so_score_total == self._so_rounds_done * self._so_total:
+            beskjed = 'Alle riktige!'
+        else:
+            beskjed = 'Bra jobbet!'
+
+        lbl = Label(
+            text=(f'{beskjed}\n'
+                  f'Runder fullført: {self._so_rounds_done}\n'
+                  f'Totalt riktig på første forsøk: {self._so_score_total}'),
+            font_size=fsp(17), color=(0.1, 0.5, 0.1, 1),
+            halign='center', valign='middle')
+        lbl.bind(size=lbl.setter('text_size'))
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical',
+                           spacing=dp(14), padding=dp(18))
+        layout.add_widget(lbl)
+
+        br = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(10))
+        br.add_widget(mk_btn(
+            'Ny runde', hex_k('#6BCB77'), h=dp(50), fs=15,
+            cb=lambda *_: (pop_ref[0].dismiss(),
+                           self._sortering_show_round())))
+        br.add_widget(mk_btn(
+            'Hjem', hex_k('#4D96FF'), h=dp(50), fs=15,
+            cb=lambda *_: (pop_ref[0].dismiss(), self.go_home())))
+        layout.add_widget(br)
+
+        pop = Popup(title='Runde fullført!',
                     content=layout, size_hint=POPUP_SMALL)
         pop_ref[0] = pop
         pop.open()
