@@ -2265,9 +2265,22 @@ class _SortDraggable(BoxLayout):
             return False
         if not self.collide_point(*touch.pos):
             return False
-        # Hvis store_original_pos ikke er kalt ennå, lagre nå
+
+        # Fryse pos_hint til absolutt pos ved første touch.
+        # _sortering_layout_draggables() setter pos_hint (relativ til
+        # parent FloatLayout) for å unngå Window-koordinat-problemer.
+        # Når brukeren begynner å dra, må vi konvertere til absolutt
+        # pos slik at touch-events kan oppdatere x/y direkte.
+        if self.pos_hint:
+            cur_x, cur_y = self.x, self.y
+            self.pos_hint = {}
+            self.x, self.y = cur_x, cur_y
+
+        # Lagre original posisjon (etter eventuell pos_hint-frysing)
+        # slik at spring_back() vet hvor den skal animere tilbake til.
         if self._original_pos is None:
             self._original_pos = (self.x, self.y)
+
         # Lagre offset så bildet ikke "hopper" til touch-posisjon
         self._touch_offset = (touch.x - self.x, touch.y - self.y)
         self.opacity = 0.85
@@ -10012,27 +10025,24 @@ BARN-MODUS
 
     def _sortering_layout_draggables(self):
         """
-        Plasserer bildene i et grid i øvre 2/3 av spillvinduet.
-        Beregner cellestørrelse ut fra antall bilder; flest mulig
-        kolonner som gir kvadratiske celler. Lagrer original pos
-        for sprett-tilbake.
+        Plasserer bildene i et grid i øvre 2/3 av spillvinduet via
+        pos_hint (relativ til parent FloatLayout). Det gjør oss
+        uavhengig av hvor parent faktisk ligger i Window – noe vi
+        ble bitt av tidligere da game.x/game.y ikke alltid var det
+        vi forventet på Android-enheter.
 
-        Pos beregnes som ABSOLUTTE Window-koordinater (game.x/game.y
-        + lokal offset), siden draggable.pos er i parent FloatLayout
-        sitt koordinatrom og FloatLayout kan ligge offset i Window
-        (her: under header-baren). Drop-sonene har pos_hint og blir
-        plassert riktig automatisk av FloatLayout.
+        pos_hint frysing til absolutt pos skjer i _SortDraggable
+        sin on_touch_down (slik at draget kan oppdatere x/y direkte).
+        store_original_pos kalles også der – så _original_pos
+        reflekterer den faktisk renderte posisjonen.
+
+        size settes derimot direkte, siden størrelsen er enkel å
+        beregne fra game.width/height og ikke trenger pos_hint.
         """
         game = self._so_game
         n = len(self._so_draggables)
         diag(f'sortering layout: game.pos={game.pos}, '
              f'game.size={game.size}, n={n}')
-
-        # Pool-området: nederste 5px–37% er drop-soner, øvre del er pool
-        pool_left   = game.x
-        pool_bottom = game.y + 0.37 * game.height
-        pool_w      = game.width
-        pool_h      = game.height - 0.37 * game.height - dp(8)
 
         # Velg antall kolonner basert på antall bilder
         if n <= 4:
@@ -10045,28 +10055,30 @@ BARN-MODUS
             cols = 5
         rows = (n + cols - 1) // cols
 
-        cell_w = pool_w / cols
-        cell_h = pool_h / rows
-        # Bildet er kvadratisk – ta minste dimensjonen, med litt padding
-        size = max(dp(40), min(cell_w, cell_h) * 0.85)
-        diag(f'sortering pool: left={pool_left:.0f}, bottom={pool_bottom:.0f}, '
-             f'w={pool_w:.0f}, h={pool_h:.0f}, cell={cell_w:.0f}x{cell_h:.0f}, '
-             f'size={size:.0f}')
+        # Pool: y-frac fra 0.40 til 0.99 (over drop-sonene som tar 0.0–0.37)
+        pool_y_bottom = 0.40
+        pool_y_top    = 0.99
+        pool_y_h      = pool_y_top - pool_y_bottom
+
+        # Beregn bildestørrelse i piksler ut fra game-dimensjoner
+        cell_w_px = game.width / cols if cols > 0 else dp(80)
+        cell_h_px = (game.height * pool_y_h) / rows if rows > 0 else dp(80)
+        size = max(dp(40), min(cell_w_px, cell_h_px) * 0.85)
+        diag(f'sortering pool: cols={cols}, rows={rows}, '
+             f'cell={cell_w_px:.0f}x{cell_h_px:.0f}, size={size:.0f}')
 
         for idx, d in enumerate(self._so_draggables):
             row = idx // cols
             col = idx % cols
-            # Senter av cellen, beregnet "fra toppen" så første rad
-            # havner øverst
-            cx = pool_left + (col + 0.5) * cell_w
-            cy = pool_bottom + pool_h - (row + 0.5) * cell_h
+            # center_x i [0, 1] basert på kolonneindeks
+            cx_frac = (col + 0.5) / cols
+            # center_y: rad 0 øverst, rad n-1 nederst i pool-området
+            cy_frac = pool_y_top - (row + 0.5) * (pool_y_h / rows)
             d.size = (size, size)
-            d.x = cx - size / 2
-            d.y = cy - size / 2
-            d.store_original_pos()
-            diag(f'  d[{idx}]: pos=({d.x:.0f}, {d.y:.0f}), '
-                 f'size=({d.width:.0f}, {d.height:.0f}), '
-                 f'src={d.item.get("path", "")[-30:]}')
+            d.pos_hint = {'center_x': cx_frac, 'center_y': cy_frac}
+            diag(f'  d[{idx}]: pos_hint=center_x={cx_frac:.2f} '
+                 f'center_y={cy_frac:.2f}, size={size:.0f}, '
+                 f'pos=({d.x:.0f},{d.y:.0f})')
 
     def _sortering_on_drop(self, draggable, touch):
         """
