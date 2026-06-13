@@ -179,6 +179,25 @@ jobs:
           git config --global --add safe.directory '*'
           rm -rf .buildozer/android/platform/python-for-android
 
+          # ── Tving regenerering av Python-bytecode pakket i APK ───
+          # p4a/buildozer cacher den ferdige Java-prosjektstrukturen
+          # under platform/build-*/dists/<app>/, inkludert Python-
+          # bytecode-bunten i src/main/assets/ eller _python_bundle/.
+          # Når denne mappa gjenoppstås fra GitHub Actions-cachen,
+          # detekterer p4a at "dist finnes" og kan hoppe over å re-
+          # pakke .py-filene (den sjekker timestamp på en marker-fil
+          # i dist, ikke på selve .py-filene). Resultatet er en
+          # vellykket bygg-rapport der APK-en likevel inneholder FORRIGE
+          # .py-versjon – endringer i main.py/kt_widgets.py vises ikke
+          # på enheten, og man tror feilaktig man må slette hele
+          # cachen for å fikse det.
+          #
+          # Sletting av kun dist-mappa tvinger p4a til å pakke Python
+          # på nytt, mens den underliggende build-mappa (med kompilert
+          # Python-tolk + native libs – det som faktisk tar 30+ min å
+          # bygge) blir intakt i cachen.
+          rm -rf .buildozer/android/platform/build-*/dists/kommunikasjonstavle
+
           echo '=== PASS 1: buildozer android debug ==='
           buildozer android debug 2>&1 | tee build_step1.log || true
 
