@@ -3572,26 +3572,147 @@ class KommunikasjonstavleApp(App):
         pop_ref[0] = pop
         pop.open()
 
-    def _update_fab_visibility(self):
+    def _update_fab_visibility(self, animate=True):
         """
-        Skjuler søke-FAB-en i kontekster der den ikke gir mening eller
-        ville forstyrre:
-          • barn-modus – enheten er da overlevert til et barn, og
-            søk/navigasjon utenfor den kuraterte tavla skal ikke være
-            tilgjengelig for dem.
-          • fullskjermbilde (_cur_scr == 'image') – dette er visningen
-            som vises TIL barnet; en flytende knapp ville forstyrre.
+        Skjuler/viser den flytende søkeknappen avhengig av kontekst.
 
-        Fjerner/legger til widgeten helt (ikke bare opacity) slik at
-        den verken er synlig eller mottar berøringer når skjult.
+        Skjules i:
+          • barn-modus (enheten overlevert til barn – ingen
+            metanavigasjon utenfor den kuraterte tavla)
+          • fullskjermbilde (_cur_scr == 'image') – visning ment for
+            barn, ingen forstyrrelser
+          • verktøy-/spill-skjermer der knappen ville dekket sentrale
+            kontroller: tidsur, memoryspill, spillmeny, tegneskjerm,
+            innstillinger
+          • redigeringsmodus på hjem og i mapper – der dekker FAB-en
+            ellers handlingsknapper som Endre/Slett/Flytt
+
+        Tilstanden caches på `self._fab_visible` slik at vi ikke kjører
+        animasjonen på nytt hvis ingen reell tilstandsendring har skjedd
+        (f.eks. ved enkel resize på samme skjerm). Ved første kall
+        (cur is None) settes tilstanden umiddelbart uten animasjon –
+        FAB skal ikke "gli inn" ved app-start.
         """
         barn = self.data.get('settings', {}).get('barn_modus', False)
-        hide = barn or self._cur_scr == 'image'
-        in_tree = self._fab in self._content.children
-        if hide and in_tree:
-            self._content.remove_widget(self._fab)
-        elif not hide and not in_tree:
+        scr  = self._cur_scr
+        hide_scrs = ('image', 'tidsur', 'bildepar', 'spillmeny',
+                     'draw', 'settings')
+        edit_hide = self.edit_mode and scr in ('home', 'folder')
+        skal_vise = not (barn or scr in hide_scrs or edit_hide)
+
+        cur = getattr(self, '_fab_visible', None)
+        if skal_vise == cur:
+            return
+        self._fab_visible = skal_vise
+
+        # Sikre at widgeten er i treet (eldre versjoner av denne
+        # metoden brukte remove_widget; bevares for kompatibilitet
+        # med eventuelle gjenværende kall).
+        if self._fab not in self._content.children:
             self._content.add_widget(self._fab)
+
+        if cur is None or not animate:
+            self._set_fab_state(skal_vise)
+            return
+
+        if skal_vise:
+            self._animate_fab_in()
+        else:
+            self._animate_fab_out()
+
+    def _set_fab_state(self, vis):
+        """
+        Setter FAB til synlig eller skjult tilstand UMIDDELBART, uten
+        animasjon. Brukes ved app-start og som fallback hvis vi ikke
+        har en gyldig parent å animere innenfor.
+
+        Når skjult: opacity=0 + disabled=True + flytt utenfor synlig
+        område. Den siste er ekstra forsikring mot at en usynlig knapp
+        ikke uansett fanger trykk – disabled blokkerer on_release,
+        men en Button kan fortsatt sluke en touch-event via
+        collide_point hvis den ligger på skjermen.
+        """
+        if vis:
+            self._fab.pos_hint = {'right': 0.97, 'y': 0.035}
+            self._fab.opacity  = 1.0
+            self._fab.disabled = False
+        else:
+            self._fab.opacity  = 0.0
+            self._fab.disabled = True
+            if self._fab.parent and self._fab.parent.width > 0:
+                self._fab.pos_hint = {}
+                self._fab.x = self._fab.parent.width + dp(20)
+
+    def _animate_fab_out(self):
+        """
+        Skjule-animasjon: liten "ta sats"-rykk mot venstre, så glir
+        knappen ut til høyre med akselererende easing (in_cubic) –
+        gir inntrykk av at den setter fart ut av synsfeltet.
+        """
+        if not self._fab.parent or self._fab.parent.width <= 0:
+            self._set_fab_state(False)
+            return
+
+        Animation.cancel_all(self._fab)
+        parent_w = self._fab.parent.width
+        cur_x    = self._fab.x
+
+        # Fjern pos_hint – ellers ville hvert layoutpass tvinge x
+        # tilbake til den beregnede pos_hint-posisjonen og overstyre
+        # animasjonen.
+        self._fab.pos_hint = {}
+        self._fab.x = cur_x
+
+        anim = (Animation(x=cur_x - dp(14), duration=0.11, t='out_quad') +
+                Animation(x=parent_w + dp(20), duration=0.26, t='in_cubic'))
+
+        def _done(*_):
+            self._fab.opacity  = 0.0
+            self._fab.disabled = True
+        anim.bind(on_complete=_done)
+        anim.start(self._fab)
+
+    def _animate_fab_in(self):
+        """
+        Vise-animasjon: glir inn fra høyre, overshoots litt forbi
+        målposisjonen (out_cubic), og spretter deretter tilbake til
+        riktig posisjon med out_back-easing – gir den "spretne"
+        på-plass-følelsen brukeren ba om.
+
+        Beregner target_x ut fra pos_hint-verdiene (right=0.97) i
+        stedet for å lese av etter at pos_hint er fjernet, slik at
+        ingen race-condition kan gi feil sluttposisjon.
+        """
+        if not self._fab.parent or self._fab.parent.width <= 0:
+            self._set_fab_state(True)
+            return
+
+        Animation.cancel_all(self._fab)
+        parent_w = self._fab.parent.width
+        parent_h = self._fab.parent.height
+
+        target_x = 0.97 * parent_w - self._fab.width
+        target_y = 0.035 * parent_h
+
+        # Start utenfor skjermen, synlig og aktiv
+        self._fab.pos_hint = {}
+        self._fab.opacity  = 1.0
+        self._fab.disabled = False
+        self._fab.x = parent_w + dp(20)
+        self._fab.y = target_y
+
+        # Anim inn: forbi target (lengre til venstre), så studs tilbake
+        overshoot_x = target_x - dp(14)
+        anim = (Animation(x=overshoot_x, duration=0.24, t='out_cubic') +
+                Animation(x=target_x, duration=0.18, t='out_back'))
+
+        def _done(*_):
+            # Gjenopprett pos_hint så fremtidige resize/rotasjon
+            # plasserer FAB korrekt uten å være avhengig av at vi
+            # gjør det manuelt
+            self._fab.pos_hint = {'right': 0.97, 'y': 0.035}
+        anim.bind(on_complete=_done)
+        anim.start(self._fab)
 
     def _refresh_chrome_highlight(self):
         """
