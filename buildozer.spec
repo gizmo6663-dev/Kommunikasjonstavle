@@ -87,5 +87,5 @@ android.presplash_color = #12183A
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
-log_level = 1
+log_level = 2
 warn_on_root = 0
