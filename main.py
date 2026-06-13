@@ -3226,7 +3226,7 @@ class KommunikasjonstavleApp(App):
 
     def toggle_edit(self, *_):
         if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar',
-                             'spillmeny', 'settings'):
+                             'hvorer', 'spillmeny', 'settings'):
             return
         st = self.data.get('settings', {})
         # Barn-modus: krev PIN for å aktivere redigeringsmodus
@@ -3595,8 +3595,8 @@ class KommunikasjonstavleApp(App):
         """
         barn = self.data.get('settings', {}).get('barn_modus', False)
         scr  = self._cur_scr
-        hide_scrs = ('image', 'tidsur', 'bildepar', 'spillmeny',
-                     'draw', 'settings')
+        hide_scrs = ('image', 'tidsur', 'bildepar', 'hvorer',
+                     'spillmeny', 'draw', 'settings')
         edit_hide = self.edit_mode and scr in ('home', 'folder')
         skal_vise = not (barn or scr in hide_scrs or edit_hide)
 
@@ -8723,7 +8723,7 @@ BARN-MODUS
             'navn':  'Hvor er…?',
             'farge': '#4D96FF',
             'desc':  'Hør et ord – pek på riktig bilde.',
-            'enabled': False,
+            'enabled': True,
         },
         {
             'id':    'sortering',
@@ -8831,8 +8831,19 @@ BARN-MODUS
                       g*mix + 0.78*(1-mix),
                       b*mix + 0.78*(1-mix), a)
 
-        if enabled and spill['id'] == 'memory':
-            tap = self._open_bildepar_setup
+        # Spill-id mappes til metoden som åpner setup-popupen.
+        # Når nye spill implementeres: legg til id → metodenavn her,
+        # og sett 'enabled': True i SPILL_DEFINISJONER.
+        _HANDLERS = {
+            'memory': '_open_bildepar_setup',
+            'hvorer': '_open_hvorer_setup',
+        }
+        if enabled:
+            handler = getattr(self, _HANDLERS.get(spill['id'], ''), None)
+            if callable(handler):
+                tap = handler
+            else:
+                tap = lambda navn=navn: self._spill_kommer_snart(navn)
         else:
             tap = lambda navn=navn: self._spill_kommer_snart(navn)
 
@@ -9190,6 +9201,348 @@ BARN-MODUS
             cb=lambda *_: (pop_ref[0].dismiss(), self.go_home())))
         pop = Popup(title='Spill fullfort!', content=layout, size_hint=POPUP_SMALL)
         pop_ref[0] = pop; pop.open()
+
+    # ══════════════════════════════════════════════════════════════
+    #  SPILL: "HVOR ER...?"
+    #
+    #  Reseptivt ASK-spill – styrker kobling lyd → bilde, som er et
+    #  grunnleggende steg før produktiv bruk av symboler. Appen sier
+    #  et ord (TTS), barnet trykker på riktig bilde blant 2–6 valg.
+    #
+    #  Pedagogisk modell:
+    #    • Errorless-vennlig: feil svar straffes ikke negativt – ordet
+    #      gjentas, og barnet kan prøve på nytt. Score teller bare
+    #      første forsøk per runde, så det er fortsatt en indikator
+    #      uten å demotivere.
+    #    • Auditiv repetisjon på forespørsel: "Hør på nytt"-knapp
+    #      gjentar ordet uten å regne det som et nytt forsøk.
+    #    • Visuell feedback uten skarp negativitet: grønn glød ved
+    #      riktig, rosa-rød glød ved feil – ikke rystelse/lyd som
+    #      kunne tolkes som straff.
+    # ══════════════════════════════════════════════════════════════
+
+    def _open_hvorer_setup(self, *_):
+        """
+        Åpner 'Hvor er...?' setup-popup fra spillmenyen. Krever at
+        TTS er aktivert (uten lyd er spillet meningsløst) og at det
+        finnes nok unike bilder (minst 2; brukeren kan likevel ikke
+        velge flere valg per runde enn det finnes bilder).
+        """
+        all_images = self._collect_all_images(self.data.get('folders', []))
+        if len(all_images) < 2:
+            self._toast('Trenger minst 2 bilder i mappene for å spille.')
+            return
+        if not self.data.get('settings', {}).get('tts_enabled', False):
+            self._toast('Aktiver Talesyntese under Innstillinger \nfor å spille "Hvor er...?"')
+            return
+        self._push('spillmeny')
+        self._hvorer_setup_popup(all_images)
+
+    def _hvorer_setup_popup(self, all_images):
+        """Setup-popup: velg antall valg per runde og antall runder."""
+        max_avail = len(all_images)
+        # Defaultverdier – velg 4 valg hvis mulig, ellers maks tilgjengelig
+        default_choices = 4 if max_avail >= 4 else max_avail
+        chosen_choices = [default_choices]
+        chosen_rounds  = [10]
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical',
+                           spacing=dp(12), padding=dp(16))
+        layout.add_widget(Label(
+            text='Appen sier et ord – pek på riktig bilde.',
+            size_hint_y=None, height=dp(34),
+            font_size=fsp(13),
+            color=(0.30, 0.34, 0.50, 1),
+            halign='center', valign='middle'))
+
+        # ── Antall valg per runde ─────────────────────────────────
+        layout.add_widget(Label(
+            text='Antall valg per runde:',
+            size_hint_y=None, height=dp(28),
+            font_size=fsp(14), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center'))
+        choices_options = [2, 3, 4, 6]
+        cg = GridLayout(cols=4, spacing=dp(8),
+                        size_hint_y=None, height=dp(56))
+        choice_btns = []
+        for n in choices_options:
+            avail = n <= max_avail
+            sel_col = '#0D47A1' if n == chosen_choices[0] else \
+                      ('#4D96FF' if avail else '#90A4AE')
+            b = mk_btn(str(n), hex_k(sel_col), h=dp(56), fs=18)
+            if not avail:
+                b.disabled = True
+            def sel(_, v=n, blist=choice_btns, max_av=max_avail):
+                chosen_choices[0] = v
+                for bi, ni in zip(blist, choices_options):
+                    av = ni <= max_av
+                    bi.btn_color = list(hex_k(
+                        '#0D47A1' if ni == v else
+                        ('#4D96FF' if av else '#90A4AE')))
+            if avail:
+                b.bind(on_release=sel)
+            cg.add_widget(b)
+            choice_btns.append(b)
+        layout.add_widget(cg)
+
+        # ── Antall runder ─────────────────────────────────────────
+        layout.add_widget(Label(
+            text='Antall runder:',
+            size_hint_y=None, height=dp(28),
+            font_size=fsp(14), bold=True,
+            color=(0.08, 0.10, 0.35, 1), halign='center'))
+        rounds_options = [5, 10, 15]
+        rg = GridLayout(cols=3, spacing=dp(8),
+                        size_hint_y=None, height=dp(56))
+        round_btns = []
+        for n in rounds_options:
+            col = '#0D47A1' if n == chosen_rounds[0] else '#4D96FF'
+            b = mk_btn(str(n), hex_k(col), h=dp(56), fs=18)
+            def sel(_, v=n, blist=round_btns):
+                chosen_rounds[0] = v
+                for bi, ni in zip(blist, rounds_options):
+                    bi.btn_color = list(hex_k(
+                        '#0D47A1' if ni == v else '#4D96FF'))
+            b.bind(on_release=sel)
+            rg.add_widget(b)
+            round_btns.append(b)
+        layout.add_widget(rg)
+
+        # ── Start / Avbryt ────────────────────────────────────────
+        def on_start(*_):
+            pop_ref[0].dismiss()
+            self._start_hvorer_game(
+                all_images, chosen_choices[0], chosen_rounds[0])
+
+        layout.add_widget(mk_btn(
+            'Start spill', hex_k('#6BCB77'), h=dp(58), fs=18, cb=on_start))
+        layout.add_widget(mk_btn(
+            'Avbryt', hex_k('#9CA3AF'), h=dp(50), fs=14,
+            cb=lambda *_: (pop_ref[0].dismiss(),
+                           self.nav_stack.pop() if self.nav_stack else None)))
+
+        pop = Popup(title='Hvor er...?', content=layout,
+                    size_hint=POPUP_MEDIUM)
+        pop_ref[0] = pop
+        pop.open()
+
+    def _start_hvorer_game(self, all_images, choices_per_round, total_rounds):
+        """Initialiserer spilltilstand og viser første runde."""
+        self._cur_scr = 'hvorer'
+        self._set_title('Hvor er...?')
+        self._he_all_images        = all_images
+        self._he_choices_per_round = choices_per_round
+        self._he_total_rounds      = total_rounds
+        self._he_current_round     = 0   # økes til 1 i _show_round
+        self._he_correct_count     = 0
+        self._he_attempts_round    = 0
+        self._he_busy              = False
+        self._hvorer_show_round()
+
+    def _hvorer_show_round(self):
+        """
+        Bygger UI for neste runde:
+          • Header med "Runde X/Y" og score
+          • "Hør på nytt"-knapp (stor, øverst i innholdsområdet)
+          • Grid med 2–6 bildevalg
+
+        Når antall valg = antall tilgjengelige bilder, blir det
+        umulig å unngå at samme bilde dukker opp flere ganger
+        rett etter hverandre – random.sample sikrer bare at HVERT
+        valg innenfor én runde er unikt.
+        """
+        self._he_current_round += 1
+        self._he_attempts_round = 0
+        self._he_busy = False
+
+        if self._he_current_round > self._he_total_rounds:
+            self._hvorer_win()
+            return
+
+        n = min(self._he_choices_per_round, len(self._he_all_images))
+        choices = random.sample(self._he_all_images, n)
+        correct_idx = random.randint(0, len(choices) - 1)
+        self._he_choices     = choices
+        self._he_correct_idx = correct_idx
+        self._he_target_item = choices[correct_idx]
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(8), padding=(dp(6), dp(6)))
+
+        # ── Header ────────────────────────────────────────────────
+        header = BoxLayout(orientation='horizontal',
+                           size_hint_y=None, height=dp(36))
+        round_lbl = Label(
+            text=f'Runde {self._he_current_round} / {self._he_total_rounds}',
+            font_size=fsp(15), bold=True,
+            color=(0.08, 0.10, 0.35, 1),
+            halign='left', valign='middle')
+        round_lbl.bind(size=round_lbl.setter('text_size'))
+        score_lbl = Label(
+            text=f'Riktig: {self._he_correct_count}',
+            font_size=fsp(15), bold=True,
+            color=(0.10, 0.45, 0.20, 1),
+            halign='right', valign='middle')
+        score_lbl.bind(size=score_lbl.setter('text_size'))
+        header.add_widget(round_lbl)
+        header.add_widget(score_lbl)
+        outer.add_widget(header)
+
+        # ── Hør-knapp ─────────────────────────────────────────────
+        listen_btn = mk_btn(
+            'Hor pa nytt', hex_k('#FF9F43'),
+            h=dp(58), fs=17,
+            cb=lambda *_: self._hvorer_replay_word())
+        outer.add_widget(listen_btn)
+
+        # ── Bilde-grid ────────────────────────────────────────────
+        # Layout per antall valg:
+        #   2 → 1×2, 3 → 1×3, 4 → 2×2, 6 → 2×3
+        if n <= 3:
+            cols = n
+        elif n == 4:
+            cols = 2
+        else:  # 5, 6
+            cols = 3
+        grid = GridLayout(cols=cols, spacing=dp(10),
+                          padding=(dp(4), dp(6)),
+                          size_hint_y=1)
+
+        self._he_cells = []
+        for i, ch in enumerate(choices):
+            cell = self._make_hvorer_cell(i, ch)
+            grid.add_widget(cell)
+            self._he_cells.append(cell)
+        outer.add_widget(grid)
+
+        self._set_content(outer)
+
+        # Si ordet etter at skjermen er ferdig rendret. Liten
+        # forsinkelse er viktig – ellers kan TTS-kallet komme før
+        # widgets er klare og bli "spist" av Android.
+        Clock.schedule_once(lambda *_: self._hvorer_replay_word(), 0.5)
+
+    def _make_hvorer_cell(self, idx, item):
+        """
+        Bildecelle for "Hvor er...?". Hele cellen er trykkbar.
+
+        Bruker RBox med box_color slik at vi kan flashe grønn/rød
+        farge som feedback uten å rive ned og bygge widgeten på nytt.
+        """
+        cell = RBox(
+            orientation='vertical',
+            spacing=dp(2), padding=dp(6),
+            box_color=[0.97, 0.97, 0.99, 1.0],
+            radius=dp(14),
+        )
+        bind_card_pop(cell)
+        img = Image(source=item['path'],
+                    allow_stretch=True, keep_ratio=True)
+        cell.add_widget(img)
+
+        def _tap(w, touch):
+            if w.collide_point(*touch.pos):
+                self._hvorer_tap(idx)
+                return True
+            return False
+        cell.bind(on_touch_down=_tap)
+        return cell
+
+    def _hvorer_replay_word(self):
+        """
+        Sier riktig ord på nytt med TTS. Trygg å kalle gjentatte
+        ganger – _speak() håndterer egen forsinkelse og ignoreres
+        hvis TTS-innstillingen skulle blitt slått av midt i spillet.
+        """
+        if not hasattr(self, '_he_target_item'):
+            return
+        self._speak(tale_for_item(self._he_target_item))
+
+    def _hvorer_tap(self, idx):
+        """
+        Håndterer trykk på bildecelle nr. `idx`.
+
+        _he_busy-flagget hindrer at brukeren kan trykke videre mens
+        feedback-animasjonen kjører – ellers kan rask dobbelttrykk
+        føre til at neste runde starter før forrige er ferdig
+        animert, eller at flere konfetti-bursts overlapper rart.
+        """
+        if self._he_busy or not hasattr(self, '_he_correct_idx'):
+            return
+        self._he_attempts_round += 1
+        cell = self._he_cells[idx]
+
+        if idx == self._he_correct_idx:
+            # ── Riktig svar ───────────────────────────────────────
+            self._he_busy = True
+            # Tell poeng kun på første forsøk – ellers blir feilfri
+            # bare gjentakelse til "tilfeldigvis riktig".
+            if self._he_attempts_round == 1:
+                self._he_correct_count += 1
+
+            Animation.cancel_all(cell, 'box_color')
+            flash = (Animation(box_color=[0.65, 0.95, 0.70, 1.0],
+                               duration=0.18, t='out_quad') +
+                     Animation(box_color=[0.97, 0.97, 0.99, 1.0],
+                               duration=0.40, t='in_quad'))
+            flash.start(cell)
+            Clock.schedule_once(lambda *_: launch_confetti(1.2), 0.0)
+            Clock.schedule_once(lambda *_: self._hvorer_show_round(), 1.5)
+        else:
+            # ── Feil svar – ordet gjentas, runden fortsetter ──────
+            Animation.cancel_all(cell, 'box_color')
+            flash = (Animation(box_color=[0.97, 0.72, 0.72, 1.0],
+                               duration=0.15, t='out_quad') +
+                     Animation(box_color=[0.97, 0.97, 0.99, 1.0],
+                               duration=0.45, t='in_quad'))
+            flash.start(cell)
+            # Liten pause før vi gjentar ordet – gir barnet tid til
+            # å registrere feedback før de hører ordet på nytt
+            Clock.schedule_once(lambda *_: self._hvorer_replay_word(), 0.5)
+
+    def _hvorer_win(self):
+        """Spill ferdig – jingle, konfetti og statistikk."""
+        self._play_jingle()
+        Clock.schedule_once(lambda *_: launch_confetti(2.5), 0.1)
+
+        score = self._he_correct_count
+        total = self._he_total_rounds
+        # Liten tilbakemelding tilpasset prestasjon – uten å være
+        # negativ ved lave score (det er et læringsspill)
+        if score == total:
+            beskjed = 'Alle riktige!'
+        elif score >= total * 0.7:
+            beskjed = 'Bra jobbet!'
+        else:
+            beskjed = 'Godt forsøk!'
+
+        lbl = Label(
+            text=f'{beskjed}\n{score} av {total} riktige',
+            font_size=fsp(19), color=(0.1, 0.5, 0.1, 1),
+            halign='center', valign='middle')
+        lbl.bind(size=lbl.setter('text_size'))
+
+        pop_ref = [None]
+        layout = BoxLayout(orientation='vertical',
+                           spacing=dp(16), padding=dp(20))
+        layout.add_widget(lbl)
+
+        br = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+        all_imgs = self._he_all_images
+        br.add_widget(mk_btn(
+            'Spill igjen', hex_k('#6BCB77'), h=dp(52), fs=16,
+            cb=lambda *_: (pop_ref[0].dismiss(),
+                           self._hvorer_setup_popup(all_imgs))))
+        br.add_widget(mk_btn(
+            'Hjem', hex_k('#4D96FF'), h=dp(52), fs=16,
+            cb=lambda *_: (pop_ref[0].dismiss(), self.go_home())))
+        layout.add_widget(br)
+
+        pop = Popup(title='Spill fullført!',
+                    content=layout, size_hint=POPUP_SMALL)
+        pop_ref[0] = pop
+        pop.open()
 
     # ══════════════════════════════════════════════════
     #  POPUP – REDIGER MAPPE
