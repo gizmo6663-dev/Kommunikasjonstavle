@@ -1882,8 +1882,13 @@ def launch_confetti(duration=3.0):
                 p['x']  += p['vx']
                 p['vy'] += 0.18        # tyngdekraft – akselererer nedover
                 age   = now - p['born']
-                # Full synlighet de første 1.2s, deretter fade
-                alpha = 1.0 if age < 1.2 else max(0.0, 1.0 - (age-1.2)/(duration-1.2))
+                # Full synlighet de første 1.2s, deretter lineær fade
+                # ned til 0 frem til duration. fade_dur sikrer at vi
+                # ikke deler på null for korte duration-verdier (≤1.2):
+                # da blir alpha-skiftet bratt, men i praksis dør
+                # partikkelen før den når slik alder uansett.
+                fade_dur = max(0.01, duration - 1.2)
+                alpha = 1.0 if age < 1.2 else max(0.0, 1.0 - (age - 1.2) / fade_dur)
                 # Stopp ikke før partikkelen er under bunn av skjermen (y < -h)
                 if p['y'] > -p['h'] * 3 and alpha > 0:
                     alive = True
@@ -9391,7 +9396,7 @@ BARN-MODUS
 
         # ── Hør-knapp ─────────────────────────────────────────────
         listen_btn = mk_btn(
-            'Hor pa nytt', hex_k('#FF9F43'),
+            'Hør på nytt', hex_k('#FF9F43'),
             h=dp(58), fs=17,
             cb=lambda *_: self._hvorer_replay_word())
         outer.add_widget(listen_btn)
