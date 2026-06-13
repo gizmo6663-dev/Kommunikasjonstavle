@@ -2224,10 +2224,23 @@ class _SortDraggable(BoxLayout):
         self._on_drop_cb     = on_drop_cb
         self.size_hint       = (None, None)
         self.orientation     = 'vertical'
+        self.padding         = (dp(4), dp(4))
         self._original_pos   = None
         self._touch_offset   = (0, 0)
         self._touch_grabbed  = False
         self._locked         = False
+
+        # Synlig hvit bakgrunn med runde hjørner via canvas-instruks.
+        # Hvis vi bare brukte ren BoxLayout med Image-barn, ville
+        # widgeten vært helt usynlig hvis image-sti skulle feile –
+        # her ser vi alltid en hvit "kortramme" rundt bildet, og
+        # ramma kan flashe ved valg/feil drop senere.
+        from kivy.graphics import Color, RoundedRectangle
+        with self.canvas.before:
+            self._bg_color = Color(0.97, 0.97, 0.99, 1.0)
+            self._bg_rect  = RoundedRectangle(
+                pos=self.pos, size=self.size, radius=[dp(12)])
+        self.bind(pos=self._update_bg, size=self._update_bg)
 
         # Selve bildet fyller cellen
         from kivy.uix.image import Image as _KivyImage
@@ -2237,6 +2250,11 @@ class _SortDraggable(BoxLayout):
             size_hint=(1, 1),
         )
         self.add_widget(img)
+
+    def _update_bg(self, *_):
+        if hasattr(self, '_bg_rect'):
+            self._bg_rect.pos  = self.pos
+            self._bg_rect.size = self.size
 
     def store_original_pos(self):
         """Lagre nåværende posisjon som "hjem" for sprett-tilbake."""
@@ -8884,9 +8902,9 @@ BARN-MODUS
         spillets tilbake-flow returnerer til menyen.
         """
         self._push('home')
-        self._show_spill_menu()
+        self._show_spillmeny()
 
-    def _show_spill_menu(self):
+    def _show_spillmeny(self):
         self._cur_scr = 'spillmeny'
         self._set_title('Spill')
 
@@ -9893,6 +9911,13 @@ BARN-MODUS
         self._so_total   = len(items)
         self._so_locked  = 0   # antall riktig-sorterte bilder
         self._so_attempts = {id(it): 0 for it in items}
+        diag_section(f'SORTERING runde {self._so_round} '
+                     f'({len(items)} bilder, '
+                     f'{len(self._so_categories)} kategorier)')
+        for it in items:
+            diag(f'  item: cat={it.get("_cat_id", "?")[:8]}, '
+                 f'path={it.get("path", "?")[-40:]}, '
+                 f'exists={os.path.exists(it.get("path", "")) if it.get("path") else False}')
 
         outer = BoxLayout(orientation='vertical',
                           spacing=dp(6), padding=(dp(6), dp(6)))
@@ -9955,16 +9980,32 @@ BARN-MODUS
             self._so_draggables.append(d)
             game.add_widget(d)
 
-        # Etter at FloatLayout har fått størrelse, plasser draggables
-        # i et grid i øvre del. Vi bruker schedule_once med 0 sekunder
-        # så det skjer rett etter at Kivy har gjort første layout-pass.
-        def _layout_draggables(*_):
-            if game.width <= 0 or game.height <= 0:
-                # Ikke målt ennå, prøv igjen kort etter
-                Clock.schedule_once(_layout_draggables, 0.05)
+        # Plasser bildene så snart FloatLayout har målt seg.
+        # Vi binder til on_size, ikke en enkelt Clock.schedule_once,
+        # fordi første layout-pass kan komme et stykke etter at
+        # widgeten er lagt til (særlig på Android). on_size gir oss
+        # garantert et kall så snart størrelsen er kjent.
+        # _so_layout_done sikrer at vi bare layouter én gang, så
+        # senere størrelses-endringer (rotasjon midt i runden) ikke
+        # river bildene ut av dragene barnet holder på med.
+        self._so_layout_done = False
+
+        def _try_layout(*_):
+            if self._so_layout_done:
                 return
+            if game.width <= 0 or game.height <= 0:
+                return
+            self._so_layout_done = True
             self._sortering_layout_draggables()
-        Clock.schedule_once(_layout_draggables, 0)
+
+        game.bind(size=_try_layout)
+        # Også forsøk umiddelbart i tilfelle størrelsen allerede er
+        # satt før on_size får kalt seg
+        Clock.schedule_once(_try_layout, 0)
+        # Backup: prøv et par ganger til, i tilfelle layout-passet
+        # er forsinket av f.eks. asset-lasting
+        Clock.schedule_once(_try_layout, 0.1)
+        Clock.schedule_once(_try_layout, 0.3)
 
         outer.add_widget(game)
         self._set_content(outer)
@@ -9984,6 +10025,9 @@ BARN-MODUS
         """
         game = self._so_game
         n = len(self._so_draggables)
+        diag(f'sortering layout: game.pos={game.pos}, '
+             f'game.size={game.size}, n={n}')
+
         # Pool-området: nederste 5px–37% er drop-soner, øvre del er pool
         pool_left   = game.x
         pool_bottom = game.y + 0.37 * game.height
@@ -10005,6 +10049,10 @@ BARN-MODUS
         cell_h = pool_h / rows
         # Bildet er kvadratisk – ta minste dimensjonen, med litt padding
         size = max(dp(40), min(cell_w, cell_h) * 0.85)
+        diag(f'sortering pool: left={pool_left:.0f}, bottom={pool_bottom:.0f}, '
+             f'w={pool_w:.0f}, h={pool_h:.0f}, cell={cell_w:.0f}x{cell_h:.0f}, '
+             f'size={size:.0f}')
+
         for idx, d in enumerate(self._so_draggables):
             row = idx // cols
             col = idx % cols
@@ -10016,6 +10064,9 @@ BARN-MODUS
             d.x = cx - size / 2
             d.y = cy - size / 2
             d.store_original_pos()
+            diag(f'  d[{idx}]: pos=({d.x:.0f}, {d.y:.0f}), '
+                 f'size=({d.width:.0f}, {d.height:.0f}), '
+                 f'src={d.item.get("path", "")[-30:]}')
 
     def _sortering_on_drop(self, draggable, touch):
         """
