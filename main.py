@@ -2985,7 +2985,7 @@ class KommunikasjonstavleApp(App):
             ('Rekker',   '#4ECDC4', 'sequences', self._nav_sequences),
             ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
             ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
-            ('Spill',    '#C77DFF', 'bildepar',  self._nav_bildepar),
+            ('Spill',    '#C77DFF', 'spillmeny', self._nav_spillmeny),
             ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
         self._quickbar_btns = {}
@@ -3023,7 +3023,7 @@ class KommunikasjonstavleApp(App):
             ('Rekker',   '#4ECDC4', 'sequences', self._nav_sequences),
             ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
             ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
-            ('Spill',    '#C77DFF', 'bildepar',  self._nav_bildepar),
+            ('Spill',    '#C77DFF', 'spillmeny', self._nav_spillmeny),
             ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
         self._quickbar_btns = {}
@@ -3225,7 +3225,8 @@ class KommunikasjonstavleApp(App):
         self._show_draw()
 
     def toggle_edit(self, *_):
-        if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar', 'settings'):
+        if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar',
+                             'spillmeny', 'settings'):
             return
         st = self.data.get('settings', {})
         # Barn-modus: krev PIN for å aktivere redigeringsmodus
@@ -8566,6 +8567,194 @@ BARN-MODUS
                                 'uttale': it.get('uttale', '')})
             self._collect_all_images(fo.get('subfolders', []), seen, out)
         return out
+
+    # ══════════════════════════════════════════════════
+    #  SPILLMENY
+    # ══════════════════════════════════════════════════
+
+    # Definisjonen av tilgjengelige spill. Ett sted å oppdatere når nye
+    # spill implementeres – legg bare til en ny rad. `handler` får self
+    # som første argument og er ansvarlig for å åpne spillet.
+    # `enabled=False` viser flisen som "kommer snart" og spiller ingen
+    # rolle utover å indikere planlagte fremtidige spill.
+    SPILL_DEFINISJONER = [
+        {
+            'id':    'memory',
+            'navn':  'Memory',
+            'farge': '#C77DFF',
+            'desc':  'Finn par av like bilder.',
+            'enabled': True,
+        },
+        {
+            'id':    'hvorer',
+            'navn':  'Hvor er…?',
+            'farge': '#4D96FF',
+            'desc':  'Hør et ord – pek på riktig bilde.',
+            'enabled': False,
+        },
+        {
+            'id':    'sortering',
+            'navn':  'Sortering',
+            'farge': '#FF9F43',
+            'desc':  'Plasser bildene i riktig kategori.',
+            'enabled': False,
+        },
+        {
+            'id':    'sekvens',
+            'navn':  'Sekvens',
+            'farge': '#4ECDC4',
+            'desc':  'Sett aktivitetene i riktig rekkefølge.',
+            'enabled': False,
+        },
+        {
+            'id':    'oddoneout',
+            'navn':  'Hva passer ikke?',
+            'farge': '#FFD93D',
+            'desc':  'Finn bildet som skiller seg ut.',
+            'enabled': False,
+        },
+        {
+            'id':    'setning',
+            'navn':  'Lag setning',
+            'farge': '#6BCB77',
+            'desc':  'Sett sammen ord til en setning.',
+            'enabled': False,
+        },
+    ]
+
+    def _nav_spillmeny(self):
+        """
+        Åpner spillmeny-skjermen. Push 'home' slik at tilbakeknappen
+        fra menyen returnerer til hjemskjermen. Når et spill startes
+        fra menyen, gjøres ytterligere push av 'spillmeny' slik at
+        spillets tilbake-flow returnerer til menyen.
+        """
+        self._push('home')
+        self._show_spill_menu()
+
+    def _show_spill_menu(self):
+        self._cur_scr = 'spillmeny'
+        self._set_title('Spill')
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(8), padding=(0, dp(6), 0, 0))
+
+        # Lite intro øverst – plasserer Spill-fanen pedagogisk og
+        # forklarer at flere spill kommer.
+        intro = Label(
+            text=('Spill bygger ASK-ferdigheter på ulike måter – '
+                  'gjenkjenning, lytting, kategorisering og setningsbygging. '
+                  'Flere spill kommer i senere oppdateringer.'),
+            size_hint_y=None, font_size=fsp(13),
+            color=(0.30, 0.35, 0.50, 1),
+            halign='center', valign='middle',
+            padding=(dp(14), dp(6)),
+        )
+        intro.bind(width=lambda w, v: setattr(w, 'text_size', (v - dp(20), None)))
+        intro.bind(texture_size=lambda w, v: setattr(w, 'height', v[1] + dp(12)))
+        outer.add_widget(intro)
+
+        # 2 kolonner i portrett, 3 i liggende
+        n_cols = 3 if is_landscape() else 2
+        grid = GridLayout(
+            cols=n_cols, spacing=dp(10),
+            padding=(dp(10), dp(4), dp(10), dp(10)),
+            size_hint_y=None,
+        )
+        grid.bind(minimum_height=grid.setter('height'))
+        for spill in self.SPILL_DEFINISJONER:
+            grid.add_widget(self._make_spill_tile(spill))
+
+        sv = ScrollView()
+        sv.add_widget(grid)
+        outer.add_widget(sv)
+        self._set_content(outer)
+
+    def _make_spill_tile(self, spill):
+        """
+        Bygger én flis for spillmenyen: stor farget knapp med spillnavn,
+        liten beskrivelse under, og et "Kommer snart"-merke for spill
+        som ennå ikke er implementert. Hele knappen er trykkbar; et
+        deaktivert spill gir en informativ toast.
+        """
+        enabled = spill.get('enabled', False)
+        farge   = spill['farge']
+        navn    = spill['navn']
+        desc    = spill['desc']
+
+        TILE_H = rdp(180)
+        BTN_H  = rdp(120)
+
+        # Deaktiverte spill får en dempet variant av fargen slik at de
+        # er visuelt tydelig adskilt fra de aktive – holder samme
+        # hue så menyen ikke ser kaotisk ut.
+        if enabled:
+            btn_bg = hex_k(farge)
+        else:
+            r, g, b, a = hex_k(farge)
+            # Blend mot lys grå (0.78) for å indikere "ikke klikkbar enda"
+            mix = 0.55
+            btn_bg = (r*mix + 0.78*(1-mix),
+                      g*mix + 0.78*(1-mix),
+                      b*mix + 0.78*(1-mix), a)
+
+        if enabled and spill['id'] == 'memory':
+            tap = self._open_bildepar_setup
+        else:
+            tap = lambda navn=navn: self._spill_kommer_snart(navn)
+
+        cell = BoxLayout(orientation='vertical',
+                         size_hint_y=None, height=TILE_H, spacing=dp(4))
+
+        # Hovedknapp med spillnavnet
+        # Hvis deaktivert: legg til en liten "kommer snart"-undertekst
+        # direkte i knappen, slik at det er tydelig før brukeren trykker.
+        if enabled:
+            btn_text = navn
+        else:
+            btn_text = navn + '\n[size=11sp](kommer snart)[/size]'
+        btn = RBtn(
+            text=btn_text, markup=True,
+            size_hint=(1, None), height=BTN_H,
+            btn_color=list(btn_bg),
+            color=text_on(farge) if enabled else (0.35, 0.38, 0.50, 1),
+            bold=True, font_size=fsp(18),
+            radius=dp(16),
+            halign='center', valign='middle',
+        )
+        btn.bind(size=lambda w, v: setattr(w, 'text_size', v))
+        btn.bind(on_release=lambda b, t=tap: t())
+        bind_card_pop(btn)
+        cell.add_widget(btn)
+
+        # Beskrivelse under
+        desc_lbl = Label(
+            text=desc,
+            size_hint_y=None, height=rdp(46),
+            font_size=fsp(11),
+            color=(0.30, 0.34, 0.48, 1),
+            halign='center', valign='top',
+        )
+        desc_lbl.bind(size=desc_lbl.setter('text_size'))
+        cell.add_widget(desc_lbl)
+        return cell
+
+    def _spill_kommer_snart(self, navn):
+        """Toast for ennå ikke-implementerte spill."""
+        self._toast(f'{navn} kommer i en senere versjon!')
+
+    def _open_bildepar_setup(self, *_):
+        """
+        Åpner Bildepar-spillet fra spillmenyen. Forutsetter at vi
+        allerede er på 'spillmeny'-skjermen – derfor ingen ekstra
+        _push her. (For direkte snarveier brukes _nav_bildepar.)
+        """
+        all_images = self._collect_all_images(self.data.get('folders', []))
+        if len(all_images) < 2:
+            self._toast('Trenger minst 2 bilder i mappene for å spille.')
+            return
+        self._push('spillmeny')
+        self._bildepar_setup_popup(all_images)
 
     def _nav_bildepar(self):
         all_images = self._collect_all_images(self.data.get('folders', []))
