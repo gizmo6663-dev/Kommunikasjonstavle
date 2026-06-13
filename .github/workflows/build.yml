@@ -181,22 +181,41 @@ jobs:
 
           # ── Tving regenerering av Python-bytecode pakket i APK ───
           # p4a/buildozer cacher den ferdige Java-prosjektstrukturen
-          # under platform/build-*/dists/<app>/, inkludert Python-
-          # bytecode-bunten i src/main/assets/ eller _python_bundle/.
-          # Når denne mappa gjenoppstås fra GitHub Actions-cachen,
-          # detekterer p4a at "dist finnes" og kan hoppe over å re-
-          # pakke .py-filene (den sjekker timestamp på en marker-fil
-          # i dist, ikke på selve .py-filene). Resultatet er en
-          # vellykket bygg-rapport der APK-en likevel inneholder FORRIGE
-          # .py-versjon – endringer i main.py/kt_widgets.py vises ikke
-          # på enheten, og man tror feilaktig man må slette hele
-          # cachen for å fikse det.
+          # under platform/build-*/dists/<app>/. Python-koden ligger
+          # ikke i selve dist-mappa, men er pakket inn i
+          # src/main/assets/private.mp3 (en .tar-fil omdøpt til .mp3
+          # for å unngå at Android komprimerer den) – og evt. i
+          # _python_bundle/site-packages/. Når DIS pakker FINNES fra
+          # cache, kan p4a tro at Python allerede er pakket og hoppe
+          # over re-pakkingen, slik at APK-en inneholder GAMLE .py-
+          # filer selv om main.py er endret.
           #
-          # Sletting av kun dist-mappa tvinger p4a til å pakke Python
-          # på nytt, mens den underliggende build-mappa (med kompilert
-          # Python-tolk + native libs – det som faktisk tar 30+ min å
-          # bygge) blir intakt i cachen.
-          rm -rf .buildozer/android/platform/build-*/dists/kommunikasjonstavle
+          # KIRURGISK fjerning av kun Python-bundlet (i stedet for
+          # hele dist-mappa) lar Java-prosjektstrukturen og Gradle-
+          # tilstanden være intakt, men tvinger p4a til å re-pakke
+          # Python-koden. Tidligere prøvde vi å slette hele dist-
+          # mappa, men det utløste en feil i p4a sin "toolchain create"
+          # – sannsynligvis fordi en restored build-mappe og en
+          # fersk p4a-checkout ble inkompatible når dist måtte
+          # bygges fra null.
+          find .buildozer/android/platform/build-*/dists/kommunikasjonstavle/src/main/assets \
+            -name "private.*" -delete 2>/dev/null || true
+          find .buildozer/android/platform/build-*/dists/kommunikasjonstavle \
+            -type d -name "_python_bundle" -exec rm -rf {} + 2>/dev/null || true
+
+          # ── Diagnoselogg: log_level=2 så p4a sin stderr er synlig ─
+          # Buildozer skjuler p4a sin faktiske feilmelding på
+          # log_level=1, og viser bare "Command failed: Error code: 1"
+          # uten kontekst. Med log_level=2 får vi traceback fra p4a
+          # når den feiler, slik at problemer kan diagnostiseres uten
+          # nye iterasjoner. Litt mer støy i loggen, men avgjørende
+          # for å forstå hva som faktisk skjer.
+          #
+          # Regex matcher BÅDE kommenterte (# log_level = 1) og
+          # eksisterende linjer (log_level = 1). Hvis ingen linje
+          # finnes, legges en ny til på slutten.
+          sed -i -E 's/^(# *)?log_level *= *.*/log_level = 2/' buildozer.spec
+          grep -q '^log_level' buildozer.spec || echo 'log_level = 2' >> buildozer.spec
 
           echo '=== PASS 1: buildozer android debug ==='
           buildozer android debug 2>&1 | tee build_step1.log || true
