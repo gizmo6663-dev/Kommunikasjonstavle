@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Kommunikasjonstavle v1.2
+Kommunikasjonstavle v1.3
 ASK-kommunikasjonsapp for barnehage og skole
 Python 3 / Kivy 2.3.0  –  Buildozer / Android
 
