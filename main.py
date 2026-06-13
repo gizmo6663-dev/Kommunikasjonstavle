@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Kommunikasjonstavle v1.3
+Kommunikasjonstavle v1.2
 ASK-kommunikasjonsapp for barnehage og skole
 Python 3 / Kivy 2.3.0  –  Buildozer / Android
 
@@ -8883,27 +8883,6 @@ BARN-MODUS
             'farge': '#FF9F43',
             'desc':  'Plasser bildene i riktig kategori.',
             'enabled': True,
-        },
-        {
-            'id':    'sekvens',
-            'navn':  'Sekvens',
-            'farge': '#4ECDC4',
-            'desc':  'Sett aktivitetene i riktig rekkefølge.',
-            'enabled': False,
-        },
-        {
-            'id':    'oddoneout',
-            'navn':  'Hva passer ikke?',
-            'farge': '#FFD93D',
-            'desc':  'Finn bildet som skiller seg ut.',
-            'enabled': False,
-        },
-        {
-            'id':    'setning',
-            'navn':  'Lag setning',
-            'farge': '#6BCB77',
-            'desc':  'Sett sammen ord til en setning.',
-            'enabled': False,
         },
     ]
 
