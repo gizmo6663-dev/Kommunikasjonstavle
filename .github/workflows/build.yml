@@ -4,6 +4,15 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      clean_build:
+        description: 'Hopp over cache (bygg fra null – tar ~15 min, men garantert frisk Python-kode)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   build:
@@ -19,7 +28,9 @@ jobs:
       # ── CACHE 1: Gradle ──────────────────────────────────────────
       # Cachenøkkel basert på buildozer.spec OG Java-filer.
       # Ugyldiggjøres kun hvis avhengigheter eller Java endres.
+      # Hopper helt over hvis 'clean_build=true' er valgt manuelt.
       - name: Cache Gradle
+        if: github.event.inputs.clean_build != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.gradle
@@ -30,7 +41,9 @@ jobs:
       # ── CACHE 2: .buildozer (Android SDK/NDK + p4a-pakker) ───────
       # Dette er det største tidsvinduet ved cache-miss (~3 GB nedlasting).
       # Ugyldiggjøres kun når buildozer.spec endres (nye requirements osv.).
+      # Hopper helt over hvis 'clean_build=true' er valgt manuelt.
       - name: Cache .buildozer (SDK, NDK, p4a)
+        if: github.event.inputs.clean_build != 'true'
         id: buildozer-cache
         uses: actions/cache@v4
         with:
@@ -38,6 +51,18 @@ jobs:
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-
+
+      # ── CLEAN BUILD: slett evt. workspace-rester etter checkout ───
+      # Hvis brukeren har valgt clean_build=true, sletter vi alle bygge-
+      # mapper for å garantere fra-null-bygg. Cachen blir ikke gjenopprettet
+      # (steg ovenfor er hoppet over), men workspace kan likevel ha .buildozer/
+      # eller bin/ fra forrige kjøring hvis runner gjenbrukes.
+      - name: Slett bygge-mapper ved clean build
+        if: github.event.inputs.clean_build == 'true'
+        run: |
+          echo "🧹 Clean build valgt – sletter alle lokale bygge-mapper"
+          rm -rf .buildozer bin
+          echo "(Cache i GitHub Actions er ikke berørt, men ble ikke restored heller.)"
 
       # ── ENDRINGSDETEKSJON: bare Python endret? ───────────────────
       # Sjekker om ALLE endrede filer siden forrige commit er .py/.md/.txt
