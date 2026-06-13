@@ -67,3 +67,17 @@ def get_sequence(data, sid):
         (s for s in data.get('sequences', []) if s.get('id') == sid),
         None
     )
+
+
+def tale_for_item(it):
+    """
+    Returnerer teksten som skal leses opp (TTS) for et symbol/element.
+
+    Bruker det valgfrie 'uttale'-feltet hvis det er satt og ikke tomt –
+    slik kan de ansatte skrive en alternativ skrivemåte som gir riktig
+    uttale på talesyntesen, uten å endre selve symbolnavnet/etiketten
+    som vises under bildet. Er feltet tomt/ikke satt, brukes 'name'
+    som før.
+    """
+    uttale = (it.get('uttale') or '').strip()
+    return uttale or it.get('name', '')

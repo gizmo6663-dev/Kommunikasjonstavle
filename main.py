@@ -73,7 +73,7 @@ from kt_widgets import (
 )
 from kt_data import (
     today_code, get_day_plan, is_paused, get_category,
-    get_folder as _get_folder_data,
+    get_folder as _get_folder_data, tale_for_item,
 )
 
 _FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -3777,7 +3777,8 @@ class KommunikasjonstavleApp(App):
             thumb = get_thumbnail(img_path, int(IMG_H), int(IMG_H))
             ti = TappableImage(
                 (lambda: None) if edit else
-                (lambda p=img_path, n=pin['name']: self._show_image_full(p, n)),
+                (lambda p=img_path, n=pin['name'], u=pin.get('uttale', ''):
+                    self._show_image_full(p, n, u)),
                 source=img_path if thumb is None else '',
                 allow_stretch=True, keep_ratio=True,
                 size_hint=(1, None), height=IMG_H)
@@ -3796,8 +3797,8 @@ class KommunikasjonstavleApp(App):
             # derfra) – i stedet er "Fjern"-knappen den eneste handlingen.
             btn.disabled = True
         else:
-            btn.bind(on_release=lambda b, p=img_path, n=pin['name']:
-                     self._show_image_full(p, n))
+            btn.bind(on_release=lambda b, p=img_path, n=pin['name'], u=pin.get('uttale', ''):
+                     self._show_image_full(p, n, u))
         cell.add_widget(btn)
 
         if edit:
@@ -3838,6 +3839,7 @@ class KommunikasjonstavleApp(App):
             def _pin(*_):
                 festede.append({'id': it['id'], 'name': it['name'],
                                 'image': it.get('image', ''),
+                                'uttale': it.get('uttale', ''),
                                 'folder_id': fo['id']})
                 save_struct(self.data)
                 pop.dismiss()
@@ -3940,9 +3942,9 @@ class KommunikasjonstavleApp(App):
     #  FLIP-OVERGANG TIL FULLSKJERM-BILDE
     # ══════════════════════════════════════════════════════════════
 
-    def _flip_to_image(self, path, name):
+    def _flip_to_image(self, path, name, uttale=None):
         """Åpner fullskjermbilde. Slide-animasjon håndteres av _set_content."""
-        self._show_image_full(path, name)
+        self._show_image_full(path, name, uttale)
 
     def _show_home(self, animate=True, **_):
         self._cur_scr   = 'home'
@@ -4291,7 +4293,8 @@ class KommunikasjonstavleApp(App):
             tap = lambda f=fo, i=it: self._item_popup(f, i)
         else:
             # Direkte til fullskjerm – slide-animasjon håndteres av _set_content
-            tap = lambda p=img_path, n=it['name']: self._show_image_full(p, n)
+            tap = lambda p=img_path, n=it['name'], u=it.get('uttale', ''): \
+                self._show_image_full(p, n, u)
 
         r, g, b, _ = hex_k(fo.get('color', '#4D96FF'))
         card_col   = (r*0.12 + 0.88, g*0.12 + 0.88, b*0.12 + 0.88, 1.0)
@@ -4431,10 +4434,15 @@ class KommunikasjonstavleApp(App):
     #  FULLSKJERM-BILDE
     # ══════════════════════════════════════════════════
 
-    def _show_image_full(self, path, name):
+    def _show_image_full(self, path, name, uttale=None):
         if not path or not os.path.exists(path):
             self._toast('Bildefil ikke funnet.')
             return
+        # 'uttale' kan være None (kalt fra steder som ikke kjenner feltet),
+        # tom streng (feltet finnes men er ikke fylt ut), eller en
+        # alternativ skrivemåte. I alle tilfeller der den er tom faller
+        # vi tilbake på selve symbolnavnet – se tale_for_item().
+        tale = (uttale or '').strip() or name
         self._push('folder', fid=self.cur_folder)
         self._cur_scr = 'image'
         self._set_title('')   # tittel vises i kortet, ikke bunnbaren
@@ -4480,7 +4488,7 @@ class KommunikasjonstavleApp(App):
         btn_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
         btn_row.add_widget(mk_btn(
             'Les opp', hex_k('#FF9F43'), h=dp(48), fs=14,
-            cb=lambda *_: self._speak(name),
+            cb=lambda *_: self._speak(tale),
         ))
         btn_row.add_widget(mk_btn(
             'QR-kode', hex_k('#4D96FF'), h=dp(48), fs=14,
@@ -4513,7 +4521,7 @@ class KommunikasjonstavleApp(App):
         outer.add_widget(card)
         outer.add_widget(BoxLayout())  # spacer
 
-        self._speak(name)
+        self._speak(tale)
         self._set_content(outer)
 
     # ══════════════════════════════════════════════════
@@ -8554,7 +8562,8 @@ BARN-MODUS
                 p = it.get('image')
                 if p and p not in seen and os.path.exists(p):
                     seen.add(p)
-                    out.append({'path': p, 'name': it.get('name', '')})
+                    out.append({'path': p, 'name': it.get('name', ''),
+                                'uttale': it.get('uttale', '')})
             self._collect_all_images(fo.get('subfolders', []), seen, out)
         return out
 
@@ -8604,8 +8613,10 @@ BARN-MODUS
             sel_imgs = random.sample(all_images, n)
             cards = []
             for pid, img in enumerate(sel_imgs):
-                cards.append({'pair_id': pid, 'path': img['path'], 'name': img['name']})
-                cards.append({'pair_id': pid, 'path': img['path'], 'name': img['name']})
+                card = {'pair_id': pid, 'path': img['path'], 'name': img['name'],
+                        'uttale': img.get('uttale', '')}
+                cards.append(card)
+                cards.append(dict(card))
             random.shuffle(cards)
             pop_ref[0].dismiss()
             self._start_bildepar_game(cards)
@@ -8713,7 +8724,7 @@ BARN-MODUS
         if self._bp_state[idx] != 'hidden' or len(self._bp_revealed) >= 2:
             return
         self._bp_revealed.append(idx)
-        self._speak(self._bp_cards[idx]['name'])
+        self._speak(tale_for_item(self._bp_cards[idx]))
         def after_flip():
             if len(self._bp_revealed) < 2:
                 return
@@ -8745,7 +8756,97 @@ BARN-MODUS
                 f'Trekk: {self._bp_moves}  |  '
                 f'Par funnet: {self._bp_matches} / {len(self._bp_cards) // 2}')
 
+    def _generate_jingle_wav(self, path):
+        """
+        Genererer en kort "victory"-jingle som mono 16-bit WAV.
+        C5–E5–G5-arpeggio etterfulgt av C-dur-akkord (C5+E5+G5+C6).
+        Lengde ~0,9 s, størrelse ~40 KB. Bruker kun Python stdlib
+        (wave + struct + math) for å unngå numpy-avhengighet.
+        Kjøres én gang per oppstart, deretter caches resultatet.
+        """
+        import wave, struct, math
+        sr = 22050
+
+        def _tone(freq, dur, amp=0.35, attack=0.01, release=0.08):
+            n = int(sr * dur)
+            out = []
+            for i in range(n):
+                t = i / sr
+                env = 1.0
+                if t < attack:
+                    env = t / attack
+                elif t > dur - release:
+                    env = max(0.0, (dur - t) / release)
+                out.append(amp * env * math.sin(2 * math.pi * freq * t))
+            return out
+
+        def _chord(freqs, dur, amp=0.20):
+            n = int(sr * dur)
+            out = [0.0] * n
+            per = amp / len(freqs)
+            for f in freqs:
+                s = _tone(f, dur, amp=per, attack=0.02, release=0.20)
+                for i in range(n):
+                    out[i] += s[i]
+            return out
+
+        samples = []
+        # Arpeggio C5–E5–G5 (8., 8., 8.-dels noter)
+        samples += _tone(523.25, 0.13)
+        samples += _tone(659.25, 0.13)
+        samples += _tone(783.99, 0.13)
+        # Avslutningsakkord C-dur med oktav-doblet topp
+        samples += _chord([523.25, 659.25, 783.99, 1046.50], 0.45)
+        samples += [0.0] * int(sr * 0.05)
+
+        # Soft clip + konverter til int16
+        data = []
+        for s in samples:
+            s = max(-0.95, min(0.95, s))
+            data.append(int(s * 32767))
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with wave.open(path, 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(struct.pack('<' + 'h' * len(data), *data))
+
+    def _play_jingle(self):
+        """
+        Spiller seier-jingle ved fullført Bildepar-spill.
+        Bruker Kivy SoundLoader; lyden lastes én gang og caches på
+        self._jingle_sound. WAV-en genereres på første kall til
+        user_data_dir/jingle_win.wav slik at den ikke trenger å
+        buntes med APK-en.
+        Feiler stille – jingle skal aldri ødelegge spillopplevelsen.
+        """
+        try:
+            if not hasattr(self, '_jingle_sound') or self._jingle_sound is None:
+                path = os.path.join(self.user_data_dir, 'jingle_win.wav')
+                if not os.path.exists(path):
+                    self._generate_jingle_wav(path)
+                from kivy.core.audio import SoundLoader
+                self._jingle_sound = SoundLoader.load(path)
+            snd = self._jingle_sound
+            if snd:
+                # Stopp evt. tidligere avspilling først – garanterer at
+                # rask gjentakelse (spill flere ganger raskt) ikke
+                # ignoreres av lydsystemet.
+                try:
+                    snd.stop()
+                except Exception:
+                    pass
+                snd.volume = 0.85
+                snd.play()
+        except Exception:
+            logging.exception('_play_jingle: feil – ignorert')
+
     def _bildepar_win(self):
+        # Jingle + konfetti for ekstra "vi klarte det!"-følelse
+        self._play_jingle()
+        Clock.schedule_once(lambda *_: launch_confetti(2.5), 0.1)
+
         lbl = Label(
             text=f'Gratulerer!\nAlle {self._bp_matches} par funnet\ni løpet av {self._bp_moves} trekk!',
             font_size=fsp(19), color=(0.1, 0.5, 0.1, 1),
@@ -8971,6 +9072,33 @@ BARN-MODUS
         )
         layout.add_widget(name_inp)
 
+        # ── Uttale-felt ───────────────────────────────────────────
+        # Lar de ansatte skrive inn en alternativ skrivemåte som gir
+        # riktig uttale på talesyntesen, uten å endre selve etiketten
+        # som vises under bildet. Tomt felt → symbolnavnet leses opp
+        # som før (se tale_for_item() i kt_data.py).
+        layout.add_widget(Label(
+            text='Uttale (valgfritt – brukes av talesyntesen i stedet for navnet):',
+            size_hint_y=None, height=dp(28),
+            font_size=sp(15), color=(0, 0, 0, 1), halign='left',
+        ))
+        uttale_inp = smart_input(
+            text='' if new else it.get('uttale', ''),
+            hint='La stå tom for å bruke navnet over',
+            on_save=lambda: on_ok(),
+            size_hint_x=1,
+        )
+        listen_btn = mk_btn(
+            'Lytt', hex_k('#9C7DCE'), h=dp(52), fs=14,
+            size_hint_x=None, width=dp(80),
+            cb=lambda *_: self._speak(
+                uttale_inp.text.strip() or name_inp.text.strip()),
+        )
+        uttale_row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        uttale_row.add_widget(uttale_inp)
+        uttale_row.add_widget(listen_btn)
+        layout.add_widget(uttale_row)
+
         # ── Filnavn-etikett og bildevelger ────────────────────────
         chosen_img = [it.get('image') if it else None]
         img_lbl = Label(
@@ -9079,14 +9207,16 @@ BARN-MODUS
             nm = name_inp.text.strip()
             if not nm:
                 return
+            uttale = uttale_inp.text.strip()
             if new:
                 fo['items'].append({
-                    'id':    str(uuid.uuid4()),
-                    'name':  nm,
-                    'image': chosen_img[0],
+                    'id':     str(uuid.uuid4()),
+                    'name':   nm,
+                    'image':  chosen_img[0],
+                    'uttale': uttale,
                 })
             else:
-                it.update({'name': nm, 'image': chosen_img[0]})
+                it.update({'name': nm, 'image': chosen_img[0], 'uttale': uttale})
             save_struct(self.data)
             pop_ref[0].dismiss()
             self._show_folder(fid=fo['id'])
