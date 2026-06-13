@@ -101,6 +101,32 @@ if os.path.exists(_FONT_PATH):
 APP_TITLE    = 'Kommunikasjonstavle'
 DOWNLOAD_DIR = '/sdcard/Download'
 
+# ── Lytt-modus: mappa for naturlyder ──────────────────────────────
+# Hver lydfil i denne mappa blir en flis i Lytt-menyen, med filnavn
+# (uten extension) som visningsnavn. Det betyr at nye lyder kan
+# legges til ved å droppe filer i mappa – ingen kode-endring kreves.
+# Støttede formater: .mp3, .ogg, .wav, .m4a, .aac, .opus
+#
+# Filer pakkes inn i APK-en via assets/lyd/natur/ og lastes derfra
+# ved kjøring (samme mekanisme som assets/NotoSans-Regular.ttf).
+LYTT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'assets', 'lyd', 'natur')
+
+# Roterende fargepalett for Lytt-fliser. Natur-inspirerte toner som
+# sammen gir en rolig, demped variasjon uten å rope etter
+# oppmerksomhet. Hver flis får farge basert på rekkefølge – ikke
+# innhold – så samme rekkefølge gir samme farger på tvers av kjøringer.
+LYTT_PALETTE = [
+    '#2D5F4E',  # mørk skog
+    '#3A6B8A',  # regn-blå
+    '#1F4C73',  # dyp sjø
+    '#5C8266',  # mose
+    '#7B6845',  # tørt løv
+    '#4A5F7A',  # tåke
+    '#6B4423',  # bål-glo
+    '#3D5944',  # skygge-grønn
+]
+
 # Disse settes i build() via App.user_data_dir
 DATA_DIR    = None
 IMG_DIR     = None
@@ -3137,6 +3163,7 @@ class KommunikasjonstavleApp(App):
             ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
             ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
             ('Spill',    '#C77DFF', 'spillmeny', self._nav_spillmeny),
+            ('Lytt',     '#6BCB77', 'lytt',      self._nav_lytt),
             ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
         self._quickbar_btns = {}
@@ -3175,6 +3202,7 @@ class KommunikasjonstavleApp(App):
             ('Dagsplan', '#FF9F43', 'dagsrytme', self._nav_dagsrytme),
             ('Tidsur',   '#4D96FF', 'tidsur',    self._nav_tidsur),
             ('Spill',    '#C77DFF', 'spillmeny', self._nav_spillmeny),
+            ('Lytt',     '#6BCB77', 'lytt',      self._nav_lytt),
             ('Tegn',     '#FFD93D', 'draw',      self.go_draw),
         ]
         self._quickbar_btns = {}
@@ -3378,7 +3406,8 @@ class KommunikasjonstavleApp(App):
     def toggle_edit(self, *_):
         if self._cur_scr in ('draw', 'image', 'tidsur', 'bildepar',
                              'hvorer', 'sortering',
-                             'spillmeny', 'settings'):
+                             'spillmeny', 'lytt', 'lytt_spiller',
+                             'settings'):
             return
         st = self.data.get('settings', {})
         # Barn-modus: krev PIN for å aktivere redigeringsmodus
@@ -3748,7 +3777,8 @@ class KommunikasjonstavleApp(App):
         barn = self.data.get('settings', {}).get('barn_modus', False)
         scr  = self._cur_scr
         hide_scrs = ('image', 'tidsur', 'bildepar', 'hvorer', 'sortering',
-                     'spillmeny', 'draw', 'settings')
+                     'spillmeny', 'lytt', 'lytt_spiller',
+                     'draw', 'settings')
         edit_hide = self.edit_mode and scr in ('home', 'folder')
         skal_vise = not (barn or scr in hide_scrs or edit_hide)
 
@@ -3941,6 +3971,14 @@ class KommunikasjonstavleApp(App):
                 self._dr_event = None
         if self._cur_scr != 'tidsur' and getattr(self, '_timer_running', False):
             self._tidsur_stop()
+        # Stopp natur-lyd hvis vi forlater Lytt-skjermene. Bytter
+        # man mellom 'lytt' (meny) og 'lytt_spiller' (avspilling) skal
+        # lyden fortsette – derfor sjekker vi mot BEGGE.
+        # (NB: _cur_scr er satt til NYE skjermen før _set_content
+        # kalles, jf. _show_tidsur, _show_lytt osv. – derfor 'not in'.)
+        if self._cur_scr not in ('lytt', 'lytt_spiller') \
+                and getattr(self, '_lytt_sound', None) is not None:
+            self._lytt_stop_sound()
         # Nullstill adaptiv bakgrunn når vi forlater bilde-skjermen
         if self._cur_scr == 'image':
             hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
@@ -10139,6 +10177,235 @@ BARN-MODUS
                     content=layout, size_hint=POPUP_SMALL)
         pop_ref[0] = pop
         pop.open()
+
+    # ══════════════════════════════════════════════════════════════
+    #  LYTT – AUDIOSENSORISK PAUSE
+    #
+    #  Et eget "stille rom" innebygget i appen: barnet (eller voksen)
+    #  velger en naturlyd fra en flis-meny, og blir møtt av en mørk
+    #  skjerm med kun den loopende lyden og én Ferdig-knapp.
+    #
+    #  Filosofisk grunnlag (modus in omnibus):
+    #    • Appen er ikke alltid PÅ. En bevisst pause som hører til
+    #      appen, ikke som et brudd FRA den, signaliserer at
+    #      stillhet og hvile er en del av kommunikasjon.
+    #    • Mellomvei mellom konstant stimulering og full uttrekning:
+    #      sensorisk skjerm med lyd, men ingen visuell støy eller
+    #      kommunikasjonspress.
+    #
+    #  Filer (assets/lyd/natur/):
+    #    Mappa skannes ved kjøring – enhver lydfil blir en flis,
+    #    med filnavn (uten extension) som visningsnavn. F.eks.:
+    #      Skog.mp3              → "Skog"
+    #      Regn i byen.mp3       → "Regn i byen"
+    #      Bål i skogen.mp3      → "Bål i skogen"
+    #    Ingen bilder – fliser bruker en roterende fargepalett av
+    #    natur-inspirerte toner (LYTT_PALETTE).
+    # ══════════════════════════════════════════════════════════════
+
+    _LYTT_LYDFORMATER = ('.mp3', '.ogg', '.wav', '.m4a', '.aac', '.opus')
+
+    def _lytt_skann_lyder(self):
+        """
+        Skanner LYTT_DIR for lydfiler og returnerer en liste av
+        {'navn': str, 'lyd': absolutt_sti} i alfabetisk rekkefølge
+        på filnavn. Returnerer tom liste hvis mappa ikke finnes
+        eller er tom – kallekoden viser da en informativ melding.
+        """
+        funn = []
+        if not os.path.isdir(LYTT_DIR):
+            return funn
+        try:
+            for fn in sorted(os.listdir(LYTT_DIR)):
+                full = os.path.join(LYTT_DIR, fn)
+                if not os.path.isfile(full):
+                    continue
+                navn, ext = os.path.splitext(fn)
+                if ext.lower() not in self._LYTT_LYDFORMATER:
+                    continue
+                funn.append({'navn': navn, 'lyd': full})
+        except OSError:
+            logging.exception('Lytt: feilet å skanne %s', LYTT_DIR)
+        return funn
+
+    def _nav_lytt(self, *_):
+        """Naviger til Lytt-menyen (tilgjengelig fra quickbar)."""
+        self._push('home')
+        self._show_lytt()
+
+    def _show_lytt(self, **_):
+        """
+        Lytt-meny: én flis per lydfil i LYTT_DIR.
+
+        Hvis ingen lydfiler finnes, vises en informativ melding som
+        forklarer hvor lydene skal legges – så ansatte forstår hva
+        som mangler i stedet for å se en tom skjerm.
+        """
+        self._cur_scr = 'lytt'
+        self._set_title('Lytt')
+
+        lyder = self._lytt_skann_lyder()
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=dp(8), padding=(dp(8), dp(8)))
+
+        if not lyder:
+            # ── Tom-tilstand: ingen lyd-filer funnet ──────────────
+            info = Label(
+                text=('Ingen lyder funnet.\n\n'
+                      'Legg inn lydfiler i:\n'
+                      'assets/lyd/natur/\n\n'
+                      'Filformat: .mp3, .ogg, .wav, .m4a, .opus\n'
+                      'Filnavnet blir til flis-navn,\n'
+                      'f.eks. "Skog.mp3" → "Skog".'),
+                font_size=fsp(15),
+                color=(0.30, 0.34, 0.50, 1),
+                halign='center', valign='middle')
+            info.bind(size=info.setter('text_size'))
+            outer.add_widget(info)
+        else:
+            tagline = Label(
+                text='Velg en lyd å hvile med.',
+                size_hint_y=None, height=dp(32),
+                font_size=fsp(14),
+                color=(0.30, 0.34, 0.50, 1),
+                halign='center', valign='middle')
+            outer.add_widget(tagline)
+
+            # Grid-oppsett basert på antall fliser
+            n = len(lyder)
+            if n <= 2:
+                cols = n
+            elif n <= 6:
+                cols = 2
+            else:
+                cols = 3
+            grid = GridLayout(cols=cols, spacing=dp(10),
+                              padding=(dp(4), dp(4)),
+                              size_hint_y=1)
+            for idx, v in enumerate(lyder):
+                # Roterende farge fra palette
+                col = LYTT_PALETTE[idx % len(LYTT_PALETTE)]
+                tile = self._lytt_make_tile(v, col)
+                grid.add_widget(tile)
+            outer.add_widget(grid)
+
+        self._set_content(outer)
+
+    def _lytt_make_tile(self, valg, farge_hex):
+        """
+        Én flis i Lytt-menyen: kun tekst sentrert på en farget bakgrunn.
+        Ingen bilder – flisens karakter formidles via fargen og
+        navnet, og holder fokuset på den auditive opplevelsen.
+        """
+        cell = RBox(
+            orientation='vertical',
+            spacing=0, padding=dp(12),
+            box_color=list(hex_k(farge_hex)),
+            radius=dp(14),
+        )
+        bind_card_pop(cell)
+
+        lbl = Label(
+            text=valg['navn'],
+            font_size=fsp(20), bold=True,
+            color=text_on(farge_hex),
+            halign='center', valign='middle')
+        lbl.bind(size=lbl.setter('text_size'))
+        cell.add_widget(lbl)
+
+        def _tap(w, touch):
+            if w.collide_point(*touch.pos):
+                self._lytt_start(valg)
+                return True
+            return False
+        cell.bind(on_touch_down=_tap)
+        return cell
+
+    def _lytt_start(self, valg):
+        """
+        Bytt til avspillings-skjermen: mørk bakgrunn, kun en
+        Ferdig-knapp nederst, lyden starter loopet med moderat
+        volum. nav-stack får 'lytt' så Tilbake/Ferdig returnerer
+        til Lytt-menyen, ikke til hjem.
+        """
+        self._push('lytt')
+        self._cur_scr = 'lytt_spiller'
+        self._set_title('Lytt')
+        self._lytt_start_sound(valg['lyd'])
+
+        outer = BoxLayout(orientation='vertical',
+                          spacing=0, padding=0)
+        # Nesten-svart bakgrunn med knapt antydet dybde via canvas
+        from kivy.graphics import Color as _KC, Rectangle as _KR
+        with outer.canvas.before:
+            _KC(0.04, 0.04, 0.08, 1.0)
+            self._lytt_bg = _KR(pos=outer.pos, size=outer.size)
+        outer.bind(pos=lambda w, v: setattr(self._lytt_bg, 'pos', v),
+                   size=lambda w, v: setattr(self._lytt_bg, 'size', v))
+
+        # Tomt rom på midten – ingen visuell støy
+        outer.add_widget(BoxLayout())
+
+        # Ferdig-knapp nederst, godt synlig mot mørk bakgrunn
+        ferdig_box = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None, height=dp(80),
+            padding=(dp(20), dp(12)))
+        ferdig_btn = mk_btn(
+            'Ferdig', hex_k('#6BCB77'),
+            h=dp(56), fs=18,
+            cb=lambda *_: self._lytt_ferdig())
+        ferdig_box.add_widget(ferdig_btn)
+        outer.add_widget(ferdig_box)
+
+        self._set_content(outer)
+
+    def _lytt_start_sound(self, lyd_sti):
+        """
+        Last og start avspilling av en lyd-fil i evig loop.
+        Stopper og frigjør forrige lyd-objekt først så vi ikke
+        får flere overlappende lyder hvis brukeren bytter raskt.
+        """
+        self._lytt_stop_sound()
+        try:
+            from kivy.core.audio import SoundLoader
+            snd = SoundLoader.load(lyd_sti)
+            if snd is None:
+                self._toast('Kunne ikke laste lyd.')
+                return
+            snd.loop   = True
+            snd.volume = 0.7  # moderat – pause, ikke konsert
+            snd.play()
+            self._lytt_sound = snd
+        except Exception:
+            logging.exception('Lytt: feilet å starte lyd')
+            self._toast('Lyd-feil ved oppstart.')
+
+    def _lytt_stop_sound(self):
+        """Stopp og frigjør lyd-objektet. Trygt å kalle flere ganger."""
+        snd = getattr(self, '_lytt_sound', None)
+        if snd is not None:
+            try:
+                snd.stop()
+            except Exception:
+                pass
+            try:
+                snd.unload()
+            except Exception:
+                pass
+            self._lytt_sound = None
+
+    def _lytt_ferdig(self, *_):
+        """
+        Avslutt avspillingen og gå tilbake til Lytt-menyen.
+        _lytt_stop_sound kalles også implisitt fra _set_content
+        (sikkerhetsnett), men vi gjør det her også for å sikre
+        at lyden stopper umiddelbart ved trykk – ikke etter
+        slide-animasjon.
+        """
+        self._lytt_stop_sound()
+        self.go_back()
 
     # ══════════════════════════════════════════════════
     #  POPUP – REDIGER MAPPE
