@@ -547,7 +547,7 @@ def _update_widget(data):
 
         # Pause-sjekk først – widget skal være helt tydelig på status
         if is_paused(data):
-            line1 = '⏸  Dagsrytme på pause'
+            line1 = '|| Dagsrytme på pause'
             line2 = 'Trykk for å gjenoppta'
             img_b64 = ''
             current = None
@@ -598,7 +598,7 @@ def _update_widget(data):
                 nxt_start_min = to_min(upcoming.get('start',''))
                 minutes_until = nxt_start_min - now_total if nxt_start_min >= 0 else 99
                 if 0 <= minutes_until <= 2:
-                    line1 = '⚠  Starter snart: ' + upcoming.get('name','')
+                    line1 = '! Starter snart: ' + upcoming.get('name','')
                     line2 = 'kl. ' + upcoming.get('start','') + '  (om ' + str(minutes_until) + ' min)'
                 else:
                     line1 = 'Neste: ' + upcoming.get('name','')
@@ -6031,7 +6031,7 @@ class KommunikasjonstavleApp(App):
             font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1),
             halign='left'))
         outer.add_widget(mk_btn(
-            '🎯  Vis omvisning på nytt',
+            'Vis omvisning på nytt',
             hex_k('#6BCB77'), h=dp(54), fs=15,
             cb=lambda *_: self._show_onboarding()))
 

@@ -81,9 +81,13 @@ fullscreen = 0
 
 # ─── Ikoner og splash ─────────────────────────────────────────────
 icon.filename = %(source.dir)s/icon.png
-android.presplash       = assets/splash.png
+# Riktig buildozer-property er presplash.filename – p4a leser denne
+# og bygger den inn i bootstrap-en, slik at Kivys default "Loading..."
+# med Kivy-logo blir erstattet av vår egen splash.
+presplash.filename = %(source.dir)s/assets/splash.png
+# Bakgrunnsfarge under presplash (vises i 1-2 frames før bildet rendrer
+# og bak transparente områder). Matcher splash-PNG'ens bakgrunn.
 android.presplash_color = #12183A
-# (se over – satt fra splash)
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
