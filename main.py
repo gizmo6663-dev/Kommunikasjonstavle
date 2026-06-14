@@ -27,6 +27,7 @@ import time
 import shutil
 import logging
 import functools
+import threading
 import traceback as _tb
 from datetime import datetime
 
@@ -3979,6 +3980,15 @@ class KommunikasjonstavleApp(App):
         if self._cur_scr not in ('lytt', 'lytt_spiller') \
                 and getattr(self, '_lytt_sound', None) is not None:
             self._lytt_stop_sound()
+        # Sikkerhetsnett: hvis chrome ble fadet ut for lytt_spiller
+        # (mørk pause-skjerm) og brukeren forlater skjermen via
+        # andre veier enn Ferdig-knappen (Android-tilbake, krasj,
+        # auto-navigasjon), må chrome fades inn igjen så appen
+        # ikke ser låst-i-mørk-modus ut etterpå.
+        if self._cur_scr != 'lytt_spiller':
+            qb = getattr(self, '_quickbar', None)
+            if qb is not None and qb.opacity < 1.0:
+                self._lytt_fade_chrome_inn()
         # Nullstill adaptiv bakgrunn når vi forlater bilde-skjermen
         if self._cur_scr == 'image':
             hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
@@ -10211,6 +10221,12 @@ BARN-MODUS
         {'navn': str, 'lyd': absolutt_sti} i alfabetisk rekkefølge
         på filnavn. Returnerer tom liste hvis mappa ikke finnes
         eller er tom – kallekoden viser da en informativ melding.
+
+        Filnavn kjøres gjennom _fix_mojibake() siden p4a sin asset-
+        ekstrahering på Android kan SIGN-EXTENDE bytes til U+FFxx
+        (samme bug som rammer mappebilder – jf. _init_bundled_assets).
+        Selve lyd-stien beholdes som listdir returnerte, slik at
+        SoundLoader får et filsystem-pass som faktisk finnes.
         """
         funn = []
         diag(f'Lytt: skanner {LYTT_DIR}')
@@ -10219,7 +10235,7 @@ BARN-MODUS
             return funn
         try:
             alle = os.listdir(LYTT_DIR)
-            diag(f'Lytt: {len(alle)} filer/mapper totalt: {alle}')
+            diag(f'Lytt: {len(alle)} filer/mapper totalt')
             for fn in sorted(alle):
                 full = os.path.join(LYTT_DIR, fn)
                 if not os.path.isfile(full):
@@ -10228,7 +10244,10 @@ BARN-MODUS
                 if ext.lower() not in self._LYTT_LYDFORMATER:
                     diag(f'Lytt: hopper over {fn} (ext={ext})')
                     continue
-                funn.append({'navn': navn, 'lyd': full})
+                # Reparér mojibake i visningsnavn ("Bål" → "Bål"),
+                # men la fil-stien være urørt så vi kan åpne den.
+                visningsnavn = _fix_mojibake(navn)
+                funn.append({'navn': visningsnavn, 'lyd': full})
             diag(f'Lytt: fant {len(funn)} gyldige lydfiler')
         except OSError:
             logging.exception('Lytt: feilet å skanne %s', LYTT_DIR)
@@ -10330,30 +10349,55 @@ BARN-MODUS
 
     def _lytt_start(self, valg):
         """
-        Bytt til avspillings-skjermen: mørk bakgrunn, kun en
-        Ferdig-knapp nederst, lyden starter loopet med moderat
-        volum. nav-stack får 'lytt' så Tilbake/Ferdig returnerer
-        til Lytt-menyen, ikke til hjem.
+        Starter Lytt-avspilling med koreografert overgang:
+          1. Push 'lytt' på nav-stack så Ferdig returnerer til menyen
+          2. Animer Window.clearcolor (hele skjermbakgrunnen) til
+             svart, samtidig som chrome (topbar/quickbar/navbar)
+             fader ut – så det ser ut som alt "smelter inn i mørket"
+          3. Bytt til en mørk fullskjerm med en USYNLIG Ferdig-knapp
+          4. Last lyden ASYNKRONT i en bakgrunnstråd – ellers fryser
+             hovedløkken under SoundLoader.load(), og animasjonene
+             aldri kommer i gang
+          5. Når lyden er lastet og avspilling startet: fade inn
+             Ferdig-knappen
+
+        Designprinsipp: under lasting ser brukeren BARE en helt mørk
+        skjerm – ingen knapper, ingen chrome, ingen ledetråder som
+        inviterer til trykk før noe har skjedd. Når lyden er klar,
+        dukker Ferdig-knappen opp som eneste interaktive element.
         """
         self._push('lytt')
         self._cur_scr = 'lytt_spiller'
-        self._set_title('Lytt')
-        self._lytt_start_sound(valg['lyd'])
+        self._set_title('')   # ingen tittel under pausen
 
+        # Animer skjermbakgrunnen til svart. Window.clearcolor er
+        # en ListProperty og kan animeres med Kivy Animation –
+        # samme varighet som chrome-fade så de beveger seg i takt.
+        Animation.cancel_all(Window, 'clearcolor')
+        Animation(clearcolor=[0.0, 0.0, 0.0, 1.0],
+                  duration=0.35, t='out_quad').start(Window)
+
+        # Fade ut chrome – topbar, quickbar, navbar
+        for w in (getattr(self, '_bottombar', None),
+                  getattr(self, '_quickbar', None),
+                  getattr(self, '_navbar', None)):
+            if w is not None:
+                Animation.cancel_all(w, 'opacity')
+                Animation(opacity=0.0, duration=0.35,
+                          t='out_quad').start(w)
+
+        # Bygg mørk fullskjerm med en (foreløpig usynlig) Ferdig-knapp
         outer = BoxLayout(orientation='vertical',
                           spacing=0, padding=0)
-        # Nesten-svart bakgrunn med knapt antydet dybde via canvas
         from kivy.graphics import Color as _KC, Rectangle as _KR
         with outer.canvas.before:
-            _KC(0.04, 0.04, 0.08, 1.0)
+            _KC(0.0, 0.0, 0.0, 1.0)
             self._lytt_bg = _KR(pos=outer.pos, size=outer.size)
         outer.bind(pos=lambda w, v: setattr(self._lytt_bg, 'pos', v),
                    size=lambda w, v: setattr(self._lytt_bg, 'size', v))
 
-        # Tomt rom på midten – ingen visuell støy
-        outer.add_widget(BoxLayout())
+        outer.add_widget(BoxLayout())   # tomt rom i midten
 
-        # Ferdig-knapp nederst, godt synlig mot mørk bakgrunn
         ferdig_box = BoxLayout(
             orientation='horizontal',
             size_hint_y=None, height=dp(80),
@@ -10362,31 +10406,77 @@ BARN-MODUS
             'Ferdig', hex_k('#6BCB77'),
             h=dp(56), fs=18,
             cb=lambda *_: self._lytt_ferdig())
+        ferdig_btn.opacity = 0.0           # skjules til lyden er klar
+        ferdig_btn.disabled = True         # kan ikke trykkes mens skjult
+        self._lytt_ferdig_btn = ferdig_btn  # ref for senere fade-inn
         ferdig_box.add_widget(ferdig_btn)
         outer.add_widget(ferdig_box)
 
         self._set_content(outer)
 
-    def _lytt_start_sound(self, lyd_sti):
+        # Lyden lastes i en daemon-tråd så Kivys hovedløkke kan
+        # fortsette å animere chrome ut. Pyjnius/SoundLoader fra en
+        # ikke-hovedtråd kan kreve at vi gjør den FAKTISKE play()-en
+        # via Clock.schedule_once for å være på den trygge siden.
+        self._lytt_pending_path = valg['lyd']
+        threading.Thread(
+            target=self._lytt_load_async,
+            args=(valg['lyd'],),
+            daemon=True,
+        ).start()
+
+    def _lytt_load_async(self, sti):
         """
-        Last og start avspilling av en lyd-fil i evig loop.
-        Stopper og frigjør forrige lyd-objekt først så vi ikke
-        får flere overlappende lyder hvis brukeren bytter raskt.
+        Kjører i bakgrunnstråd. Laster lyden via SoundLoader (som er
+        synkron) og signalerer hovedtråden via Clock.schedule_once
+        når lasting er fullført. Hvis brukeren rakk å trykke Ferdig
+        før lyden var lastet (eller byttet skjerm), ignorerer vi
+        resultatet – sjekkes i _lytt_on_loaded.
         """
-        self._lytt_stop_sound()
         try:
             from kivy.core.audio import SoundLoader
-            snd = SoundLoader.load(lyd_sti)
-            if snd is None:
-                self._toast('Kunne ikke laste lyd.')
-                return
-            snd.loop   = True
-            snd.volume = 0.7  # moderat – pause, ikke konsert
-            snd.play()
-            self._lytt_sound = snd
+            snd = SoundLoader.load(sti)
         except Exception:
-            logging.exception('Lytt: feilet å starte lyd')
-            self._toast('Lyd-feil ved oppstart.')
+            logging.exception('Lytt: feilet å laste %s', sti)
+            snd = None
+        Clock.schedule_once(
+            lambda dt, s=snd, p=sti: self._lytt_on_loaded(s, p), 0)
+
+    def _lytt_on_loaded(self, snd, sti):
+        """
+        Kjøres i hovedtråden etter at lyden er lastet. Hvis brukeren
+        forlot Lytt-skjermen i mellomtiden (Ferdig, tilbake-knapp,
+        navigert vekk), kastes lyden – ingen avspilling.
+        """
+        # Brukeren rakk å bytte skjerm – kast resultatet
+        if self._cur_scr != 'lytt_spiller':
+            if snd is not None:
+                try: snd.unload()
+                except Exception: pass
+            return
+        # Brukeren rakk å trykke flis nr. 2 før første var lastet
+        if getattr(self, '_lytt_pending_path', None) != sti:
+            if snd is not None:
+                try: snd.unload()
+                except Exception: pass
+            return
+
+        if snd is None:
+            self._toast('Kunne ikke laste lyd.')
+            self._lytt_ferdig()
+            return
+
+        # Spill av og fade inn Ferdig-knapp
+        snd.loop   = True
+        snd.volume = 0.7
+        snd.play()
+        self._lytt_sound = snd
+
+        btn = getattr(self, '_lytt_ferdig_btn', None)
+        if btn is not None:
+            btn.disabled = False
+            Animation(opacity=1.0, duration=0.45,
+                      t='out_quad').start(btn)
 
     def _lytt_stop_sound(self):
         """Stopp og frigjør lyd-objektet. Trygt å kalle flere ganger."""
@@ -10401,16 +10491,40 @@ BARN-MODUS
             except Exception:
                 pass
             self._lytt_sound = None
+        # Ugyldiggjør pending-path slik at en lyd som lastes asynkront
+        # blir kastet av _lytt_on_loaded i stedet for å begynne å spille
+        self._lytt_pending_path = None
+
+    def _lytt_fade_chrome_inn(self):
+        """
+        Fader chrome (topbar/quickbar/navbar) tilbake til synlig
+        og animerer skjermbakgrunnen fra svart tilbake til appens
+        vanlige tidsbaserte/HC-bakgrunn.
+        """
+        # Tilbake til normal bakgrunnsfarge (samme som ellers i appen)
+        normal_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
+        Animation.cancel_all(Window, 'clearcolor')
+        Animation(clearcolor=list(normal_bg) if len(normal_bg) == 4
+                              else [*normal_bg, 1.0],
+                  duration=0.30, t='out_quad').start(Window)
+
+        for w in (getattr(self, '_bottombar', None),
+                  getattr(self, '_quickbar', None),
+                  getattr(self, '_navbar', None)):
+            if w is not None:
+                Animation.cancel_all(w, 'opacity')
+                Animation(opacity=1.0, duration=0.30,
+                          t='out_quad').start(w)
 
     def _lytt_ferdig(self, *_):
         """
-        Avslutt avspillingen og gå tilbake til Lytt-menyen.
-        _lytt_stop_sound kalles også implisitt fra _set_content
-        (sikkerhetsnett), men vi gjør det her også for å sikre
-        at lyden stopper umiddelbart ved trykk – ikke etter
-        slide-animasjon.
+        Avslutt avspillingen, fade chrome inn igjen, gå tilbake til
+        Lytt-menyen. Lyden stoppes umiddelbart (ikke etter animasjon)
+        så det ikke høres ut som om appen "henger" mens chrome
+        animeres inn.
         """
         self._lytt_stop_sound()
+        self._lytt_fade_chrome_inn()
         self.go_back()
 
     # ══════════════════════════════════════════════════
