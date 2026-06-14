@@ -2369,15 +2369,21 @@ class _SortDraggable(BoxLayout):
                   duration=0.28, t='out_cubic').start(self)
 
 
-class _LyttModalOverlay(Widget):
+class _LyttModalOverlay(FloatLayout):
     """
     Overlay-widget for Lytt-spilleren som fungerer som en MODAL:
     trykk-events propageres først til children (Ferdig-knappen), og
     alt annet trykk innenfor overlay-flata blokkeres så det ikke
     lekker gjennom til widgets bak (Lytt-menyens fliser, chrome).
 
-    Vi kan IKKE bare bind()'e en on_touch_down-handler på en vanlig
-    Widget for å oppnå dette – bound handlers kjøres FØR Widget sin
+    Arver fra FloatLayout (ikke bare Widget) slik at children med
+    size_hint=(1, 1) faktisk får beregnet sin størrelse mot
+    overlay-flata. Med bare Widget som parent ville pos_hint blitt
+    regnet mot (100, 100), som forklarer hvorfor Ferdig-knappen
+    havnet på venstre side av skjermen i tidligere forsøk.
+
+    Vi kan IKKE bare bind()'e en on_touch_down-handler for å oppnå
+    "modal"-oppførselen – bound handlers kjøres FØR Layout sin
     default on_touch_down (som propagerer til children). Ergo må
     klassen overstyre metodene direkte og selv kontrollere
     rekkefølgen: barn-dispatch først, så blokker.
@@ -10491,77 +10497,103 @@ BARN-MODUS
 
         if bilde_sti:
             # ── Bilde-flis ─────────────────────────────────────────
+            #
+            # Vi bruker IKKE StencilView her, fordi stencil-klipping
+            # på Android har vist seg upålitelig med skalerte
+            # Image-widgets (bilder lekker mellom fliser).
+            #
+            # I stedet tegner vi bildet direkte som en
+            # RoundedRectangle på cellens canvas med `texture` og
+            # `tex_coords`. Da får vi BÅDE rounded corners OG cover-
+            # fit med bunnanker i én GPU-operasjon, og klippingen er
+            # garantert siden RoundedRectangle bare tegner innenfor
+            # sin egen rounded form.
+            #
+            # Et separat Image-objekt brukes utelukkende som loader
+            # (laster bildet asynkront i bakgrunnen) – det legges
+            # IKKE til som child noe sted; vi henter bare ut
+            # .texture når den er klar.
             from kivy.uix.image import Image as _LImg
-            from kivy.uix.relativelayout import RelativeLayout as _LRL
-            from kivy.uix.stencilview import StencilView as _LSV
-            from kivy.uix.widget import Widget as _LWdg
             from kivy.graphics import (Color as _GC,
                                         RoundedRectangle as _GRR)
 
-            cell = _LRL(size_hint=(1, 1))
+            cell = RBox(
+                orientation='vertical',
+                spacing=0, padding=0,
+                box_color=list(hex_k(farge_hex)),
+                radius=dp(14),
+            )
 
-            # Bakgrunnsfarge (synlig hvis bildet ikke dekker hjørnene,
-            # f.eks. når brukerens bilde har innebygde rounded corners)
-            with cell.canvas.before:
-                _GC(*hex_k(farge_hex))
-                _bg_rect = _GRR(pos=cell.pos, size=cell.size,
-                                radius=[dp(14)])
-            cell.bind(
-                pos=lambda w, v, r=_bg_rect: setattr(r, 'pos', v),
-                size=lambda w, v, r=_bg_rect: setattr(r, 'size', v))
+            # FloatLayout for å stable mørk overlay og tekst over bildet
+            from kivy.uix.floatlayout import FloatLayout as _LFL
+            from kivy.uix.widget import Widget as _LWdg
+            fl = _LFL(size_hint=(1, 1))
+            cell.add_widget(fl)
 
-            # Bilde med "cover"-fitt: behold aspect ratio, fyll hele
-            # cellen (overskudd klippes), og forankre bunnen så
-            # hovedinnholdet (bål, byprofil, trær) bevares når
-            # cellen er smalere/kortere enn bildets ratio.
-            # StencilView klipper alt som faller utenfor sine grenser.
-            stencil = _LSV(size_hint=(1, 1),
-                           pos_hint={'x': 0, 'y': 0})
-            img = _LImg(
-                source=bilde_sti,
-                allow_stretch=True, keep_ratio=True,
-                size_hint=(None, None))
-            stencil.add_widget(img)
+            # Loader – bare for å hente texture asynkront. Ikke en
+            # synlig widget; vi adder den ALDRI til scene-grafen.
+            loader = _LImg(source=bilde_sti)
 
-            def _refit_cover(*_, _s=stencil, _i=img):
-                """Beregn ny img-størrelse + posisjon for cover-fitt
-                med bunnanker. Kjøres når stencilen får ny størrelse,
-                eller når img endelig får sin texture lastet."""
-                tex = _i.texture
+            # Tegn bildet som rounded rectangle på fl.canvas.before
+            # (bak alle children: dim-overlay og label)
+            with fl.canvas.before:
+                _GC(1, 1, 1, 1)
+                img_rect = _GRR(pos=fl.pos, size=fl.size,
+                                radius=[dp(14)],
+                                texture=None)
+
+            def _refit(*_, _r=img_rect, _l=loader, _fl=fl):
+                """Cover-fit + bunnanker via tex_coords. Kjøres når
+                fl får ny størrelse/posisjon, og når loader endelig
+                får sin texture lastet."""
+                _r.pos = _fl.pos
+                _r.size = _fl.size
+                tex = _l.texture
                 if tex is None:
                     return
+                _r.texture = tex
                 tw, th = tex.size
-                if tw <= 0 or th <= 0:
+                sw, sh = _fl.size
+                if tw <= 0 or th <= 0 or sw <= 0 or sh <= 0:
                     return
-                sw, sh = _s.size
-                if sw <= 0 or sh <= 0:
-                    return
-                # Cover: skaler så minst én dimensjon fyller helt
+                # Cover-scaling: hvor stor del av texturen er synlig
+                # u_visible: andel av bildets bredde som vises (≤ 1)
+                # v_visible: andel av bildets høyde som vises (≤ 1)
                 scale = max(sw / tw, sh / th)
-                new_w = tw * scale
-                new_h = th * scale
-                _i.size = (new_w, new_h)
-                # Sentrer horisontalt, forankre nederst vertikalt
-                _i.x = _s.x + (sw - new_w) / 2
-                _i.y = _s.y      # bunnanker bevarer hovedmotivet
-            stencil.bind(size=_refit_cover, pos=_refit_cover)
-            img.bind(texture=_refit_cover)
-            cell.add_widget(stencil)
+                u_visible = min(1.0, sw / (tw * scale))
+                v_visible = min(1.0, sh / (th * scale))
+                # Sentrer horisontalt
+                u_min = (1.0 - u_visible) / 2.0
+                u_max = u_min + u_visible
+                # Bunnanker vertikalt: vis nedre del av texturen.
+                # Kivy-teksturer har origo nederst-venstre, så
+                # v=0 er bunnen og v=1 er toppen. Vi viser v fra
+                # 0 til v_visible.
+                v_min = 0.0
+                v_max = v_visible
+                # tex_coords: (BL_u, BL_v, BR_u, BR_v, TR_u, TR_v, TL_u, TL_v)
+                _r.tex_coords = (u_min, v_min,
+                                 u_max, v_min,
+                                 u_max, v_max,
+                                 u_min, v_max)
+
+            fl.bind(size=_refit, pos=_refit)
+            loader.bind(texture=_refit)
 
             # Mørk overlay (eget Widget mellom bilde og label, så det
-            # tegnes OVER bildet men UNDER teksten – canvas-rekkefølgen
-            # følger barn-rekkefølgen i RelativeLayout)
+            # tegnes OVER bildet men UNDER teksten). Også rounded
+            # så den matcher cellens form perfekt.
             dim = _LWdg(size_hint=(1, 1), pos_hint={'x': 0, 'y': 0})
             with dim.canvas:
                 _GC(0.0, 0.0, 0.0, 0.30)
-                _dim_rect = _GRR(pos=dim.pos, size=dim.size,
-                                  radius=[dp(14)])
+                dim_rect = _GRR(pos=dim.pos, size=dim.size,
+                                radius=[dp(14)])
             dim.bind(
-                pos=lambda w, v, r=_dim_rect: setattr(r, 'pos', v),
-                size=lambda w, v, r=_dim_rect: setattr(r, 'size', v))
-            cell.add_widget(dim)
+                pos=lambda w, v, r=dim_rect: setattr(r, 'pos', v),
+                size=lambda w, v, r=dim_rect: setattr(r, 'size', v))
+            fl.add_widget(dim)
 
-            # Tekst på toppen – hvit på mørk overlay leses godt
+            # Tekst på toppen
             lbl = Label(text=valg['navn'],
                         font_size=fsp(22), bold=True,
                         color=(1, 1, 1, 1),
@@ -10569,7 +10601,7 @@ BARN-MODUS
                         size_hint=(1, 1),
                         pos_hint={'x': 0, 'y': 0})
             lbl.bind(size=lbl.setter('text_size'))
-            cell.add_widget(lbl)
+            fl.add_widget(lbl)
 
         else:
             # ── Farge-flis (fallback når intet bilde finnes) ───────
@@ -10623,27 +10655,20 @@ BARN-MODUS
         Legger umiddelbart en svart overlay over hele Window med:
           • "Laster lyd …"-label sentrert mens lyden hentes
           • Ferdig-knapp tilstede fra start, men disabled + lav
-            opacity til lyden er klar (gir tydelig visuell tilstand
-            uten å invitere til trykk før det er klart)
+            opacity til lyden er klar
 
-        Bruker _LyttModalOverlay (custom subclass) som propagerer
-        touch til children FØRST, så blokkerer alt annet. En
-        bind()-handler ville ikke fungert her – den kjører før
-        default on_touch_down og ville konsumert trykket før
-        Ferdig-knappen fikk det.
-
-        FloatLayout-mellomlag gjør at vi kan bruke pos_hint på
-        Ferdig-knapp og Laster-label, så de holder seg sentrert
-        ved orientasjonsendring uten at vi må binde size/pos
-        manuelt for omplassering.
+        Bruker _LyttModalOverlay (FloatLayout-subclass) som
+        propagerer touch til children FØRST, så blokkerer alt
+        annet. FloatLayout sørger for at children med pos_hint
+        beregnes mot overlayens størrelse (Window.size), så
+        Ferdig-knappen sentreres skikkelig horisontalt.
         """
         from kivy.graphics import Color as _LC, Rectangle as _LR
-        from kivy.uix.floatlayout import FloatLayout as _LFL
 
         overlay = _LyttModalOverlay(size=Window.size, pos=(0, 0),
                                     size_hint=(None, None))
 
-        with overlay.canvas:
+        with overlay.canvas.before:
             _LC(0.0, 0.0, 0.0, 1.0)
             bg_rect = _LR(pos=(0, 0), size=Window.size)
 
@@ -10659,10 +10684,6 @@ BARN-MODUS
         Window.bind(size=_follow_win)
         self._lytt_overlay_follow = _follow_win
 
-        # FloatLayout som mellomlag – gir oss pos_hint på children
-        fl = _LFL(size_hint=(1, 1))
-        overlay.add_widget(fl)
-
         # "Laster lyd …"-label sentrert. Fjernes når lyden starter.
         loading_lbl = Label(
             text='Laster lyd …',
@@ -10672,7 +10693,7 @@ BARN-MODUS
             size=(dp(280), dp(40)),
             pos_hint={'center_x': 0.5, 'center_y': 0.5})
         loading_lbl.bind(size=loading_lbl.setter('text_size'))
-        fl.add_widget(loading_lbl)
+        overlay.add_widget(loading_lbl)
         self._lytt_loading_label = loading_lbl
 
         # Ferdig-knapp tilstede fra start, deaktivert + lav opacity.
@@ -10686,7 +10707,7 @@ BARN-MODUS
         ferdig_btn.pos_hint  = {'center_x': 0.5, 'y': 0.06}
         ferdig_btn.disabled  = True
         ferdig_btn.opacity   = 0.3
-        fl.add_widget(ferdig_btn)
+        overlay.add_widget(ferdig_btn)
         self._lytt_ferdig_btn = ferdig_btn
 
         # INSTANT synlig – ingen fade-inn av overlay
