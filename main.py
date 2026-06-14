@@ -2369,6 +2369,38 @@ class _SortDraggable(BoxLayout):
                   duration=0.28, t='out_cubic').start(self)
 
 
+class _LyttModalOverlay(Widget):
+    """
+    Overlay-widget for Lytt-spilleren som fungerer som en MODAL:
+    trykk-events propageres først til children (Ferdig-knappen), og
+    alt annet trykk innenfor overlay-flata blokkeres så det ikke
+    lekker gjennom til widgets bak (Lytt-menyens fliser, chrome).
+
+    Vi kan IKKE bare bind()'e en on_touch_down-handler på en vanlig
+    Widget for å oppnå dette – bound handlers kjøres FØR Widget sin
+    default on_touch_down (som propagerer til children). Ergo må
+    klassen overstyre metodene direkte og selv kontrollere
+    rekkefølgen: barn-dispatch først, så blokker.
+    """
+    def on_touch_down(self, touch):
+        for child in self.children[:]:
+            if child.dispatch('on_touch_down', touch):
+                return True
+        return self.collide_point(*touch.pos)
+
+    def on_touch_move(self, touch):
+        for child in self.children[:]:
+            if child.dispatch('on_touch_move', touch):
+                return True
+        return self.collide_point(*touch.pos)
+
+    def on_touch_up(self, touch):
+        for child in self.children[:]:
+            if child.dispatch('on_touch_up', touch):
+                return True
+        return self.collide_point(*touch.pos)
+
+
 # ══════════════════════════════════════════════════════════════════
 #  HOVED-APP
 # ══════════════════════════════════════════════════════════════════
@@ -10322,15 +10354,21 @@ BARN-MODUS
     def _lytt_skann_lyder(self):
         """
         Skanner LYTT_DIR for lydfiler og returnerer en liste av
-        {'navn': str, 'lyd': absolutt_sti} i alfabetisk rekkefølge
-        på filnavn. Returnerer tom liste hvis mappa ikke finnes
-        eller er tom – kallekoden viser da en informativ melding.
+        {'navn': str, 'lyd': absolutt_sti, 'bilde': str|None} i
+        alfabetisk rekkefølge på filnavn. Returnerer tom liste hvis
+        mappa ikke finnes eller er tom – kallekoden viser da en
+        informativ melding.
+
+        For hver lydfil letes det også etter en bildefil med samme
+        grunn-navn (uten extension), f.eks. Skog.mp3 + Skog.png.
+        Hvis bilde finnes, brukes det som bakgrunn på flisen i menyen;
+        ellers fallback til en farget bakgrunn fra LYTT_PALETTE.
 
         Filnavn kjøres gjennom _fix_mojibake() siden p4a sin asset-
         ekstrahering på Android kan SIGN-EXTENDE bytes til U+FFxx
         (samme bug som rammer mappebilder – jf. _init_bundled_assets).
-        Selve lyd-stien beholdes som listdir returnerte, slik at
-        SoundLoader får et filsystem-pass som faktisk finnes.
+        Selve lyd-/bilde-stien beholdes som listdir returnerte, slik
+        at SoundLoader/Image får et filsystem-pass som faktisk finnes.
         """
         funn = []
         diag(f'Lytt: skanner {LYTT_DIR}')
@@ -10340,6 +10378,15 @@ BARN-MODUS
         try:
             alle = os.listdir(LYTT_DIR)
             diag(f'Lytt: {len(alle)} filer/mapper totalt')
+            # Lag oppslag fra grunn-navn til bildefil
+            bilde_map = {}
+            for fn in alle:
+                navn, ext = os.path.splitext(fn)
+                if ext.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                    full = os.path.join(LYTT_DIR, fn)
+                    if os.path.isfile(full):
+                        bilde_map[navn] = full
+
             for fn in sorted(alle):
                 full = os.path.join(LYTT_DIR, fn)
                 if not os.path.isfile(full):
@@ -10348,11 +10395,15 @@ BARN-MODUS
                 if ext.lower() not in self._LYTT_LYDFORMATER:
                     diag(f'Lytt: hopper over {fn} (ext={ext})')
                     continue
-                # Reparér mojibake i visningsnavn ("Bål" → "Bål"),
-                # men la fil-stien være urørt så vi kan åpne den.
                 visningsnavn = _fix_mojibake(navn)
-                funn.append({'navn': visningsnavn, 'lyd': full})
-            diag(f'Lytt: fant {len(funn)} gyldige lydfiler')
+                bilde_sti = bilde_map.get(navn)
+                funn.append({
+                    'navn':  visningsnavn,
+                    'lyd':   full,
+                    'bilde': bilde_sti,
+                })
+            diag(f'Lytt: fant {len(funn)} lydfiler '
+                 f'({sum(1 for f in funn if f["bilde"])} med bilde)')
         except OSError:
             logging.exception('Lytt: feilet å skanne %s', LYTT_DIR)
         return funn
@@ -10423,32 +10474,118 @@ BARN-MODUS
 
     def _lytt_make_tile(self, valg, farge_hex):
         """
-        Én flis i Lytt-menyen: kun tekst sentrert på en farget bakgrunn.
-        Ingen bilder – flisens karakter formidles via fargen og
-        navnet, og holder fokuset på den auditive opplevelsen.
+        Én flis i Lytt-menyen.
+
+        Hvis valg['bilde'] finnes: vises bildet som bakgrunn med en
+        subtil mørk overlay for tekst-kontrast, og navnet legges på
+        toppen i hvitt. Hvis ikke: solid farge fra LYTT_PALETTE som
+        før, med tekstfarge automatisk valgt for kontrast.
 
         OBS: bind_card_pop med pop-animasjon og haptic_feedback er
         BEVISST utelatt her. Haptic-kallet ('performHapticFeedback'
         via jnius/JNI) tar tid å initialisere første gang og kan gi
         flere hundre ms forsinkelse mellom trykk og at _lytt_start
-        rekker å eksekvere. På Lytt-flisene prioriterer vi rask
-        respons fremfor pop-animasjon – flisen dekkes uansett av
-        den svarte overlayen straks etter.
+        rekker å eksekvere.
         """
-        cell = RBox(
-            orientation='vertical',
-            spacing=0, padding=dp(12),
-            box_color=list(hex_k(farge_hex)),
-            radius=dp(14),
-        )
+        bilde_sti = valg.get('bilde')
 
-        lbl = Label(
-            text=valg['navn'],
-            font_size=fsp(20), bold=True,
-            color=text_on(farge_hex),
-            halign='center', valign='middle')
-        lbl.bind(size=lbl.setter('text_size'))
-        cell.add_widget(lbl)
+        if bilde_sti:
+            # ── Bilde-flis ─────────────────────────────────────────
+            from kivy.uix.image import Image as _LImg
+            from kivy.uix.relativelayout import RelativeLayout as _LRL
+            from kivy.uix.stencilview import StencilView as _LSV
+            from kivy.uix.widget import Widget as _LWdg
+            from kivy.graphics import (Color as _GC,
+                                        RoundedRectangle as _GRR)
+
+            cell = _LRL(size_hint=(1, 1))
+
+            # Bakgrunnsfarge (synlig hvis bildet ikke dekker hjørnene,
+            # f.eks. når brukerens bilde har innebygde rounded corners)
+            with cell.canvas.before:
+                _GC(*hex_k(farge_hex))
+                _bg_rect = _GRR(pos=cell.pos, size=cell.size,
+                                radius=[dp(14)])
+            cell.bind(
+                pos=lambda w, v, r=_bg_rect: setattr(r, 'pos', v),
+                size=lambda w, v, r=_bg_rect: setattr(r, 'size', v))
+
+            # Bilde med "cover"-fitt: behold aspect ratio, fyll hele
+            # cellen (overskudd klippes), og forankre bunnen så
+            # hovedinnholdet (bål, byprofil, trær) bevares når
+            # cellen er smalere/kortere enn bildets ratio.
+            # StencilView klipper alt som faller utenfor sine grenser.
+            stencil = _LSV(size_hint=(1, 1),
+                           pos_hint={'x': 0, 'y': 0})
+            img = _LImg(
+                source=bilde_sti,
+                allow_stretch=True, keep_ratio=True,
+                size_hint=(None, None))
+            stencil.add_widget(img)
+
+            def _refit_cover(*_, _s=stencil, _i=img):
+                """Beregn ny img-størrelse + posisjon for cover-fitt
+                med bunnanker. Kjøres når stencilen får ny størrelse,
+                eller når img endelig får sin texture lastet."""
+                tex = _i.texture
+                if tex is None:
+                    return
+                tw, th = tex.size
+                if tw <= 0 or th <= 0:
+                    return
+                sw, sh = _s.size
+                if sw <= 0 or sh <= 0:
+                    return
+                # Cover: skaler så minst én dimensjon fyller helt
+                scale = max(sw / tw, sh / th)
+                new_w = tw * scale
+                new_h = th * scale
+                _i.size = (new_w, new_h)
+                # Sentrer horisontalt, forankre nederst vertikalt
+                _i.x = _s.x + (sw - new_w) / 2
+                _i.y = _s.y      # bunnanker bevarer hovedmotivet
+            stencil.bind(size=_refit_cover, pos=_refit_cover)
+            img.bind(texture=_refit_cover)
+            cell.add_widget(stencil)
+
+            # Mørk overlay (eget Widget mellom bilde og label, så det
+            # tegnes OVER bildet men UNDER teksten – canvas-rekkefølgen
+            # følger barn-rekkefølgen i RelativeLayout)
+            dim = _LWdg(size_hint=(1, 1), pos_hint={'x': 0, 'y': 0})
+            with dim.canvas:
+                _GC(0.0, 0.0, 0.0, 0.30)
+                _dim_rect = _GRR(pos=dim.pos, size=dim.size,
+                                  radius=[dp(14)])
+            dim.bind(
+                pos=lambda w, v, r=_dim_rect: setattr(r, 'pos', v),
+                size=lambda w, v, r=_dim_rect: setattr(r, 'size', v))
+            cell.add_widget(dim)
+
+            # Tekst på toppen – hvit på mørk overlay leses godt
+            lbl = Label(text=valg['navn'],
+                        font_size=fsp(22), bold=True,
+                        color=(1, 1, 1, 1),
+                        halign='center', valign='middle',
+                        size_hint=(1, 1),
+                        pos_hint={'x': 0, 'y': 0})
+            lbl.bind(size=lbl.setter('text_size'))
+            cell.add_widget(lbl)
+
+        else:
+            # ── Farge-flis (fallback når intet bilde finnes) ───────
+            cell = RBox(
+                orientation='vertical',
+                spacing=0, padding=dp(12),
+                box_color=list(hex_k(farge_hex)),
+                radius=dp(14),
+            )
+            lbl = Label(
+                text=valg['navn'],
+                font_size=fsp(20), bold=True,
+                color=text_on(farge_hex),
+                halign='center', valign='middle')
+            lbl.bind(size=lbl.setter('text_size'))
+            cell.add_widget(lbl)
 
         def _tap(w, touch):
             if w.collide_point(*touch.pos):
@@ -10483,18 +10620,28 @@ BARN-MODUS
 
     def _lytt_show_overlay(self):
         """
-        Legger umiddelbart en svart Widget direkte på Window som
-        dekker hele skjermen. INGEN fade-inn – widgeten er synlig
-        med full opacity på første frame etter add_widget.
+        Legger umiddelbart en svart overlay over hele Window med:
+          • "Laster lyd …"-label sentrert mens lyden hentes
+          • Ferdig-knapp tilstede fra start, men disabled + lav
+            opacity til lyden er klar (gir tydelig visuell tilstand
+            uten å invitere til trykk før det er klart)
 
-        Ferdig-knappen lages IKKE her; den legges til som child
-        først når lyden er lastet, i _lytt_on_loaded.
+        Bruker _LyttModalOverlay (custom subclass) som propagerer
+        touch til children FØRST, så blokkerer alt annet. En
+        bind()-handler ville ikke fungert her – den kjører før
+        default on_touch_down og ville konsumert trykket før
+        Ferdig-knappen fikk det.
+
+        FloatLayout-mellomlag gjør at vi kan bruke pos_hint på
+        Ferdig-knapp og Laster-label, så de holder seg sentrert
+        ved orientasjonsendring uten at vi må binde size/pos
+        manuelt for omplassering.
         """
         from kivy.graphics import Color as _LC, Rectangle as _LR
-        from kivy.uix.widget import Widget as _LW
+        from kivy.uix.floatlayout import FloatLayout as _LFL
 
-        overlay = _LW(size=Window.size, pos=(0, 0),
-                      size_hint=(None, None))
+        overlay = _LyttModalOverlay(size=Window.size, pos=(0, 0),
+                                    size_hint=(None, None))
 
         with overlay.canvas:
             _LC(0.0, 0.0, 0.0, 1.0)
@@ -10512,21 +10659,41 @@ BARN-MODUS
         Window.bind(size=_follow_win)
         self._lytt_overlay_follow = _follow_win
 
-        # Lukke-håndtering: hele overlay-en er ikke trykkbar, men hvis
-        # noen trykker mens lyden lastes, må vi blokkere så de ikke
-        # treffer fliser bak. on_touch_down konsumerer touch-en.
-        def _block_touch(w, touch):
-            if w.collide_point(*touch.pos):
-                return True
-            return False
-        overlay.bind(on_touch_down=_block_touch)
+        # FloatLayout som mellomlag – gir oss pos_hint på children
+        fl = _LFL(size_hint=(1, 1))
+        overlay.add_widget(fl)
 
-        # INSTANT synlig – ingen fade-inn
+        # "Laster lyd …"-label sentrert. Fjernes når lyden starter.
+        loading_lbl = Label(
+            text='Laster lyd …',
+            font_size=fsp(18), color=(1, 1, 1, 1),
+            halign='center', valign='middle',
+            size_hint=(None, None),
+            size=(dp(280), dp(40)),
+            pos_hint={'center_x': 0.5, 'center_y': 0.5})
+        loading_lbl.bind(size=loading_lbl.setter('text_size'))
+        fl.add_widget(loading_lbl)
+        self._lytt_loading_label = loading_lbl
+
+        # Ferdig-knapp tilstede fra start, deaktivert + lav opacity.
+        # Aktiveres og fades opp i _lytt_on_loaded.
+        ferdig_btn = mk_btn(
+            'Ferdig', hex_k('#6BCB77'),
+            h=dp(56), fs=18,
+            cb=lambda *_: self._lytt_ferdig())
+        ferdig_btn.size_hint = (None, None)
+        ferdig_btn.size      = (dp(280), dp(64))
+        ferdig_btn.pos_hint  = {'center_x': 0.5, 'y': 0.06}
+        ferdig_btn.disabled  = True
+        ferdig_btn.opacity   = 0.3
+        fl.add_widget(ferdig_btn)
+        self._lytt_ferdig_btn = ferdig_btn
+
+        # INSTANT synlig – ingen fade-inn av overlay
         overlay.opacity = 1.0
         Window.add_widget(overlay)
 
         self._lytt_overlay = overlay
-        self._lytt_ferdig_btn = None   # lages av _lytt_on_loaded
 
     def _lytt_begin_load(self, valg):
         """
@@ -10567,9 +10734,10 @@ BARN-MODUS
         forlot Lytt-skjermen i mellomtiden (Ferdig, tilbake-knapp,
         navigert vekk), kastes lyden – ingen avspilling.
 
-        Først her konstrueres og legges Ferdig-knappen til overlay-en
-        – ikke i _lytt_show_overlay – så vi unngår widget-konstruksjon
-        i den kritiske trykk-til-svart-skjerm-overgangen.
+        Når lyden er klar:
+          1. Fjerner "Laster …"-labelen fra overlay
+          2. Aktiverer Ferdig-knappen (allerede der, bare deaktivert)
+          3. Fader opacity fra 0.3 til 1.0 over 0.25 s
         """
         # Brukeren rakk å bytte skjerm – kast resultatet
         if self._cur_scr != 'lytt_spiller':
@@ -10589,39 +10757,26 @@ BARN-MODUS
             self._lytt_ferdig()
             return
 
-        # Spill av
+        # Spill av lyden
         snd.loop   = True
         snd.volume = 0.7
         snd.play()
         self._lytt_sound = snd
 
-        # Lag og legg til Ferdig-knappen på overlay-en NÅ
-        overlay = getattr(self, '_lytt_overlay', None)
-        if overlay is None:
-            return   # overlay er borte (race med Ferdig/back)
+        # Fjern "Laster …"-label (parent er FloatLayout, ikke overlay)
+        loading = getattr(self, '_lytt_loading_label', None)
+        if loading is not None:
+            if loading.parent is not None:
+                loading.parent.remove_widget(loading)
+            self._lytt_loading_label = None
 
-        ferdig_btn = mk_btn(
-            'Ferdig', hex_k('#6BCB77'),
-            h=dp(56), fs=18,
-            cb=lambda *_: self._lytt_ferdig())
-        ferdig_btn.size_hint = (None, None)
-        ferdig_btn.width     = dp(280)
-        ferdig_btn.height    = dp(64)
-        # Plasser ca. 6% over bunnen, sentrert horisontalt.
-        # Bruker absolutt pos siden parent er en bare Widget
-        # (ikke FloatLayout) for å minimere layout-arbeid.
-        def _place_btn(*_):
-            ferdig_btn.x = (overlay.width  - ferdig_btn.width) / 2
-            ferdig_btn.y = overlay.height * 0.06
-        _place_btn()
-        overlay.bind(size=_place_btn, pos=_place_btn)
-
-        ferdig_btn.opacity = 0.0
-        overlay.add_widget(ferdig_btn)
-        self._lytt_ferdig_btn = ferdig_btn
-
-        Animation(opacity=1.0, duration=0.40,
-                  t='out_quad').start(ferdig_btn)
+        # Aktiver Ferdig-knappen og fade til full opacity
+        btn = getattr(self, '_lytt_ferdig_btn', None)
+        if btn is not None:
+            btn.disabled = False
+            Animation.cancel_all(btn, 'opacity')
+            Animation(opacity=1.0, duration=0.25,
+                      t='out_quad').start(btn)
 
     def _lytt_stop_sound(self):
         """Stopp og frigjør lyd-objektet. Trygt å kalle flere ganger."""
@@ -10669,6 +10824,7 @@ BARN-MODUS
 
         self._lytt_overlay = None
         self._lytt_ferdig_btn = None
+        self._lytt_loading_label = None
 
     def _lytt_ferdig(self, *_):
         """
