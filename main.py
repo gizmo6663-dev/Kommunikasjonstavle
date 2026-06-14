@@ -10426,6 +10426,14 @@ BARN-MODUS
         Én flis i Lytt-menyen: kun tekst sentrert på en farget bakgrunn.
         Ingen bilder – flisens karakter formidles via fargen og
         navnet, og holder fokuset på den auditive opplevelsen.
+
+        OBS: bind_card_pop med pop-animasjon og haptic_feedback er
+        BEVISST utelatt her. Haptic-kallet ('performHapticFeedback'
+        via jnius/JNI) tar tid å initialisere første gang og kan gi
+        flere hundre ms forsinkelse mellom trykk og at _lytt_start
+        rekker å eksekvere. På Lytt-flisene prioriterer vi rask
+        respons fremfor pop-animasjon – flisen dekkes uansett av
+        den svarte overlayen straks etter.
         """
         cell = RBox(
             orientation='vertical',
@@ -10433,7 +10441,6 @@ BARN-MODUS
             box_color=list(hex_k(farge_hex)),
             radius=dp(14),
         )
-        bind_card_pop(cell)
 
         lbl = Label(
             text=valg['navn'],
@@ -10453,40 +10460,43 @@ BARN-MODUS
 
     def _lytt_start(self, valg):
         """
-        Starter Lytt-avspilling med ØYEBLIKKELIG visuell respons.
+        Starter Lytt-avspilling med MAKSIMALT rask visuell respons.
 
-        Tilnærming: i stedet for å bytte _content_inner (slide-anim
-        + chrome-fade + clearcolor-anim som alle krever at hovedløkken
-        får tid til å rendre flere lag), legges en mørk overlay-widget
-        direkte på Window og fades inn umiddelbart. Den dekker alt
-        annet inkludert topbar/quickbar/navbar – ingen behov for å
-        animere dem separat.
-
-        Resultat: trykk → overlay synlig i samme frame → fade-in over
-        0.35 s → lyd-lasting i tråd i bakgrunnen → Ferdig-knapp fades
-        inn på overlay-en når lyden begynner å spille.
+        Designvalg for hastighet:
+          1. INSTANT svart overlay (opacity=1 fra første frame) – ingen
+             fade-inn-animasjon å vente på, og overlay er synlig før
+             noe annet i denne funksjonen rekker å kjøre.
+          2. Overlay er en bare Widget med Color/Rectangle på canvas
+             – ikke FloatLayout med child-widgets å instansiere.
+          3. Ferdig-knappen lages IKKE her – den konstrueres først
+             når lyden er klar (i _lytt_on_loaded). Da slipper vi
+             widget-konstruksjon mens hovedløkken må rendre overlay.
+          4. ALT annet arbeid (state-endring, lyd-tråd) deferes
+             til neste tick via Clock.schedule_once(...,0), så
+             første frame med svart overlay blir rendret først.
         """
-        # === Trinn 1: ØYEBLIKKELIG visuell respons ===
-        # Lag og legg til overlay før noe annet kan blokkere
+        # === Trinn 1: INSTANT svart overlay – ingen animasjon ===
         self._lytt_show_overlay()
 
-        # === Trinn 2: Defer state-endring og lyd-lasting ===
-        # Neste tick (~16 ms) så overlay-rendringen rekker først
+        # === Trinn 2: Defer alt annet til neste tick ===
         Clock.schedule_once(lambda dt: self._lytt_begin_load(valg), 0)
 
     def _lytt_show_overlay(self):
         """
-        Legger en svart overlay direkte på Window som dekker hele
-        skjermen. Ferdig-knappen ligger på overlayen men er usynlig
-        og deaktivert til lyden er lastet og avspilling startet.
+        Legger umiddelbart en svart Widget direkte på Window som
+        dekker hele skjermen. INGEN fade-inn – widgeten er synlig
+        med full opacity på første frame etter add_widget.
+
+        Ferdig-knappen lages IKKE her; den legges til som child
+        først når lyden er lastet, i _lytt_on_loaded.
         """
         from kivy.graphics import Color as _LC, Rectangle as _LR
-        from kivy.uix.floatlayout import FloatLayout as _LFL
+        from kivy.uix.widget import Widget as _LW
 
-        overlay = _LFL(size=Window.size, pos=(0, 0),
-                       size_hint=(None, None))
+        overlay = _LW(size=Window.size, pos=(0, 0),
+                      size_hint=(None, None))
 
-        with overlay.canvas.before:
+        with overlay.canvas:
             _LC(0.0, 0.0, 0.0, 1.0)
             bg_rect = _LR(pos=(0, 0), size=Window.size)
 
@@ -10502,33 +10512,26 @@ BARN-MODUS
         Window.bind(size=_follow_win)
         self._lytt_overlay_follow = _follow_win
 
-        # Ferdig-knapp – usynlig til lyden er klar
-        ferdig_btn = mk_btn(
-            'Ferdig', hex_k('#6BCB77'),
-            h=dp(56), fs=18,
-            cb=lambda *_: self._lytt_ferdig())
-        ferdig_btn.size_hint  = (None, None)
-        ferdig_btn.width      = dp(280)
-        ferdig_btn.height     = dp(64)
-        ferdig_btn.pos_hint   = {'center_x': 0.5, 'y': 0.06}
-        ferdig_btn.opacity    = 0.0
-        ferdig_btn.disabled   = True
-        overlay.add_widget(ferdig_btn)
-        self._lytt_ferdig_btn = ferdig_btn
+        # Lukke-håndtering: hele overlay-en er ikke trykkbar, men hvis
+        # noen trykker mens lyden lastes, må vi blokkere så de ikke
+        # treffer fliser bak. on_touch_down konsumerer touch-en.
+        def _block_touch(w, touch):
+            if w.collide_point(*touch.pos):
+                return True
+            return False
+        overlay.bind(on_touch_down=_block_touch)
 
-        # Start usynlig og fade inn (instant fra brukerens perspektiv
-        # siden første frame allerede er svart med opacity > 0)
-        overlay.opacity = 0.0
+        # INSTANT synlig – ingen fade-inn
+        overlay.opacity = 1.0
         Window.add_widget(overlay)
-        Animation(opacity=1.0, duration=0.35, t='out_quad').start(overlay)
 
         self._lytt_overlay = overlay
+        self._lytt_ferdig_btn = None   # lages av _lytt_on_loaded
 
     def _lytt_begin_load(self, valg):
         """
-        Kjøres ett tick etter at overlay-en ble lagt til. Setter
-        navigasjons-state og starter asynkron lyd-lasting. Selve
-        innholdsskjermen byttes IKKE – overlay dekker uansett.
+        Kjøres ett tick (~16 ms) etter at overlay-en ble lagt til.
+        Setter navigasjons-state og starter asynkron lyd-lasting.
         """
         self._push('lytt')
         self._cur_scr = 'lytt_spiller'
@@ -10563,6 +10566,10 @@ BARN-MODUS
         Kjøres i hovedtråden etter at lyden er lastet. Hvis brukeren
         forlot Lytt-skjermen i mellomtiden (Ferdig, tilbake-knapp,
         navigert vekk), kastes lyden – ingen avspilling.
+
+        Først her konstrueres og legges Ferdig-knappen til overlay-en
+        – ikke i _lytt_show_overlay – så vi unngår widget-konstruksjon
+        i den kritiske trykk-til-svart-skjerm-overgangen.
         """
         # Brukeren rakk å bytte skjerm – kast resultatet
         if self._cur_scr != 'lytt_spiller':
@@ -10582,17 +10589,39 @@ BARN-MODUS
             self._lytt_ferdig()
             return
 
-        # Spill av og fade inn Ferdig-knapp
+        # Spill av
         snd.loop   = True
         snd.volume = 0.7
         snd.play()
         self._lytt_sound = snd
 
-        btn = getattr(self, '_lytt_ferdig_btn', None)
-        if btn is not None:
-            btn.disabled = False
-            Animation(opacity=1.0, duration=0.45,
-                      t='out_quad').start(btn)
+        # Lag og legg til Ferdig-knappen på overlay-en NÅ
+        overlay = getattr(self, '_lytt_overlay', None)
+        if overlay is None:
+            return   # overlay er borte (race med Ferdig/back)
+
+        ferdig_btn = mk_btn(
+            'Ferdig', hex_k('#6BCB77'),
+            h=dp(56), fs=18,
+            cb=lambda *_: self._lytt_ferdig())
+        ferdig_btn.size_hint = (None, None)
+        ferdig_btn.width     = dp(280)
+        ferdig_btn.height    = dp(64)
+        # Plasser ca. 6% over bunnen, sentrert horisontalt.
+        # Bruker absolutt pos siden parent er en bare Widget
+        # (ikke FloatLayout) for å minimere layout-arbeid.
+        def _place_btn(*_):
+            ferdig_btn.x = (overlay.width  - ferdig_btn.width) / 2
+            ferdig_btn.y = overlay.height * 0.06
+        _place_btn()
+        overlay.bind(size=_place_btn, pos=_place_btn)
+
+        ferdig_btn.opacity = 0.0
+        overlay.add_widget(ferdig_btn)
+        self._lytt_ferdig_btn = ferdig_btn
+
+        Animation(opacity=1.0, duration=0.40,
+                  t='out_quad').start(ferdig_btn)
 
     def _lytt_stop_sound(self):
         """Stopp og frigjør lyd-objektet. Trygt å kalle flere ganger."""
