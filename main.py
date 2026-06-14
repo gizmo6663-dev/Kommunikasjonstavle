@@ -10213,17 +10213,23 @@ BARN-MODUS
         eller er tom – kallekoden viser da en informativ melding.
         """
         funn = []
+        diag(f'Lytt: skanner {LYTT_DIR}')
         if not os.path.isdir(LYTT_DIR):
+            diag(f'Lytt: mappa finnes IKKE')
             return funn
         try:
-            for fn in sorted(os.listdir(LYTT_DIR)):
+            alle = os.listdir(LYTT_DIR)
+            diag(f'Lytt: {len(alle)} filer/mapper totalt: {alle}')
+            for fn in sorted(alle):
                 full = os.path.join(LYTT_DIR, fn)
                 if not os.path.isfile(full):
                     continue
                 navn, ext = os.path.splitext(fn)
                 if ext.lower() not in self._LYTT_LYDFORMATER:
+                    diag(f'Lytt: hopper over {fn} (ext={ext})')
                     continue
                 funn.append({'navn': navn, 'lyd': full})
+            diag(f'Lytt: fant {len(funn)} gyldige lydfiler')
         except OSError:
             logging.exception('Lytt: feilet å skanne %s', LYTT_DIR)
         return funn

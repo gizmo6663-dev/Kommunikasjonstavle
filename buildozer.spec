@@ -5,7 +5,7 @@ title = Kommunikasjonstavle
 package.name = kommunikasjonstavle
 package.domain = no.askapp
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf
+source.include_exts = py,png,jpg,jpeg,webp,kv,json,ttf,otf,mp3,ogg,wav,m4a,opus,aac
 
 # Widget: Java-kildefiler og Android-ressurser
 source.include_patterns = assets/**/*,assets/*
@@ -87,5 +87,5 @@ android.presplash_color = #12183A
 
 # ─── Buildozer ────────────────────────────────────────────────────
 [buildozer]
-log_level = 2
+log_level = 1
 warn_on_root = 0
