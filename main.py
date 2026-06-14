@@ -2965,9 +2965,16 @@ class KommunikasjonstavleApp(App):
         """
         self._write_app_state(True)   # appen er i forgrunnen
 
+        # ── Crossfade fra Android-presplash til appens hjemskjerm ──
+        # Når Android-presplash forsvinner, lager vi en overlay med
+        # samme bilde som dekker Kivy-vinduet. Overlay-en fader så
+        # ut til opacity 0 over et halvt sekund, så overgangen blir
+        # sømløs (presplash → identisk overlay → fade til normal app).
+        self._show_splash_crossfade()
+
         # Onboarding: kort delay så hjemskjermen rekker å rendres først,
         # ellers ser det rart ut at popup-en dukker opp før appen.
-        Clock.schedule_once(self._maybe_show_onboarding, 0.6)
+        Clock.schedule_once(self._maybe_show_onboarding, 1.4)
 
         # Første oppstart: _init_bundled_assets() kopierer bilder til IMG_DIR
         # i build(), men filsystemet på Android kan bufre skrivene. En stille
@@ -3003,6 +3010,62 @@ class KommunikasjonstavleApp(App):
 
     # _request_android_permissions() er erstattet av modul-nivå-funksjonen
     # request_android_permissions() øverst i filen – se der.
+
+    def _show_splash_crossfade(self):
+        """
+        Sømløs overgang fra Android-presplash til hjemskjermen.
+
+        Når Android-presplash forsvinner, viser vi samme splash-bilde
+        som en Image-overlay over hele Kivy-vinduet. Etter et kort
+        opphold (slik at presplash → overlay-byttet er usynlig) fader
+        overlayen ut til opacity 0 over 0.6 s og fjernes.
+
+        Hvis splash-fila ikke finnes, vises bare en kort fade fra en
+        ensfarget overlay i samme mørke navy som presplash_color
+        (#12183A) – ingen feilmelding.
+        """
+        from kivy.uix.image import Image as _SplashImg
+        from kivy.uix.widget import Widget
+        from kivy.graphics import Color as _SC, Rectangle as _SR
+
+        splash_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'assets', 'splash.png')
+
+        if os.path.exists(splash_path):
+            overlay = _SplashImg(
+                source=splash_path,
+                allow_stretch=True, keep_ratio=False,
+                size=Window.size, pos=(0, 0))
+        else:
+            # Fallback: ensfarget navy så det fortsatt blir en jevn fade
+            overlay = Widget(size=Window.size, pos=(0, 0))
+            with overlay.canvas:
+                _SC(0.07, 0.09, 0.23, 1.0)   # #12183A
+                _r = _SR(pos=overlay.pos, size=overlay.size)
+            overlay.bind(
+                size=lambda w, v: setattr(_r, 'size', v),
+                pos=lambda w, v: setattr(_r, 'pos', v))
+
+        # Følg Window-resize/orientasjonsendring så overlay alltid dekker
+        def _follow_window(*_):
+            overlay.size = Window.size
+            overlay.pos = (0, 0)
+        Window.bind(size=_follow_window)
+
+        Window.add_widget(overlay)
+
+        def _start_fade(dt):
+            anim = Animation(opacity=0.0, duration=0.6, t='out_quad')
+            anim.bind(on_complete=lambda *_: (
+                Window.remove_widget(overlay),
+                Window.unbind(size=_follow_window),
+            ))
+            anim.start(overlay)
+
+        # Liten delay (150 ms) før fade-start, slik at hovedappen
+        # garantert har rendret minst én ramme bak overlay-en
+        Clock.schedule_once(_start_fade, 0.15)
 
     def _process_shared_image(self):
         """
@@ -3980,15 +4043,13 @@ class KommunikasjonstavleApp(App):
         if self._cur_scr not in ('lytt', 'lytt_spiller') \
                 and getattr(self, '_lytt_sound', None) is not None:
             self._lytt_stop_sound()
-        # Sikkerhetsnett: hvis chrome ble fadet ut for lytt_spiller
-        # (mørk pause-skjerm) og brukeren forlater skjermen via
-        # andre veier enn Ferdig-knappen (Android-tilbake, krasj,
-        # auto-navigasjon), må chrome fades inn igjen så appen
-        # ikke ser låst-i-mørk-modus ut etterpå.
-        if self._cur_scr != 'lytt_spiller':
-            qb = getattr(self, '_quickbar', None)
-            if qb is not None and qb.opacity < 1.0:
-                self._lytt_fade_chrome_inn()
+        # Sikkerhetsnett: hvis Lytt-overlayen er på (mørk pause-skjerm)
+        # og brukeren forlater skjermen via andre veier enn Ferdig
+        # (Android-tilbake, krasj, auto-navigasjon), må overlayen
+        # fjernes så ikke appen blir låst-i-mørk-modus etterpå.
+        if self._cur_scr != 'lytt_spiller' \
+                and getattr(self, '_lytt_overlay', None) is not None:
+            self._lytt_remove_overlay()
         # Nullstill adaptiv bakgrunn når vi forlater bilde-skjermen
         if self._cur_scr == 'image':
             hc_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
@@ -5783,331 +5844,388 @@ class KommunikasjonstavleApp(App):
         self._show_settings()
 
     def _show_settings(self, **_):
+        """
+        Innstillingsskjerm med fane-organisering. State lagres i
+        self._settings_tab (0-3) så bytte mellom faner bevarer valg.
+
+        Fane-oppsett:
+          0  Utseende     – Høykontrast, Skjermretning, Tekststørrelse, Konfetti-knapp
+          1  Interaksjon  – TTS, Sveipenavigasjon, Push-varsler
+          2  Sikkerhet    – Barn-modus + PIN, Del med annen enhet
+          3  Hjelp        – Brukerveiledning, Omvisning, Logger, Personvern, Importer bilder
+        """
         self._cur_scr = 'settings'
         self._set_title('Innstillinger')
         st = self.data.setdefault('settings', {'tts_enabled': False, 'font_scale': 1.0})
-        outer = BoxLayout(orientation='vertical', spacing=dp(16), padding=dp(16))
 
-        # ── Høykontrast ──────────────────────────────────────────
-        outer.add_widget(Label(text='Høykontrast:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        hc_row  = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        is_hc_on = st.get('high_contrast', False)
-        hc_on  = mk_btn('På',  hex_k('#000000' if is_hc_on else '#546E7A'),
-                         fg=(1,1,1,1), h=dp(52), fs=16)
-        hc_off = mk_btn('Av',  hex_k('#4D96FF' if not is_hc_on else '#90CAF9'),
-                         fg=(1,1,1,1), h=dp(52), fs=16)
-        def set_hc(val):
-            st['high_contrast'] = val
-            save_struct(self.data)
-            apply_high_contrast(val)
-            hc_on.btn_color  = list(hex_k('#000000' if val else '#546E7A'))
-            hc_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
-            # Gjenbygg innstillingsskjermen så farger oppdateres
-            Clock.schedule_once(lambda *_: self._show_settings(), 0.15)
-        hc_on.bind( on_release=lambda *_: set_hc(True))
-        hc_off.bind(on_release=lambda *_: set_hc(False))
-        hc_row.add_widget(hc_on); hc_row.add_widget(hc_off)
-        outer.add_widget(hc_row)
-        _lbl_hc = Label(
-            text='Svart bakgrunn og hvit tekst på alle knapper (WCAG AAA, 7:1). Gjelder fra neste skjerminnlasting.',
-            size_hint_y=None, height=dp(44),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
-            halign='left', valign='top')
-        _lbl_hc.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
-        outer.add_widget(_lbl_hc)
+        if not hasattr(self, '_settings_tab'):
+            self._settings_tab = 0
 
-        # ── Skjermretning (fase 1 – landskapsstøtte) ─────────────
-        # Eksplisitt vippe-knapp i stedet for automatisk
-        # sensor-rotasjon hele tiden – forutsigbart for ASK-bruk
-        # (spesielt viktig om barnet ser på skjermen). Brukeren
-        # velger selv NÅR appen skal følge enhetens vipping, f.eks.
-        # når et nettbrett settes opp liggende.
-        outer.add_widget(Label(text='Skjermretning:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        or_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        or_portrait = mk_btn(
-            'Stående', hex_k('#000000' if not self._is_landscape else '#546E7A'),
-            fg=(1, 1, 1, 1), h=dp(52), fs=16,
-            cb=lambda *_: self._toggle_orientation()
-                if self._is_landscape else None)
-        or_landscape = mk_btn(
-            'Liggende', hex_k('#4D96FF' if self._is_landscape else '#90CAF9'),
-            fg=(1, 1, 1, 1), h=dp(52), fs=16,
-            cb=lambda *_: self._toggle_orientation()
-                if not self._is_landscape else None)
-        or_row.add_widget(or_portrait); or_row.add_widget(or_landscape)
-        outer.add_widget(or_row)
-        _lbl_or = Label(
-            text='Bytter skjermretning umiddelbart. Mappe- og bilderutenett '
-                 'tilpasser seg (4 → 6 kolonner i liggende).',
-            size_hint_y=None, height=dp(44),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
-            halign='left', valign='top')
-        _lbl_or.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
-        outer.add_widget(_lbl_or)
+        root = BoxLayout(orientation='vertical',
+                         spacing=dp(8), padding=(dp(8), dp(8)))
 
-        # ── Sveipenavigasjon ─────────────────────────────────────
-        outer.add_widget(Label(text='Sveipenavigasjon:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        sw_row   = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        is_sw_on = st.get('swipe_nav', False)
-        sw_on  = mk_btn('På', hex_k('#2E7D32' if is_sw_on  else '#6BCB77'), h=dp(52), fs=16)
-        sw_off = mk_btn('Av', hex_k('#B71C1C' if not is_sw_on else '#FF6B6B'), h=dp(52), fs=16)
-        def set_sw(val):
-            st['swipe_nav'] = val
-            save_struct(self.data)
-            sw_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
-            sw_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
-        sw_on.bind( on_release=lambda *_: set_sw(True))
-        sw_off.bind(on_release=lambda *_: set_sw(False))
-        sw_row.add_widget(sw_on); sw_row.add_widget(sw_off)
-        outer.add_widget(sw_row)
-        _lbl_sw = Label(
-            text='Sveip høyre for tilbake, venstre for neste. Kan forstyrre scrolling.',
-            size_hint_y=None, height=dp(32),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
-            halign='left', valign='middle')
-        _lbl_sw.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
-        outer.add_widget(_lbl_sw)
+        # ── Fane-bar øverst ─────────────────────────────────────────
+        tab_bar = BoxLayout(orientation='horizontal',
+                            size_hint_y=None, height=dp(50), spacing=dp(4))
+        tabs = [('Utseende', 0), ('Interaksjon', 1),
+                ('Sikkerhet', 2), ('Hjelp', 3)]
+        for tab_label, tab_idx in tabs:
+            active = (self._settings_tab == tab_idx)
+            tb = mk_btn(
+                tab_label,
+                hex_k('#4D96FF' if active else '#B0B8C4'),
+                h=dp(46), fs=13,
+                cb=lambda *_, i=tab_idx: self._select_settings_tab(i))
+            tab_bar.add_widget(tb)
+        root.add_widget(tab_bar)
 
-        outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        tts_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        is_on   = st.get('tts_enabled', False)
-        tts_on  = mk_btn('Pa',  hex_k('#2E7D32' if is_on else '#6BCB77'), h=dp(52), fs=16)
-        tts_off = mk_btn('Av',  hex_k('#B71C1C' if not is_on else '#FF6B6B'), h=dp(52), fs=16)
-        def set_tts(val):
-            st['tts_enabled'] = val
-            save_struct(self.data)
-            if val:
-                self._init_tts()
-            tts_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
-            tts_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
-        tts_on.bind( on_release=lambda *_: set_tts(True))
-        tts_off.bind(on_release=lambda *_: set_tts(False))
-        tts_row.add_widget(tts_on); tts_row.add_widget(tts_off)
-        outer.add_widget(tts_row)
-        outer.add_widget(Label(
-            text='Trykk på et ASK-bilde for å høre etiketten.',
-            size_hint_y=None, height=dp(26),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+        # ── Innhold for aktiv fane ──────────────────────────────────
+        outer = BoxLayout(orientation='vertical', spacing=dp(16), padding=dp(8))
+        tab = self._settings_tab
 
-        outer.add_widget(Label(text='Tekststorrelse:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        scale_opts = [('Liten', 0.82), ('Normal', 1.0), ('Stor', 1.20), ('Storst', 1.42)]
-        cur_sc     = st.get('font_scale', 1.0)
-        sg = GridLayout(cols=4, spacing=dp(8), size_hint_y=None, height=dp(58))
-        sb_list = []
-        for lbl, val in scale_opts:
-            active = abs(val - cur_sc) < 0.05
-            b = mk_btn(lbl, hex_k('#0D47A1' if active else '#4D96FF'), h=dp(54), fs=14)
-            def pick(_, v=val, sbl=sb_list, so=scale_opts):
-                st['font_scale'] = v
+        if tab == 0:
+            # ════════════════════════════════════════════════════════
+            #  UTSEENDE
+            # ════════════════════════════════════════════════════════
+
+            # ── Høykontrast ──────────────────────────────────────
+            outer.add_widget(Label(text='Høykontrast:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            hc_row  = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            is_hc_on = st.get('high_contrast', False)
+            hc_on  = mk_btn('På',  hex_k('#000000' if is_hc_on else '#546E7A'),
+                             fg=(1,1,1,1), h=dp(52), fs=16)
+            hc_off = mk_btn('Av',  hex_k('#4D96FF' if not is_hc_on else '#90CAF9'),
+                             fg=(1,1,1,1), h=dp(52), fs=16)
+            def set_hc(val):
+                st['high_contrast'] = val
                 save_struct(self.data)
-                for sb2, (_, sv2) in zip(sbl, so):
-                    sb2.btn_color = list(hex_k('#0D47A1' if abs(sv2-v)<0.05 else '#4D96FF'))
-            b.bind(on_release=pick)
-            sg.add_widget(b); sb_list.append(b)
-        outer.add_widget(sg)
-        outer.add_widget(Label(
-            text='Ny storrelse gjelder fra neste skjerminnlasting.',
-            size_hint_y=None, height=dp(26),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1), halign='left'))
+                apply_high_contrast(val)
+                hc_on.btn_color  = list(hex_k('#000000' if val else '#546E7A'))
+                hc_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
+                Clock.schedule_once(lambda *_: self._show_settings(), 0.15)
+            hc_on.bind( on_release=lambda *_: set_hc(True))
+            hc_off.bind(on_release=lambda *_: set_hc(False))
+            hc_row.add_widget(hc_on); hc_row.add_widget(hc_off)
+            outer.add_widget(hc_row)
+            _lbl_hc = Label(
+                text='Svart bakgrunn og hvit tekst på alle knapper (WCAG AAA, 7:1). Gjelder fra neste skjerminnlasting.',
+                size_hint_y=None, height=dp(44),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+                halign='left', valign='top')
+            _lbl_hc.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+            outer.add_widget(_lbl_hc)
 
-        # ── Bildemappe-info ──────────────────────────────────────────
-        outer.add_widget(Label(
-            text='Importer bilder:',
-            size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True,
-            color=(0.08, 0.10, 0.35, 1), halign='left'))
-        _lbl_img = Label(
-            text=(
-                'Trykk "Last opp" i en mappe for å velge bilde.\n'
-                'Bildevelgeren åpnes – ingen tillatelser trengs.\n\n'
-                'Bilder lagres i appens private mappe.\n'
-                'Eksporter via "Last ned" for å kopiere til Nedlastinger.'
-            ),
-            size_hint_y=None, height=dp(100),
-            font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
-            halign='left', valign='top')
-        _lbl_img.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
-        outer.add_widget(_lbl_img)
+            # ── Skjermretning ────────────────────────────────────
+            outer.add_widget(Label(text='Skjermretning:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            or_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            or_portrait = mk_btn(
+                'Stående', hex_k('#000000' if not self._is_landscape else '#546E7A'),
+                fg=(1, 1, 1, 1), h=dp(52), fs=16,
+                cb=lambda *_: self._toggle_orientation()
+                    if self._is_landscape else None)
+            or_landscape = mk_btn(
+                'Liggende', hex_k('#4D96FF' if self._is_landscape else '#90CAF9'),
+                fg=(1, 1, 1, 1), h=dp(52), fs=16,
+                cb=lambda *_: self._toggle_orientation()
+                    if not self._is_landscape else None)
+            or_row.add_widget(or_portrait); or_row.add_widget(or_landscape)
+            outer.add_widget(or_row)
+            _lbl_or = Label(
+                text='Bytter skjermretning umiddelbart. Mappe- og bilderutenett '
+                     'tilpasser seg (4 → 6 kolonner i liggende).',
+                size_hint_y=None, height=dp(44),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+                halign='left', valign='top')
+            _lbl_or.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+            outer.add_widget(_lbl_or)
 
+            # ── Tekststørrelse ───────────────────────────────────
+            outer.add_widget(Label(text='Tekststorrelse:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            scale_opts = [('Liten', 0.82), ('Normal', 1.0), ('Stor', 1.20), ('Storst', 1.42)]
+            cur_sc     = st.get('font_scale', 1.0)
+            sg = GridLayout(cols=4, spacing=dp(8), size_hint_y=None, height=dp(58))
+            sb_list = []
+            for lbl, val in scale_opts:
+                active = abs(val - cur_sc) < 0.05
+                b = mk_btn(lbl, hex_k('#0D47A1' if active else '#4D96FF'), h=dp(54), fs=14)
+                def pick(_, v=val, sbl=sb_list, so=scale_opts):
+                    st['font_scale'] = v
+                    save_struct(self.data)
+                    for sb2, (_, sv2) in zip(sbl, so):
+                        sb2.btn_color = list(hex_k('#0D47A1' if abs(sv2-v)<0.05 else '#4D96FF'))
+                b.bind(on_release=pick)
+                sg.add_widget(b); sb_list.append(b)
+            outer.add_widget(sg)
+            outer.add_widget(Label(
+                text='Ny storrelse gjelder fra neste skjerminnlasting.',
+                size_hint_y=None, height=dp(26),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1), halign='left'))
 
-        # ── Konfetti-knapp ───────────────────────────────────────
-        outer.add_widget(Label(text='Konfetti-knapp:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        kb_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        is_kb_on = getattr(self, '_confetti_btn_visible', False)
-        kb_on  = mk_btn('På', hex_k('#2E7D32' if is_kb_on else '#6BCB77'), h=dp(52), fs=16)
-        kb_off = mk_btn('Av', hex_k('#B71C1C' if not is_kb_on else '#FF6B6B'), h=dp(52), fs=16)
-        def set_kb(val):
-            self._toggle_confetti_btn(val)
-            kb_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
-            kb_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
-        kb_on.bind( on_release=lambda *_: set_kb(True))
-        kb_off.bind(on_release=lambda *_: set_kb(False))
-        kb_row.add_widget(kb_on); kb_row.add_widget(kb_off)
-        outer.add_widget(kb_row)
+            # ── Konfetti-knapp ───────────────────────────────────
+            outer.add_widget(Label(text='Konfetti-knapp:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            kb_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            is_kb_on = getattr(self, '_confetti_btn_visible', False)
+            kb_on  = mk_btn('På', hex_k('#2E7D32' if is_kb_on else '#6BCB77'), h=dp(52), fs=16)
+            kb_off = mk_btn('Av', hex_k('#B71C1C' if not is_kb_on else '#FF6B6B'), h=dp(52), fs=16)
+            def set_kb(val):
+                self._toggle_confetti_btn(val)
+                kb_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+                kb_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+            kb_on.bind( on_release=lambda *_: set_kb(True))
+            kb_off.bind(on_release=lambda *_: set_kb(False))
+            kb_row.add_widget(kb_on); kb_row.add_widget(kb_off)
+            outer.add_widget(kb_row)
+            outer.add_widget(Label(
+                text='Liten konfetti-knapp synlig nederst i venstre hjørne. Trykk gir en kort feiring.',
+                size_hint_y=None, height=dp(36), font_size=fsp(12),
+                color=(0.3, 0.3, 0.4, 1), halign='left', valign='top'))
 
-        # ── Varsler ──────────────────────────────────────────────────
-        outer.add_widget(Label(text='Push-varsler:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        outer.add_widget(Label(
-            text='Varsler sendes kun når appen er i bakgrunnen / skjermen er av.',
-            font_size=fsp(13), color=(0.4, 0.4, 0.5, 1),
-            size_hint_y=None, height=dp(28), halign='left'))
+        elif tab == 1:
+            # ════════════════════════════════════════════════════════
+            #  INTERAKSJON
+            # ════════════════════════════════════════════════════════
 
-        def _mk_notif_row(label, key):
-            on_now = self.data.get('settings', {}).get(key, False)
-            row = BoxLayout(size_hint_y=None, height=rdp(56), spacing=dp(8))
-            btn_on  = mk_btn('På',  hex_k('#6BCB77' if on_now     else '#B0B8C4'),
-                             h=rdp(50), fs=14)
-            btn_off = mk_btn('Av',  hex_k('#EF5350' if not on_now else '#B0B8C4'),
-                             h=rdp(50), fs=14)
-            def _set(val, b_on=btn_on, b_off=btn_off, k=key):
-                self.data.setdefault('settings', {})[k] = val
-                b_on.btn_color  = list(hex_k('#6BCB77' if val  else '#B0B8C4'))
-                b_off.btn_color = list(hex_k('#EF5350' if not val else '#B0B8C4'))
+            # ── Les opp etiketter (TTS) ──────────────────────────
+            outer.add_widget(Label(text='Les opp etiketter (tale):', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            tts_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            is_on   = st.get('tts_enabled', False)
+            tts_on  = mk_btn('På',  hex_k('#2E7D32' if is_on else '#6BCB77'), h=dp(52), fs=16)
+            tts_off = mk_btn('Av',  hex_k('#B71C1C' if not is_on else '#FF6B6B'), h=dp(52), fs=16)
+            def set_tts(val):
+                st['tts_enabled'] = val
                 save_struct(self.data)
-                if k == 'notifications_dagsplan':
-                    self._reschedule_dagsplan_notifs()
                 if val:
-                    self._request_notification_permission()
-            btn_on.bind( on_release=lambda *_: _set(True))
-            btn_off.bind(on_release=lambda *_: _set(False))
-            row.add_widget(Label(text=label, font_size=fsp(15),
-                                 color=(0.1, 0.1, 0.3, 1), halign='left'))
-            row.add_widget(btn_on)
-            row.add_widget(btn_off)
-            return row
+                    self._init_tts()
+                tts_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+                tts_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+            tts_on.bind( on_release=lambda *_: set_tts(True))
+            tts_off.bind(on_release=lambda *_: set_tts(False))
+            tts_row.add_widget(tts_on); tts_row.add_widget(tts_off)
+            outer.add_widget(tts_row)
+            outer.add_widget(Label(
+                text='Trykk på et ASK-bilde for å høre etiketten.',
+                size_hint_y=None, height=dp(26),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1), halign='left'))
 
-        outer.add_widget(_mk_notif_row('Tidsur:',    'notifications_timer'))
-        outer.add_widget(_mk_notif_row('Dagsplan:',  'notifications_dagsplan'))
-
-        # ── Del med annen enhet (WiFi) ────────────────────────────────
-        outer.add_widget(Label(text='Del med annen enhet:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        _lbl_sync = Label(
-            text='Overfør mapper og bilder til/fra en annen enhet med '
-                 'appen, så lenge begge er på samme WiFi-nettverk.',
-            size_hint_y=None, height=dp(44),
-            font_size=fsp(12), color=(0.5, 0.5, 0.5, 1),
-            halign='left', valign='top')
-        _lbl_sync.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
-        outer.add_widget(_lbl_sync)
-        sync_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
-        sync_row.add_widget(mk_btn('Del innhold', hex_k('#6BCB77'), h=dp(54), fs=15,
-            cb=lambda *_: self._show_sync_send_popup()))
-        sync_row.add_widget(mk_btn('Motta innhold', hex_k('#4D96FF'), h=dp(54), fs=15,
-            cb=lambda *_: self._show_sync_receive_popup()))
-        outer.add_widget(sync_row)
-
-        # ── Hjelp ────────────────────────────────────────────────────
-        outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08,0.10,0.35,1), halign='left'))
-        outer.add_widget(mk_btn('Les brukerveiledning', hex_k('#4D96FF'), h=dp(54), fs=15,
-            cb=lambda *_: self._show_help_popup()))
-        outer.add_widget(mk_btn('Vis widget-logg', hex_k('#78909C'), h=dp(48), fs=14,
-            cb=lambda *_: self._show_widget_log()))
-        outer.add_widget(mk_btn('Vis diagnoselogg', hex_k('#546E7A'), h=dp(48), fs=14,
-            cb=lambda *_: self._show_diag_log()))
-
-        # ── Personvern ───────────────────────────────────────────────
-        outer.add_widget(Label(
-            text='Personvern:',
-            size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True,
-            color=(0.08, 0.10, 0.35, 1), halign='left'))
-        outer.add_widget(mk_btn(
-            'Les personvernerklæringen',
-            hex_k('#4D96FF'), h=dp(54), fs=15,
-            cb=lambda *_: self._show_privacy_popup()))
-
-        # ── Omvisning ────────────────────────────────────────────
-        # Lar brukeren se den guidede omvisningen igjen senere.
-        outer.add_widget(Label(text='Hjelp:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1),
-            halign='left'))
-        outer.add_widget(mk_btn(
-            'Vis omvisning på nytt',
-            hex_k('#6BCB77'), h=dp(54), fs=15,
-            cb=lambda *_: self._show_onboarding()))
-
-        # ── Barn-modus ───────────────────────────────────────────
-        outer.add_widget(Label(text='Barn-modus:', size_hint_y=None, height=dp(32),
-            font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
-        is_barn = st.get('barn_modus', False)
-        barn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
-        barn_on  = mk_btn('På',  hex_k('#FF9F43' if is_barn  else '#546E7A'), h=dp(52), fs=16)
-        barn_off = mk_btn('Av',  hex_k('#4D96FF' if not is_barn else '#90CAF9'), h=dp(52), fs=16)
-        def set_barn(val):
-            st['barn_modus'] = val
-            save_struct(self.data)
-            barn_on.btn_color  = list(hex_k('#FF9F43' if val else '#546E7A'))
-            barn_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
-        barn_on.bind( on_release=lambda *_: set_barn(True))
-        barn_off.bind(on_release=lambda *_: set_barn(False))
-        barn_row.add_widget(barn_on); barn_row.add_widget(barn_off)
-        outer.add_widget(barn_row)
-        outer.add_widget(Label(
-            text='2-kolonne rutenett og PIN-beskyttet redigering for å hindre utilsiktede endringer.',
-            size_hint_y=None, height=dp(44), font_size=fsp(12),
-            color=(0.5, 0.5, 0.5, 1), halign='left', valign='top'))
-
-        # PIN-oppsett for barn-modus
-        cur_pin = st.get('barn_modus_pin', '')
-        pin_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
-        pin_lbl = Label(
-            text=f'PIN: {"*" * len(cur_pin) if cur_pin else "(ingen – kun knapp-lås)"}',
-            font_size=fsp(13), color=(0.3, 0.34, 0.50, 1),
-            halign='left', valign='middle', size_hint_x=1)
-        pin_lbl.bind(size=pin_lbl.setter('text_size'))
-        pin_row.add_widget(pin_lbl)
-
-        def _set_pin_popup(*_):
-            from kivy.uix.textinput import TextInput as _TI
-            pbox = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(16))
-            pbox.add_widget(Label(text='Ny PIN (4 siffer, la stå tomt for ingen PIN):',
-                                  font_size=fsp(14), color=(0.06,0.08,0.30,1),
-                                  size_hint_y=None, height=dp(38), halign='center'))
-            pin_inp = _TI(hint_text='1234', multiline=False, input_filter='int',
-                          size_hint_y=None, height=dp(50),
-                          font_size=fsp(18), halign='center')
-            def _limit_pin(_inst, value):
-                if len(value) > 4:
-                    _inst.text = value[:4]
-            pin_inp.bind(text=_limit_pin)
-            pbox.add_widget(pin_inp)
-            pp = Popup(title='', content=pbox, size_hint=POPUP_SMALL, separator_height=0)
-            def _save(*_):
-                v = pin_inp.text.strip()
-                st['barn_modus_pin'] = v
+            # ── Sveipenavigasjon ─────────────────────────────────
+            outer.add_widget(Label(text='Sveipenavigasjon:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            sw_row   = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            is_sw_on = st.get('swipe_nav', False)
+            sw_on  = mk_btn('På', hex_k('#2E7D32' if is_sw_on  else '#6BCB77'), h=dp(52), fs=16)
+            sw_off = mk_btn('Av', hex_k('#B71C1C' if not is_sw_on else '#FF6B6B'), h=dp(52), fs=16)
+            def set_sw(val):
+                st['swipe_nav'] = val
                 save_struct(self.data)
-                pin_lbl.text = f'PIN: {"*"*len(v) if v else "(ingen)"}'
-                pp.dismiss()
-            pbox.add_widget(mk_btn('Lagre PIN', hex_k('#4D96FF'), h=dp(48), fs=14, cb=_save))
-            pbox.add_widget(mk_btn('Avbryt', hex_k('#78909C'), h=dp(44), fs=13,
-                                   cb=lambda *_: pp.dismiss()))
-            pp.open()
+                sw_on.btn_color  = list(hex_k('#2E7D32' if val else '#6BCB77'))
+                sw_off.btn_color = list(hex_k('#B71C1C' if not val else '#FF6B6B'))
+            sw_on.bind( on_release=lambda *_: set_sw(True))
+            sw_off.bind(on_release=lambda *_: set_sw(False))
+            sw_row.add_widget(sw_on); sw_row.add_widget(sw_off)
+            outer.add_widget(sw_row)
+            _lbl_sw = Label(
+                text='Sveip høyre for tilbake, venstre for neste. Kan forstyrre scrolling.',
+                size_hint_y=None, height=dp(32),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+                halign='left', valign='middle')
+            _lbl_sw.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+            outer.add_widget(_lbl_sw)
 
-        pin_row.add_widget(mk_btn('Endre PIN', hex_k('#78909C'),
-                                  h=dp(46), fs=12, size_hint_x=None, width=dp(110),
-                                  cb=_set_pin_popup))
-        outer.add_widget(pin_row)
+            # ── Push-varsler ─────────────────────────────────────
+            outer.add_widget(Label(text='Push-varsler:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            outer.add_widget(Label(
+                text='Varsler sendes kun når appen er i bakgrunnen / skjermen er av.',
+                font_size=fsp(13), color=(0.3, 0.3, 0.4, 1),
+                size_hint_y=None, height=dp(28), halign='left'))
 
-        # Wrap outer i ScrollView slik at innstillinger kan rulles
+            def _mk_notif_row(label, key):
+                on_now = self.data.get('settings', {}).get(key, False)
+                row = BoxLayout(size_hint_y=None, height=rdp(56), spacing=dp(8))
+                btn_on  = mk_btn('På',  hex_k('#6BCB77' if on_now     else '#B0B8C4'),
+                                 h=rdp(50), fs=14)
+                btn_off = mk_btn('Av',  hex_k('#EF5350' if not on_now else '#B0B8C4'),
+                                 h=rdp(50), fs=14)
+                def _set(val, b_on=btn_on, b_off=btn_off, k=key):
+                    self.data.setdefault('settings', {})[k] = val
+                    b_on.btn_color  = list(hex_k('#6BCB77' if val  else '#B0B8C4'))
+                    b_off.btn_color = list(hex_k('#EF5350' if not val else '#B0B8C4'))
+                    save_struct(self.data)
+                    if k == 'notifications_dagsplan':
+                        self._reschedule_dagsplan_notifs()
+                    if val:
+                        self._request_notification_permission()
+                btn_on.bind( on_release=lambda *_: _set(True))
+                btn_off.bind(on_release=lambda *_: _set(False))
+                row.add_widget(Label(text=label, font_size=fsp(15),
+                                     color=(0.1, 0.1, 0.3, 1), halign='left'))
+                row.add_widget(btn_on)
+                row.add_widget(btn_off)
+                return row
+
+            outer.add_widget(_mk_notif_row('Tidsur:',    'notifications_timer'))
+            outer.add_widget(_mk_notif_row('Dagsplan:',  'notifications_dagsplan'))
+
+        elif tab == 2:
+            # ════════════════════════════════════════════════════════
+            #  SIKKERHET
+            # ════════════════════════════════════════════════════════
+
+            # ── Barn-modus ───────────────────────────────────────
+            outer.add_widget(Label(text='Barn-modus:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            is_barn = st.get('barn_modus', False)
+            barn_row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(10))
+            barn_on  = mk_btn('På',  hex_k('#FF9F43' if is_barn  else '#546E7A'), h=dp(52), fs=16)
+            barn_off = mk_btn('Av',  hex_k('#4D96FF' if not is_barn else '#90CAF9'), h=dp(52), fs=16)
+            def set_barn(val):
+                st['barn_modus'] = val
+                save_struct(self.data)
+                barn_on.btn_color  = list(hex_k('#FF9F43' if val else '#546E7A'))
+                barn_off.btn_color = list(hex_k('#4D96FF' if not val else '#90CAF9'))
+            barn_on.bind( on_release=lambda *_: set_barn(True))
+            barn_off.bind(on_release=lambda *_: set_barn(False))
+            barn_row.add_widget(barn_on); barn_row.add_widget(barn_off)
+            outer.add_widget(barn_row)
+            outer.add_widget(Label(
+                text='2-kolonne rutenett og PIN-beskyttet redigering for å hindre utilsiktede endringer.',
+                size_hint_y=None, height=dp(44), font_size=fsp(12),
+                color=(0.3, 0.3, 0.4, 1), halign='left', valign='top'))
+
+            # PIN-oppsett for barn-modus
+            cur_pin = st.get('barn_modus_pin', '')
+            pin_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+            pin_lbl = Label(
+                text=f'PIN: {"*" * len(cur_pin) if cur_pin else "(ingen – kun knapp-lås)"}',
+                font_size=fsp(13), color=(0.3, 0.34, 0.50, 1),
+                halign='left', valign='middle', size_hint_x=1)
+            pin_lbl.bind(size=pin_lbl.setter('text_size'))
+            pin_row.add_widget(pin_lbl)
+
+            def _set_pin_popup(*_):
+                from kivy.uix.textinput import TextInput as _TI
+                pbox = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(16))
+                pbox.add_widget(Label(text='Ny PIN (4 siffer, la stå tomt for ingen PIN):',
+                                      font_size=fsp(14), color=(0.06,0.08,0.30,1),
+                                      size_hint_y=None, height=dp(38), halign='center'))
+                pin_inp = _TI(hint_text='1234', multiline=False, input_filter='int',
+                              size_hint_y=None, height=dp(50),
+                              font_size=fsp(18), halign='center')
+                def _limit_pin(_inst, value):
+                    if len(value) > 4:
+                        _inst.text = value[:4]
+                pin_inp.bind(text=_limit_pin)
+                pbox.add_widget(pin_inp)
+                pp = Popup(title='', content=pbox, size_hint=POPUP_SMALL, separator_height=0)
+                def _save(*_):
+                    v = pin_inp.text.strip()
+                    st['barn_modus_pin'] = v
+                    save_struct(self.data)
+                    pin_lbl.text = f'PIN: {"*"*len(v) if v else "(ingen)"}'
+                    pp.dismiss()
+                pbox.add_widget(mk_btn('Lagre PIN', hex_k('#4D96FF'), h=dp(48), fs=14, cb=_save))
+                pbox.add_widget(mk_btn('Avbryt', hex_k('#78909C'), h=dp(44), fs=13,
+                                       cb=lambda *_: pp.dismiss()))
+                pp.open()
+
+            pin_row.add_widget(mk_btn('Endre PIN', hex_k('#78909C'),
+                                      h=dp(46), fs=12, size_hint_x=None, width=dp(110),
+                                      cb=_set_pin_popup))
+            outer.add_widget(pin_row)
+
+            # ── Del med annen enhet ──────────────────────────────
+            outer.add_widget(Label(text='Del med annen enhet:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            _lbl_sync = Label(
+                text='Overfør mapper og bilder til/fra en annen enhet med '
+                     'appen, så lenge begge er på samme WiFi-nettverk.',
+                size_hint_y=None, height=dp(44),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+                halign='left', valign='top')
+            _lbl_sync.bind(width=lambda w, v: setattr(w, 'text_size', (v, None)))
+            outer.add_widget(_lbl_sync)
+            sync_row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(10))
+            sync_row.add_widget(mk_btn('Del innhold', hex_k('#6BCB77'), h=dp(54), fs=15,
+                cb=lambda *_: self._show_sync_send_popup()))
+            sync_row.add_widget(mk_btn('Motta innhold', hex_k('#4D96FF'), h=dp(54), fs=15,
+                cb=lambda *_: self._show_sync_receive_popup()))
+            outer.add_widget(sync_row)
+
+        elif tab == 3:
+            # ════════════════════════════════════════════════════════
+            #  HJELP
+            # ════════════════════════════════════════════════════════
+
+            # ── Brukerveiledning og omvisning ────────────────────
+            outer.add_widget(Label(text='Veiledning:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            outer.add_widget(mk_btn('Les brukerveiledning', hex_k('#4D96FF'), h=dp(54), fs=15,
+                cb=lambda *_: self._show_help_popup()))
+            outer.add_widget(mk_btn('Vis omvisning på nytt', hex_k('#6BCB77'), h=dp(54), fs=15,
+                cb=lambda *_: self._show_onboarding()))
+
+            # ── Importer bilder (info) ───────────────────────────
+            outer.add_widget(Label(
+                text='Importer bilder:',
+                size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True,
+                color=(0.08, 0.10, 0.35, 1), halign='left'))
+            _lbl_img = Label(
+                text=(
+                    'Trykk "Last opp" i en mappe for å velge bilde.\n'
+                    'Bildevelgeren åpnes – ingen tillatelser trengs.\n\n'
+                    'Bilder lagres i appens private mappe.\n'
+                    'Eksporter via "Last ned" for å kopiere til Nedlastinger.'
+                ),
+                size_hint_y=None, height=dp(110),
+                font_size=fsp(12), color=(0.3, 0.3, 0.4, 1),
+                halign='left', valign='top')
+            _lbl_img.bind(width=lambda w,v: setattr(w,'text_size',(v,None)))
+            outer.add_widget(_lbl_img)
+
+            # ── Logger (for feilsøking) ──────────────────────────
+            outer.add_widget(Label(text='Logger:', size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True, color=(0.08, 0.10, 0.35, 1), halign='left'))
+            outer.add_widget(mk_btn('Vis widget-logg', hex_k('#78909C'), h=dp(48), fs=14,
+                cb=lambda *_: self._show_widget_log()))
+            outer.add_widget(mk_btn('Vis diagnoselogg', hex_k('#546E7A'), h=dp(48), fs=14,
+                cb=lambda *_: self._show_diag_log()))
+
+            # ── Personvern ───────────────────────────────────────
+            outer.add_widget(Label(
+                text='Personvern:',
+                size_hint_y=None, height=dp(32),
+                font_size=fsp(17), bold=True,
+                color=(0.08, 0.10, 0.35, 1), halign='left'))
+            outer.add_widget(mk_btn(
+                'Les personvernerklæringen',
+                hex_k('#4D96FF'), h=dp(54), fs=15,
+                cb=lambda *_: self._show_privacy_popup()))
+
+        # ── Wrap aktiv-fane-innholdet i ScrollView ─────────────────
         sv = ScrollView(do_scroll_x=False)
         inner = BoxLayout(
             orientation='vertical', spacing=dp(16),
-            padding=dp(16), size_hint_y=None)
+            padding=dp(8), size_hint_y=None)
         inner.bind(minimum_height=inner.setter('height'))
         for w in list(outer.children[::-1]):
             outer.remove_widget(w)
             inner.add_widget(w)
         sv.add_widget(inner)
-        self._set_content(sv)
+        root.add_widget(sv)
+
+        self._set_content(root)
+
+    def _select_settings_tab(self, idx):
+        """Bytt til en annen innstillinger-fane og gjenbygg skjermen."""
+        if getattr(self, '_settings_tab', 0) != idx:
+            self._settings_tab = idx
+            self._show_settings()
 
     # ══════════════════════════════════════════════════
     #  PERSONVERNERKLÆRING
@@ -7043,8 +7161,10 @@ BARN-MODUS
                            size_hint_y=None, height=dp(58),
                            spacing=dp(6), padding=(dp(8), dp(4)),
                            box_color=(0.97, 0.97, 1.0, 1.0), radius=dp(14))
-                # Ikon + navn
-                lbl = Label(text=f'{op.get("icon", "🎭")}  {op["name"]}',
+                # Navn (ikon-feltet ignoreres siden NotoSans-Regular
+                # mangler emoji-glyfer; oppsettenes 'icon'-felt
+                # beholdes likevel i datastrukturen for fremtidig bruk)
+                lbl = Label(text=op["name"],
                             font_size=fsp(15), bold=True,
                             color=(0.04, 0.10, 0.36, 1),
                             halign='left')
@@ -7073,9 +7193,9 @@ BARN-MODUS
         current_acts = get_day_plan(self.data, sel)
         save_enabled = bool(current_acts)
         save_btn = mk_btn(
-            '💾  Lagre dagens plan som nytt oppsett'
+            'Lagre dagens plan som nytt oppsett'
             if save_enabled
-            else '💾  (ingen aktiviteter å lagre)',
+            else '(ingen aktiviteter å lagre)',
             hex_k('#4D96FF' if save_enabled else '#9CA3AF'),
             h=dp(50), fs=14)
         if save_enabled:
@@ -7166,27 +7286,11 @@ BARN-MODUS
             halign='left'))
         outer.add_widget(name_inp)
 
-        # Ikon-velger – noen passende emoji for typiske dagsoppsett
-        icon_state = ['🎭']
-        outer.add_widget(Label(text='Ikon:', size_hint_y=None, height=dp(22),
-            font_size=fsp(13), bold=True, color=(0.3,0.3,0.4,1),
-            halign='left'))
-        icon_row = BoxLayout(orientation='horizontal',
-                             size_hint_y=None, height=dp(48), spacing=dp(4))
-        icons = ['☀️','🌳','🏠','🌧️','❄️','🎂','🤒','🎉','🚌','📚']
-        icon_btns = []
-        def select_icon(em):
-            icon_state[0] = em
-            for b in icon_btns:
-                b.btn_color = list(hex_k('#4D96FF' if b.text == em else '#E0E0E0'))
-        for em in icons:
-            b = mk_btn(em, hex_k('#E0E0E0'), h=dp(48), fs=18,
-                       cb=lambda *_, e=em: select_icon(e))
-            icon_btns.append(b)
-            icon_row.add_widget(b)
-        outer.add_widget(icon_row)
-        # Sett default-ikon til markert
-        Clock.schedule_once(lambda *_: select_icon('🎭'), 0)
+        # Ikon-felt utelatt fra UI siden NotoSans-Regular mangler
+        # emoji-glyfer (vises som tomme bokser). Oppsettenes 'icon'-
+        # felt er likevel i datastrukturen og kan brukes igjen
+        # dersom en emoji-font legges til senere.
+        icon_state = ['']
 
         sub_pop_ref = [None]
         def confirm(*_):
@@ -7346,7 +7450,7 @@ BARN-MODUS
                 row1.add_widget(mk_btn(p_label, hex_k(p_color),
                     h=dp(44), fs=13,
                     cb=lambda *_: self._toggle_pause()))
-            row1.add_widget(mk_btn('⎘  Kopier dag', hex_k('#FF9F43'),
+            row1.add_widget(mk_btn('Kopier dag', hex_k('#FF9F43'),
                 h=dp(44), fs=13,
                 cb=lambda *_: self._dr_copy_popup()))
             outer.add_widget(row1)
@@ -10349,75 +10453,87 @@ BARN-MODUS
 
     def _lytt_start(self, valg):
         """
-        Starter Lytt-avspilling med koreografert overgang:
-          1. Push 'lytt' på nav-stack så Ferdig returnerer til menyen
-          2. Animer Window.clearcolor (hele skjermbakgrunnen) til
-             svart, samtidig som chrome (topbar/quickbar/navbar)
-             fader ut – så det ser ut som alt "smelter inn i mørket"
-          3. Bytt til en mørk fullskjerm med en USYNLIG Ferdig-knapp
-          4. Last lyden ASYNKRONT i en bakgrunnstråd – ellers fryser
-             hovedløkken under SoundLoader.load(), og animasjonene
-             aldri kommer i gang
-          5. Når lyden er lastet og avspilling startet: fade inn
-             Ferdig-knappen
+        Starter Lytt-avspilling med ØYEBLIKKELIG visuell respons.
 
-        Designprinsipp: under lasting ser brukeren BARE en helt mørk
-        skjerm – ingen knapper, ingen chrome, ingen ledetråder som
-        inviterer til trykk før noe har skjedd. Når lyden er klar,
-        dukker Ferdig-knappen opp som eneste interaktive element.
+        Tilnærming: i stedet for å bytte _content_inner (slide-anim
+        + chrome-fade + clearcolor-anim som alle krever at hovedløkken
+        får tid til å rendre flere lag), legges en mørk overlay-widget
+        direkte på Window og fades inn umiddelbart. Den dekker alt
+        annet inkludert topbar/quickbar/navbar – ingen behov for å
+        animere dem separat.
+
+        Resultat: trykk → overlay synlig i samme frame → fade-in over
+        0.35 s → lyd-lasting i tråd i bakgrunnen → Ferdig-knapp fades
+        inn på overlay-en når lyden begynner å spille.
         """
-        self._push('lytt')
-        self._cur_scr = 'lytt_spiller'
-        self._set_title('')   # ingen tittel under pausen
+        # === Trinn 1: ØYEBLIKKELIG visuell respons ===
+        # Lag og legg til overlay før noe annet kan blokkere
+        self._lytt_show_overlay()
 
-        # Animer skjermbakgrunnen til svart. Window.clearcolor er
-        # en ListProperty og kan animeres med Kivy Animation –
-        # samme varighet som chrome-fade så de beveger seg i takt.
-        Animation.cancel_all(Window, 'clearcolor')
-        Animation(clearcolor=[0.0, 0.0, 0.0, 1.0],
-                  duration=0.35, t='out_quad').start(Window)
+        # === Trinn 2: Defer state-endring og lyd-lasting ===
+        # Neste tick (~16 ms) så overlay-rendringen rekker først
+        Clock.schedule_once(lambda dt: self._lytt_begin_load(valg), 0)
 
-        # Fade ut chrome – topbar, quickbar, navbar
-        for w in (getattr(self, '_bottombar', None),
-                  getattr(self, '_quickbar', None),
-                  getattr(self, '_navbar', None)):
-            if w is not None:
-                Animation.cancel_all(w, 'opacity')
-                Animation(opacity=0.0, duration=0.35,
-                          t='out_quad').start(w)
+    def _lytt_show_overlay(self):
+        """
+        Legger en svart overlay direkte på Window som dekker hele
+        skjermen. Ferdig-knappen ligger på overlayen men er usynlig
+        og deaktivert til lyden er lastet og avspilling startet.
+        """
+        from kivy.graphics import Color as _LC, Rectangle as _LR
+        from kivy.uix.floatlayout import FloatLayout as _LFL
 
-        # Bygg mørk fullskjerm med en (foreløpig usynlig) Ferdig-knapp
-        outer = BoxLayout(orientation='vertical',
-                          spacing=0, padding=0)
-        from kivy.graphics import Color as _KC, Rectangle as _KR
-        with outer.canvas.before:
-            _KC(0.0, 0.0, 0.0, 1.0)
-            self._lytt_bg = _KR(pos=outer.pos, size=outer.size)
-        outer.bind(pos=lambda w, v: setattr(self._lytt_bg, 'pos', v),
-                   size=lambda w, v: setattr(self._lytt_bg, 'size', v))
+        overlay = _LFL(size=Window.size, pos=(0, 0),
+                       size_hint=(None, None))
 
-        outer.add_widget(BoxLayout())   # tomt rom i midten
+        with overlay.canvas.before:
+            _LC(0.0, 0.0, 0.0, 1.0)
+            bg_rect = _LR(pos=(0, 0), size=Window.size)
 
-        ferdig_box = BoxLayout(
-            orientation='horizontal',
-            size_hint_y=None, height=dp(80),
-            padding=(dp(20), dp(12)))
+        def _upd_bg(*_):
+            bg_rect.pos = overlay.pos
+            bg_rect.size = overlay.size
+        overlay.bind(pos=_upd_bg, size=_upd_bg)
+
+        # Følg Window-resize/orientasjonsendringer
+        def _follow_win(*_):
+            overlay.size = Window.size
+            overlay.pos = (0, 0)
+        Window.bind(size=_follow_win)
+        self._lytt_overlay_follow = _follow_win
+
+        # Ferdig-knapp – usynlig til lyden er klar
         ferdig_btn = mk_btn(
             'Ferdig', hex_k('#6BCB77'),
             h=dp(56), fs=18,
             cb=lambda *_: self._lytt_ferdig())
-        ferdig_btn.opacity = 0.0           # skjules til lyden er klar
-        ferdig_btn.disabled = True         # kan ikke trykkes mens skjult
-        self._lytt_ferdig_btn = ferdig_btn  # ref for senere fade-inn
-        ferdig_box.add_widget(ferdig_btn)
-        outer.add_widget(ferdig_box)
+        ferdig_btn.size_hint  = (None, None)
+        ferdig_btn.width      = dp(280)
+        ferdig_btn.height     = dp(64)
+        ferdig_btn.pos_hint   = {'center_x': 0.5, 'y': 0.06}
+        ferdig_btn.opacity    = 0.0
+        ferdig_btn.disabled   = True
+        overlay.add_widget(ferdig_btn)
+        self._lytt_ferdig_btn = ferdig_btn
 
-        self._set_content(outer)
+        # Start usynlig og fade inn (instant fra brukerens perspektiv
+        # siden første frame allerede er svart med opacity > 0)
+        overlay.opacity = 0.0
+        Window.add_widget(overlay)
+        Animation(opacity=1.0, duration=0.35, t='out_quad').start(overlay)
 
-        # Lyden lastes i en daemon-tråd så Kivys hovedløkke kan
-        # fortsette å animere chrome ut. Pyjnius/SoundLoader fra en
-        # ikke-hovedtråd kan kreve at vi gjør den FAKTISKE play()-en
-        # via Clock.schedule_once for å være på den trygge siden.
+        self._lytt_overlay = overlay
+
+    def _lytt_begin_load(self, valg):
+        """
+        Kjøres ett tick etter at overlay-en ble lagt til. Setter
+        navigasjons-state og starter asynkron lyd-lasting. Selve
+        innholdsskjermen byttes IKKE – overlay dekker uansett.
+        """
+        self._push('lytt')
+        self._cur_scr = 'lytt_spiller'
+        self._set_title('')
+
         self._lytt_pending_path = valg['lyd']
         threading.Thread(
             target=self._lytt_load_async,
@@ -10495,36 +10611,43 @@ BARN-MODUS
         # blir kastet av _lytt_on_loaded i stedet for å begynne å spille
         self._lytt_pending_path = None
 
-    def _lytt_fade_chrome_inn(self):
+    def _lytt_remove_overlay(self):
         """
-        Fader chrome (topbar/quickbar/navbar) tilbake til synlig
-        og animerer skjermbakgrunnen fra svart tilbake til appens
-        vanlige tidsbaserte/HC-bakgrunn.
+        Fjerner Lytt-overlayen med en kort fade-ut. Avbinder også
+        Window-resize-følgingen. Trygt å kalle hvis overlay allerede
+        er fjernet (idempotent).
         """
-        # Tilbake til normal bakgrunnsfarge (samme som ellers i appen)
-        normal_bg = (1.0, 1.0, 1.0, 1.0) if is_hc() else time_of_day_tint()
-        Animation.cancel_all(Window, 'clearcolor')
-        Animation(clearcolor=list(normal_bg) if len(normal_bg) == 4
-                              else [*normal_bg, 1.0],
-                  duration=0.30, t='out_quad').start(Window)
+        overlay = getattr(self, '_lytt_overlay', None)
+        if overlay is None:
+            return
 
-        for w in (getattr(self, '_bottombar', None),
-                  getattr(self, '_quickbar', None),
-                  getattr(self, '_navbar', None)):
-            if w is not None:
-                Animation.cancel_all(w, 'opacity')
-                Animation(opacity=1.0, duration=0.30,
-                          t='out_quad').start(w)
+        follow = getattr(self, '_lytt_overlay_follow', None)
+        if follow is not None:
+            try:
+                Window.unbind(size=follow)
+            except Exception:
+                pass
+            self._lytt_overlay_follow = None
+
+        def _cleanup(*_):
+            try:
+                Window.remove_widget(overlay)
+            except Exception:
+                pass
+        anim = Animation(opacity=0.0, duration=0.30, t='out_quad')
+        anim.bind(on_complete=_cleanup)
+        anim.start(overlay)
+
+        self._lytt_overlay = None
+        self._lytt_ferdig_btn = None
 
     def _lytt_ferdig(self, *_):
         """
-        Avslutt avspillingen, fade chrome inn igjen, gå tilbake til
-        Lytt-menyen. Lyden stoppes umiddelbart (ikke etter animasjon)
-        så det ikke høres ut som om appen "henger" mens chrome
-        animeres inn.
+        Avslutt avspillingen: stopp lyd umiddelbart, fade overlay ut,
+        og gå tilbake til Lytt-menyen i nav-stacken.
         """
         self._lytt_stop_sound()
-        self._lytt_fade_chrome_inn()
+        self._lytt_remove_overlay()
         self.go_back()
 
     # ══════════════════════════════════════════════════
@@ -10854,7 +10977,7 @@ BARN-MODUS
             sub_pop.open()
 
         layout.add_widget(mk_btn(
-            '✨  Foreslå navn fra bildet',
+            'Foreslå navn fra bildet',
             hex_k('#9C7DCE'), h=dp(46), fs=13,
             cb=suggest_now))
 
@@ -11325,7 +11448,7 @@ BARN-MODUS
             for fo in self.data.get('folders', []):
                 if term in fo.get('name', '').lower():
                     fo_ref = fo
-                    hits.append(('📁', fo['name'], 'Mappe',
+                    hits.append(('[Mappe]', fo['name'], 'Mappe',
                                  lambda _fo=fo_ref: self._open_folder(_fo)))
 
             # 2. Bilder i mapper – item-navn
@@ -11352,7 +11475,7 @@ BARN-MODUS
             # 4. Sekvenser (rekker) – navn
             for seq in self.data.get('sequences', []):
                 if term in seq.get('name', '').lower():
-                    hits.append(('🔗', seq['name'], 'Rekke',
+                    hits.append(('[Rekke]', seq['name'], 'Rekke',
                                  lambda: self._show_sequences()))
 
             # 5. Notater – søk i tekstinnholdet
@@ -11364,7 +11487,7 @@ BARN-MODUS
                     b = min(len(txt), idx + len(term) + 30)
                     snippet = ('…' if a > 0 else '') + txt[a:b] + ('…' if b < len(txt) else '')
                     hits.append((
-                        '📝', f'Notat: {DAY_FULL_NO[code]}', snippet,
+                        '[Notat]', f'Notat: {DAY_FULL_NO[code]}', snippet,
                         lambda c=code: (
                             setattr(self, '_dr_selected_day', c),
                             self._nav_dagsrytme()
@@ -12279,8 +12402,10 @@ BARN-MODUS
             btn = mk_btn(d, hex_k(DIGIT_COLOR), h=dp(58), fs=22,
                          cb=lambda *_, dd=d: press_digit(dd))
             numpad.add_widget(btn)
-        # Bunnrad: ⌫, 0, spacer
-        numpad.add_widget(mk_btn('⌫', hex_k(BACK_COLOR), h=dp(58), fs=20,
+        # Bunnrad: ← (backspace), 0, spacer.
+        # ← (U+2190) finnes i NotoSans-Regular i motsetning til ⌫
+        # (U+232B) som kan vise som tom boks.
+        numpad.add_widget(mk_btn('←', hex_k(BACK_COLOR), h=dp(58), fs=22,
                                   cb=press_back))
         numpad.add_widget(mk_btn('0', hex_k(DIGIT_COLOR), h=dp(58), fs=22,
                                   cb=lambda *_: press_digit('0')))
