@@ -2858,6 +2858,14 @@ class KommunikasjonstavleApp(App):
         self.edit_mode   = False
         self.draw_canvas = None
         self._cur_scr    = 'home'
+
+        # LRU-cache for Lytt-modus. Sound-objekter beholdes i minnet
+        # så raskt påfølgende trykk på samme flis spiller umiddelbart
+        # (uten 1–3 s SoundLoader.load-ventetid). Maks 3 lyder å holde
+        # minne-fotavtrykket lavt – evict eldste når cache er full.
+        from collections import OrderedDict
+        self._lytt_cache     = OrderedDict()
+        self._lytt_cache_max = 3
         self._sync_server = None  # kt_sync.SyncServer – aktiv ved "Del innhold"
         self._next_slide_dir = 'forward'  # slide-retning for neste _set_content
         # Fase 1 – landskapsstøtte: husk gjeldende retning slik at
@@ -2994,6 +3002,20 @@ class KommunikasjonstavleApp(App):
             except Exception as e:
                 logging.warning('resume widget: %s', e)
         Clock.schedule_once(_safe, 0.5)
+
+    def on_stop(self):
+        """
+        App lukkes helt – frigjør LRU-cachen for Lytt-modus så
+        lyd-buffere ikke henger igjen i prosessen. Andre opprydninger
+        (sync-server, popups) håndteres av on_pause som kalles først.
+        """
+        for _snd in getattr(self, '_lytt_cache', {}).values():
+            try:
+                _snd.unload()
+            except Exception:
+                pass
+        if hasattr(self, '_lytt_cache'):
+            self._lytt_cache.clear()
 
     def on_start(self):
         """
@@ -6506,7 +6528,130 @@ BARN-MODUS
         Viser den fullstendige personvernerklæringen i et scrollbart popup.
         Teksten er bakt direkte inn i koden fra PERSONVERN.md.
         """
-        policy_text = "PERSONVERNERKL\u00c6RING \u2013 KOMMUNIKASJONSTAVLE\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nVersjon: 1.2  \nSist oppdatert: Mai 2025  \nUtvikler: Privat utvikler (ikke-kommersiell applikasjon)\n\n\n\n\nHVA ER KOMMUNIKASJONSTAVLE?\n\nKommunikasjonstavle er en Android-applikasjon utviklet for bruk i pedagogisk sammenheng i barnehage og skole. Appen er laget for \u00e5 st\u00f8tte kommunikasjon med barn ved hjelp av bilder og symboler (ASK \u2013 Alternativ og Supplerende Kommunikasjon).\n\n\n\n\nHVILKE OPPLYSNINGER SAMLES INN?\n\nIngen personopplysninger sendes fra denne appen.\n\nAll informasjon appen lagrer, befinner seg utelukkende p\u00e5 den enheten appen er installert p\u00e5. Det sendes ingenting til internett, ingen skytjeneste, ingen server og ingen tredjepart.\n\nAppen lagrer lokalt p\u00e5 enheten:\n- Mappestruktur og kategorier du oppretter\n- Bildefiler du laster opp\n- Tegninger du lager i appen\n- Innstillinger (tekstst\u00f8rrelse, tale p\u00e5/av)\n- En teknisk feillogg (`crash.log`) ved programfeil\n\nIngen av disse dataene forlater enheten.\n\n\n\n\nVIKTIG ADVARSEL OM BILDER AV BARN\n\nVi frar\u00e5der p\u00e5 det sterkeste \u00e5 laste opp fotografier av identifiserbare barn i appen.\n\nGrunnen er enkel: det er ikke n\u00f8dvendig i pedagogisk sammenheng. Pedagogiske ASK-symboler viser generelle konsepter \u2013 mat, aktiviteter, f\u00f8lelser \u2013 og trenger ikke \u00e5 knyttes til et bestemt barn. Symbolbiblioteker som PCS (Picture Communication Symbols) er nettopp utviklet for dette form\u00e5let.\n\nDersom bilder av identifiserbare barn likevel lastes opp, er dette en personopplysning underlagt GDPR (personvernforordningen). Behandlingsansvaret ligger da hos den institusjonen (barnehagen eller skolen) som bruker appen, ikke hos apputvikleren. Foresattes samtykke vil i slike tilfeller normalt v\u00e6re p\u00e5krevd.\n\n\n\n\nHVEM HAR BEHANDLINGSANSVARET?\n\nApputvikleren samler ikke inn, mottar eller har tilgang til noen data fra appen.\n\nBehandlingsansvar for eventuelle personopplysninger som legges inn i appen, ligger hos:\n- Den kommunen, det private selskapet eller den enkeltpersonen som installerer og bruker appen\n- I tr\u00e5d med norsk tolkning av GDPR (personopplysningsloven, LOV-2018-06-15-38)\n\n\n\n\nTREDJEPARTSBIBLIOTEKER OG AVHENGIGHETER\n\nAppen benytter f\u00f8lgende programvarekomponenter som er bakt inn i applikasjonen:\n\nKomponent  Form\u00e5l  Sender data?\nPython / Kivy  App-rammeverk  Nei\nPillow (PIL)  Bildebehandling  Nei\nqrcode  QR-kode-generering  Nei\nAndroid SDK  Android-plattform  Se Googles egne vilk\u00e5r\n\nAndroid-plattformen (Google) kan samle inn diagnostikk- og bruksdata uavhengig av denne appen, i henhold til Googles egne personvernvilk\u00e5r.\n\n\n\n\nSLETTING AV DATA\n\nAll data appen har lagret slettes automatisk n\u00e5r appen avinstalleres fra enheten. Det finnes ingen ekstern kopi \u00e5 be om sletting av.\n\n\u00d8nsker du \u00e5 slette enkeltdata mens appen er installert:\n- Bilder og mapper: Slett via redigeringsmodus i appen\n- Tegninger: Slett filene manuelt fra enhetens filsystem\n- All appdata: Avinstaller appen, eller g\u00e5 til Innstillinger \u2192 Apper \u2192 Kommunikasjonstavle \u2192 Lagring \u2192 Slett data\n\n\n\n\nPCS-SYMBOLER (PICTURE COMMUNICATION SYMBOLS)\n\nDersom denne versjonen av appen inkluderer PCS-symboler fra Tobii DynaVox, er disse brukt i henhold til lisensavtale med Tobii DynaVox. PCS\u00ae er et registrert varemerke tilh\u00f8rende Tobii DynaVox.\n\n\n\n\nUNIVERSELL UTFORMING\n\nAppen er utviklet med tanke p\u00e5 tilgjengelighet for brukere med ulike kommunikasjonsbehov. Justerbar tekstst\u00f8rrelse og h\u00f8ykontrastalternativer er tilgjengelig i innstillinger.\n\n\n\n\nKONTAKT\n\nSp\u00f8rsm\u00e5l om personvern eller appen kan rettes til apputvikleren via GitHub-prosjektets \u00abIssues\u00bb-seksjon.\n\n\n\n\nENDRINGER I PERSONVERNERKL\u00c6RINGEN\n\nVesentlige endringer i denne erkl\u00e6ringen vil gjenspeiles i versjonsnummeret \u00f8verst. Det anbefales \u00e5 lese erkl\u00e6ringen p\u00e5 nytt ved oppgradering av appen."
+        policy_text = (
+            "PERSONVERNERKLÆRING – KOMMUNIKASJONSTAVLE\n"
+            "────────────────────────────────────────\n\n"
+            "Versjon: 1.3\n"
+            "Sist oppdatert: Juni 2026\n"
+            "Utvikler: Privat utvikler (ikke-kommersiell applikasjon)\n\n\n"
+
+            "HVA ER KOMMUNIKASJONSTAVLE?\n\n"
+            "Kommunikasjonstavle er en Android-applikasjon utviklet for "
+            "bruk i pedagogisk sammenheng i barnehage og skole. Appen "
+            "støtter kommunikasjon med barn ved hjelp av bilder og "
+            "symboler (ASK – Alternativ og Supplerende Kommunikasjon), "
+            "og inneholder også enkle læringsspill, dagsplan, tidsur, "
+            "tegneverktøy og en audiosensorisk pausemodus (Lytt) med "
+            "naturlyder.\n\n\n"
+
+            "HVILKE OPPLYSNINGER SAMLES INN?\n\n"
+            "Ingen personopplysninger sendes fra denne appen.\n\n"
+            "All informasjon appen lagrer befinner seg utelukkende på "
+            "den enheten appen er installert på. Det sendes ingenting "
+            "til internett, ingen skytjeneste, ingen server, ingen "
+            "tredjepart, og ingen analyse- eller sporingstjenester.\n\n"
+            "Appen lagrer lokalt på enheten:\n"
+            "• Mappestruktur og kategorier du oppretter\n"
+            "• Bildefiler du laster opp\n"
+            "• Tegninger du lager i appen\n"
+            "• Dagsplan og handlingsrekker du setter opp\n"
+            "• Spillstatistikk (kun lokal, ikke delt)\n"
+            "• Innstillinger (tekststørrelse, høykontrast, "
+            "barn-modus, PIN, m.fl.)\n"
+            "• En teknisk feillogg (crash.log) ved programfeil\n\n"
+            "Ingen av disse dataene forlater enheten.\n\n\n"
+
+            "VIKTIG ADVARSEL OM BILDER AV BARN\n\n"
+            "Vi fraråder på det sterkeste å laste opp fotografier "
+            "av identifiserbare barn i appen.\n\n"
+            "Grunnen er enkel: det er ikke nødvendig i pedagogisk "
+            "sammenheng. Pedagogiske ASK-symboler viser generelle "
+            "konsepter – mat, aktiviteter, følelser – og trenger "
+            "ikke å knyttes til et bestemt barn. Symbolbiblioteker "
+            "som ARASAAC og PCS (Picture Communication Symbols) er "
+            "nettopp utviklet for dette formålet.\n\n"
+            "Dersom bilder av identifiserbare barn likevel lastes "
+            "opp, er dette en personopplysning underlagt GDPR. "
+            "Behandlingsansvaret ligger da hos den institusjonen "
+            "(barnehagen eller skolen) som bruker appen, ikke hos "
+            "apputvikleren. Foresattes samtykke vil i slike tilfeller "
+            "normalt være påkrevd.\n\n\n"
+
+            "HVEM HAR BEHANDLINGSANSVARET?\n\n"
+            "Apputvikleren samler ikke inn, mottar eller har tilgang "
+            "til noen data fra appen.\n\n"
+            "Behandlingsansvar for eventuelle personopplysninger som "
+            "legges inn i appen ligger hos:\n"
+            "• Den kommunen, det private selskapet eller den "
+            "enkeltpersonen som installerer og bruker appen\n"
+            "• I tråd med norsk tolkning av GDPR "
+            "(personopplysningsloven, LOV-2018-06-15-38)\n\n\n"
+
+            "PUSH-VARSLER\n\n"
+            "Appen kan vise lokale varsler for tidsur og dagsplan "
+            "når du har slått dette på under Innstillinger → "
+            "Interaksjon. Varslene genereres på enheten av Android, "
+            "uten å sende noe til Google eller andre tjenester. "
+            "Det brukes IKKE Firebase Cloud Messaging (FCM) eller "
+            "andre eksterne push-tjenester.\n\n\n"
+
+            "DEL MED ANNEN ENHET\n\n"
+            "«Del innhold» og «Motta innhold» under "
+            "Innstillinger → Sikkerhet bruker lokalt WiFi-nettverk "
+            "(peer-to-peer) for å overføre mapper og bilder direkte "
+            "mellom to enheter som har appen. Dataene passerer aldri "
+            "en server, sky eller tredjepart. Begge enhetene må "
+            "være på samme nettverk og bekrefte overføringen.\n\n\n"
+
+            "TREDJEPARTSBIBLIOTEKER\n\n"
+            "Appen benytter følgende programvarekomponenter som er "
+            "bakt inn i applikasjonen:\n\n"
+            "• Python / Kivy – app-rammeverk – Sender data? Nei\n"
+            "• Pillow (PIL) – bildebehandling – Nei\n"
+            "• qrcode – QR-kode-generering – Nei\n"
+            "• Plyer – Android-API-tilgang (varsler, m.m.) – Nei\n"
+            "• Android SDK – plattform – Se Googles egne vilkår\n\n"
+            "Android-plattformen (Google) kan samle inn diagnostikk- "
+            "og bruksdata uavhengig av denne appen, i henhold til "
+            "Googles egne personvernvilkår.\n\n\n"
+
+            "SLETTING AV DATA\n\n"
+            "All data appen har lagret slettes automatisk når appen "
+            "avinstalleres fra enheten. Det finnes ingen ekstern "
+            "kopi å be om sletting av.\n\n"
+            "Ønsker du å slette enkeltdata mens appen er installert:\n"
+            "• Bilder og mapper: Slett via redigeringsmodus i appen\n"
+            "• Tegninger: Slett filene manuelt fra enhetens filsystem\n"
+            "• All appdata: Avinstaller appen, eller gå til "
+            "Innstillinger → Apper → Kommunikasjonstavle → "
+            "Lagring → Slett data\n\n\n"
+
+            "SYMBOLBIBLIOTEKER\n\n"
+            "Appen inkluderer ARASAAC-symboler (Aragonese Centre "
+            "of Augmentative and Alternative Communication), brukt "
+            "under Creative Commons-lisens (CC BY-NC-SA 4.0). "
+            "ARASAAC eies av Government of Aragón (Spania).\n\n"
+            "Dersom denne versjonen av appen inkluderer PCS-symboler "
+            "fra Tobii Dynavox, er disse brukt i henhold til "
+            "lisensavtale med Tobii Dynavox. PCS® er et registrert "
+            "varemerke tilhørende Tobii Dynavox.\n\n\n"
+
+            "UNIVERSELL UTFORMING\n\n"
+            "Appen er utviklet med tanke på tilgjengelighet for "
+            "brukere med ulike kommunikasjonsbehov. Justerbar "
+            "tekststørrelse, høykontrastalternativer, tale-til-tekst "
+            "(TTS) for norsk, og en forenklet barn-modus med "
+            "PIN-beskyttet redigering er tilgjengelig i innstillinger.\n\n\n"
+
+            "KONTAKT\n\n"
+            "Spørsmål om personvern eller appen kan rettes til "
+            "apputvikleren via GitHub-prosjektets «Issues»-seksjon.\n\n\n"
+
+            "ENDRINGER I PERSONVERNERKLÆRINGEN\n\n"
+            "Vesentlige endringer i denne erklæringen vil gjenspeiles "
+            "i versjonsnummeret øverst. Det anbefales å lese "
+            "erklæringen på nytt ved oppgradering av appen."
+        )
 
         outer = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(12))
 
@@ -10719,16 +10864,33 @@ BARN-MODUS
     def _lytt_begin_load(self, valg):
         """
         Kjøres ett tick (~16 ms) etter at overlay-en ble lagt til.
-        Setter navigasjons-state og starter asynkron lyd-lasting.
+        Setter navigasjons-state og enten:
+          • Henter ferdig-lastet Sound-objekt fra LRU-cachen og
+            spiller umiddelbart (samme flis trykket nylig)
+          • Starter asynkron lasting i bakgrunnstråd
         """
         self._push('lytt')
         self._cur_scr = 'lytt_spiller'
         self._set_title('')
 
-        self._lytt_pending_path = valg['lyd']
+        sti = valg['lyd']
+        self._lytt_pending_path = sti
+
+        # Cache-hit – flytt til "nyest brukt"-posisjon og signaler
+        # on_loaded i neste tick (asynkront, så overlay rekker å
+        # rendre Laster-label før den fjernes igjen)
+        cached = self._lytt_cache.get(sti) if hasattr(self, '_lytt_cache') else None
+        if cached is not None:
+            self._lytt_cache.move_to_end(sti)
+            diag(f'Lytt: cache-hit for {os.path.basename(sti)}')
+            Clock.schedule_once(
+                lambda dt, s=cached, p=sti: self._lytt_on_loaded(s, p), 0)
+            return
+
+        # Cache-miss – last asynkront
         threading.Thread(
             target=self._lytt_load_async,
-            args=(valg['lyd'],),
+            args=(sti,),
             daemon=True,
         ).start()
 
@@ -10751,24 +10913,35 @@ BARN-MODUS
 
     def _lytt_on_loaded(self, snd, sti):
         """
-        Kjøres i hovedtråden etter at lyden er lastet. Hvis brukeren
-        forlot Lytt-skjermen i mellomtiden (Ferdig, tilbake-knapp,
-        navigert vekk), kastes lyden – ingen avspilling.
+        Kjøres i hovedtråden etter at lyden er lastet (eller hentet
+        fra cache). Hvis brukeren forlot Lytt-skjermen i mellomtiden
+        (Ferdig, tilbake-knapp, navigert vekk), kastes resultatet.
+
+        Vi unload-er ALDRI en lyd som finnes i LRU-cachen – den
+        beholdes for raskt gjenbruk. Bare ucachede lyder (f.eks. de
+        som ble evicted, eller hvis brukeren rakk å trykke ny flis
+        før første lasting var ferdig) blir frigjort her.
 
         Når lyden er klar:
           1. Fjerner "Laster …"-labelen fra overlay
           2. Aktiverer Ferdig-knappen (allerede der, bare deaktivert)
           3. Fader opacity fra 0.3 til 1.0 over 0.25 s
         """
+        # Er denne lyden i LRU-cachen? Da skal vi ikke unload-e den
+        # selv om brukeren forlot skjermen.
+        cached = (snd is not None
+                  and hasattr(self, '_lytt_cache')
+                  and self._lytt_cache.get(sti) is snd)
+
         # Brukeren rakk å bytte skjerm – kast resultatet
         if self._cur_scr != 'lytt_spiller':
-            if snd is not None:
+            if snd is not None and not cached:
                 try: snd.unload()
                 except Exception: pass
             return
         # Brukeren rakk å trykke flis nr. 2 før første var lastet
         if getattr(self, '_lytt_pending_path', None) != sti:
-            if snd is not None:
+            if snd is not None and not cached:
                 try: snd.unload()
                 except Exception: pass
             return
@@ -10778,11 +10951,29 @@ BARN-MODUS
             self._lytt_ferdig()
             return
 
-        # Spill av lyden
+        # Spill av lyden – cachet lyd kan ha vært stoppet tidligere,
+        # så seek(0) sikrer at den starter fra begynnelsen.
         snd.loop   = True
         snd.volume = 0.7
+        try:
+            snd.seek(0)
+        except Exception:
+            pass  # ikke alle providers støtter seek; det er ok
         snd.play()
         self._lytt_sound = snd
+
+        # Legg til/oppfrisk i LRU-cache. Evict eldste hvis vi er
+        # over kapasitet (default 3 lyder).
+        if hasattr(self, '_lytt_cache'):
+            self._lytt_cache[sti] = snd
+            self._lytt_cache.move_to_end(sti)
+            while len(self._lytt_cache) > self._lytt_cache_max:
+                _old_sti, _old_snd = self._lytt_cache.popitem(last=False)
+                try:
+                    _old_snd.unload()
+                except Exception:
+                    pass
+                diag(f'Lytt: evict cache {os.path.basename(_old_sti)}')
 
         # Fjern "Laster …"-label (parent er FloatLayout, ikke overlay)
         loading = getattr(self, '_lytt_loading_label', None)
@@ -10800,15 +10991,16 @@ BARN-MODUS
                       t='out_quad').start(btn)
 
     def _lytt_stop_sound(self):
-        """Stopp og frigjør lyd-objektet. Trygt å kalle flere ganger."""
+        """
+        Stopp aktiv avspilling. Vi unload-er IKKE Sound-objektet her –
+        det beholdes i LRU-cachen så samme lyd kan spille umiddelbart
+        ved neste trykk. Cachen evict-er eldste når den blir full,
+        og hele cachen tømmes ved app-stop.
+        """
         snd = getattr(self, '_lytt_sound', None)
         if snd is not None:
             try:
                 snd.stop()
-            except Exception:
-                pass
-            try:
-                snd.unload()
             except Exception:
                 pass
             self._lytt_sound = None
@@ -12119,17 +12311,26 @@ BARN-MODUS
              'håndvask eller en utflukt, vist i fast rekkefølge. Trykk '
              'for å gå videre gjennom bildene – konfetti vises når '
              'rekken er fullført.'),
-            ('Bildepar-spillet',
-             'Under «Spill» finner barnet et memory-spill med bilder '
-             'fra egne mapper og undermapper. Velg selv hvor mange par '
-             '– fra 2 og opp til 15, avhengig av hvor mange bilder som '
-             'finnes.'),
+            ('Læringsspill',
+             'Under «Spill» finner barnet tre enkle spill bygd på '
+             'egne bilder fra mappene: Bildepar (memory-spillet) med '
+             'valgfritt antall par, «Hvor er...?» der barnet finner '
+             'et bestemt bilde blant flere, og Sortering, der bilder '
+             'plasseres i riktig kategori. Alle tre kan tilpasses '
+             'vanskelighetsgrad og bruker bildene som allerede ligger '
+             'i mappene dine.'),
             ('Tegn',
              '«Tegn» gir frihåndstegning med flere penseltyper (rund, '
              'myk, kalligrafisk, spray, piksel), justerbar størrelse '
              'og stabilisering som jevner ut skjelvende strøk. Velg '
              'farge fra paletten eller en fri fargegradient. '
              'Tegninger lagres til galleriet.'),
+            ('Lytt – en stille pause',
+             '«Lytt» er en audiosensorisk pause med rolige naturlyder '
+             '– regn, skog, frosker, bål. Brukes som en mellomvei '
+             'mellom konstant stimulering og full uttrekning. Barnet '
+             'velger en lyd, og skjermen blir mørk så øynene får '
+             'hvile mens øret lytter. Trykk «Ferdig» for å gå tilbake.'),
             ('Redigeringsmodus',
              'Trykk «Red.» nederst for å slå redigering på. Da kan du '
              'legge til og endre mapper, bilder, aktiviteter og '
@@ -12142,11 +12343,13 @@ BARN-MODUS
              'et stort, nettbasert bibliotek med over 13 000 norske '
              'symboler du kan laste ned direkte til en mappe.'),
             ('Tilpasninger',
-             'I Innstillinger finner du høykontrast (svart/hvitt), '
-             'fire tekststørrelser, opplesing av symbolnavn, valg '
-             'mellom stående og liggende skjerm, og '
-             'sveipenavigasjon mellom skjermer. Velg det som passer '
-             'best for barnet.'),
+             'Innstillinger er delt i fire faner: Utseende '
+             '(høykontrast, tekststørrelse, skjermretning), '
+             'Interaksjon (opplesing av symbolnavn, sveipenavigasjon, '
+             'varsler), Sikkerhet (barn-modus med PIN, deling mellom '
+             'enheter) og Hjelp (denne omvisningen, importer bilder, '
+             'logger, personvern). Velg det som passer best for '
+             'barnet.'),
             ('Konfetti-knappen',
              'En liten konfetti-knapp er alltid synlig på skjermen '
              '(kan slås av i Innstillinger). Et trykk gir en kort, '
